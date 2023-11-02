@@ -17,3 +17,6 @@ pip install tensorflow
 Verify that the GPU is working
 
 python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+
+
+python -m ipykernel install --user --name=WINMOL_Analyzer
