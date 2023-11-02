@@ -1,11 +1,8 @@
 # WINMOL_Analyzer
 
-https://github.com/StefanReder/WINMOL_Analyzer
-
-
 Installation:
 
-
+git clone https://github.com/StefanReder/WINMOL_Analyzer
 
 
 pip install -r requirements.txt
