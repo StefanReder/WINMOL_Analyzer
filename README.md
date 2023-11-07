@@ -28,3 +28,4 @@ Clone the repo and install the requirements:
 [optional] Add the conda env as ipykernel to jupyter 
   
     python -m ipykernel install --user --name=WINMOL_Analyzer
+    
