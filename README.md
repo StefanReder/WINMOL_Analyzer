@@ -3,7 +3,6 @@
 Installation in conda env:
 
     conda create --name WINMOL_Analyzer python==3.9
-
     conda activate WINMOL_Analyzer
 
 Install tensroflow with GPU on Windows:
@@ -22,7 +21,6 @@ Verify that the GPU is working
 Clone the repo and install the requirements:
 
     git clone https://github.com/StefanReder/WINMOL_Analyzer
-
     pip install -r requirements.txt
     
 [optional] Add the conda env as ipykernel to jupyter 
