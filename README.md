@@ -6,12 +6,12 @@ Installation in conda env:
 
     conda activate WINMOL_Analyzer
 
-on windows:
+Install tensroflow with GPU on Windows:
     
     conda install -c conda-forge cudatoolkit==11.2.2 cudnn==8.1.0.77
     pip install tensorflow-gpu==2.10.1
 
-on Linux / WIndows WSL
+Install tensorflow with GPU on Linux / WIndows WSL
     
     pip install tensorflow[and-cuda]
 
