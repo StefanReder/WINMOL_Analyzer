@@ -8,7 +8,7 @@ conda activate WINMOL_Analyzer
 
 git clone https://github.com/StefanReder/WINMOL_Analyzer
 
-python3 -m pip install tensorflow[and-cuda]
+conda install -c conda-forge cudatoolkit==11.2.2 cudnn==8.1.0.77
 
 Verify that the GPU is working
 
