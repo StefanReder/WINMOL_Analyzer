@@ -26,9 +26,8 @@ class Config(object):
     #Configuration for the stem vectorization
     min_length = 2.0
     max_distance=8
+    max_tree_height=32
     tolerance_angle=7
-    padding=1000
-
     
     def __init__(self):
         """Set values of computed attributes."""

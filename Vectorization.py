@@ -4,25 +4,18 @@
 '''Imports'''
 
 import numpy as np
-#from PIL import Image
 from typing import List, Tuple
-#import scipy.ndimage.measurements
-#from skimage import morphology#, segmentation
 import math
-from shapely.geometry import Point, LineString#, Polygon
+from shapely.geometry import Point, LineString
 from shapely.ops import linemerge
-#from dataclasses import dataclass
-#import rasterio.features
-#import json
-#import geopandas as gpd    
 import time
 import multiprocessing as mp
-#import matplotlib.pyplot as plt
-#from geopandas.tools import sjoin
+import rasterio
 
 from WINMOL_Analyzer import Stem
 from WINMOL_Analyzer import Part
 from WINMOL_Analyzer import Timer
+from IO import get_bounds_from_profile
 
 #System epsilon
 epsilon = np.finfo(float).eps
@@ -34,7 +27,7 @@ epsilon = np.finfo(float).eps
 
 #######Parallel version of connect_stems
 
-def connect_stems(stems:List[Stem], config, verbose=0) -> List[Stem]:
+def connect_stems(stems:List[Stem], config) -> List[Stem]:
     
     max_distance=config.max_distance
     tolerance_angle=config.tolerance_angle
@@ -75,9 +68,7 @@ def connect_stems(stems:List[Stem], config, verbose=0) -> List[Stem]:
 
         while stems:
             #loop while there are stems to extend
-            if verbose>0:
-                t_stem = Timer()
-                t_stem.start()
+            
             #create a line of max 3 segments at both ends of the stem which represents the direction of the stem end
             if len(stems[0].path.coords)<4:
                 lineStart = LineString([stems[0].path.coords[0], stems[0].path.coords[-1]])
@@ -131,13 +122,7 @@ def connect_stems(stems:List[Stem], config, verbose=0) -> List[Stem]:
 
             else:
                 #if no other stem part could be attached to stems[0], it is added to the export container and removed from the stem list
-                connected_stems.append(stems[0])
-                if verbose>0:
-                    print("Stem ", stem_count," detected. ",can_count, " canidates ovserved.", merged_count, " stem segments merged. ", dub_count, " dublicates removed.")
-                    print(stems[0].path)
-                    t_stem.stop()
-                    print("")
-                    t_stem.start()
+                connected_stems.append(stems[0])              
                 stems.remove(stems[0])
                 stem_count=stem_count+1
                 dublicates_count=dublicates_count+dub_count
@@ -150,8 +135,7 @@ def connect_stems(stems:List[Stem], config, verbose=0) -> List[Stem]:
         #all stems have veen observed and passed to connected stems. s
         stems=connected_stems
         cycle_nbr=cycle_nbr+1
-        if verbose>0:
-            t_stem.stop()
+
     pool.close()
     
     connected_stems=[]    
@@ -278,7 +262,7 @@ def calc_conectivity_votes(stems0:Stem, lineStart:LineString, lineStop:LineStrin
 #####Helper functions vector operations    
     
 
-def build_stem_parts(segments:List[Part], verbose=0):
+def build_stem_parts(segments:List[Part]):
     #######Converts the List of [Part] containing Tuples[int] into List of [Stem] consisiting of shapely geometries
     t = Timer()
     t.start()
@@ -303,10 +287,7 @@ def build_stem_parts(segments:List[Part], verbose=0):
             stems.append(stem)
    
     print(len(stems), "stems segments build")
-    if verbose>0:
-        for s in stems:
-            print(s.path)
-            print("")
+
     t.stop()
     print("#######################################################")   
     print("")     
@@ -348,13 +329,18 @@ def remove_duplicates(stems:List[Stem], stems0=None) -> List[Stem]:
             stems.remove(stems[0])
     return stems_, count
 
-def restore_geoinformation(stems: List[Stem], bounds, px_size, padding:int):
+def restore_geoinformation(stems: List[Stem], config, profile):
     #remove padding and restore geoinformation of the stems
     t = Timer()
     t.start()
+    
     print("#######################################################")   
     print("Restoring geoinformation")      
-        
+   
+    px_size=profile['transform'][0]
+    bounds=get_bounds_from_profile(profile)
+    padding=int(config.max_tree_height/px_size)+1    
+    
     for j in range(len(stems)):    
         stems[j].start=(bounds.left+(stems[j].start[1]-padding)*px_size, bounds.top-(stems[j].start[0]-padding)*px_size)
         stems[j].stop=(bounds.left+(stems[j].stop[1]-padding)*px_size, bounds.top-(stems[j].stop[0]-padding)*px_size)

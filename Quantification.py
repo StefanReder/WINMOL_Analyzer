@@ -22,6 +22,7 @@ from geopandas.tools import sjoin
 
 from WINMOL_Analyzer import Stem
 from WINMOL_Analyzer import Timer
+from IO import get_bounds_from_profile
 
 #System epsilon
 epsilon = np.finfo(float).eps
@@ -34,10 +35,14 @@ epsilon = np.finfo(float).eps
 
 #####Parallel quantification of stem parameters
 
-def quantify_stems(stems:List[Stem],px, px_size, bounds,path):
+def quantify_stems(stems:List[Stem],px, profile,path):
     #Quantification of the stem parameters
     t = Timer()
     t.start()
+    
+    px_size=profile['transform'][0]
+    bounds=get_bounds_from_profile(profile)
+    
     stems_=[]
     stems__=[]
 
@@ -88,11 +93,6 @@ def get_diameters(stems:List[Stem], px, bounds, px_size,path):
     pool = mp.Pool(mp.cpu_count()-1)
     r=[]
     for stem in stems:
-     #   stem_df = gpd.GeoDataFrame.from_dict({'id': [1], 'geometry': stem.path,})
-     #  stem_df = gpd.GeoDataFrame.from_dict({'id': [1], 'geometry': stem.path,})
-    #    contours_ = sjoin(contours, stem_df, how='left')
-     #   contours_ = sjoin(contours, stem_df, how='left')
-    #    contours=contours_.iloc[np.where(contours_.id==1)]
         r.append(pool.apply_async(calc_v_d, args=(stem, contours),callback=return_callback, error_callback=error_callback)) 
       
     for r_ in r:
@@ -163,18 +163,12 @@ def calc_v_d(stem, contours):
     vector=LineString([p1,p2]) 
     stem.d.append(calc_d(stem.path.coords[-1],vector, contours))
     stem.vector.append(vector)
-    
-  
-    
-    
+      
     return stem
     
 def calc_d(node,line,contours):
     #Calculate the diameter for a specific node
- #   p1=Point(node[0]-v[0]*1.0,node[1]-v[1]*1.0)
-  #  p2=Point(node[0]+v[0]*1.0,node[1]+v[1]*1.0)
     node=Point(node)
- #   line=LineString([p1,p2])
     d=0
     intersects=contours.geometry.intersection(line)
     intersects=intersects[~intersects.is_empty]  
@@ -257,7 +251,6 @@ def ang(lineA, lineB):
     #Calculates the angle between 2 vectors
     vA = create_vector(lineA)
     vB = create_vector(lineB)
-  #  dot_product = np.dot(vA/(np.linalg.norm(vA)+epsilon), vB/(np.linalg.norm(vB)+epsilon))
     dot_product = np.dot(vA, vB)
     dot_product=np.clip(dot_product, -1, 1)
     angle = np.arccos(dot_product)

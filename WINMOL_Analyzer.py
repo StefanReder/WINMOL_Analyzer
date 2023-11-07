@@ -2,28 +2,14 @@
 
 ##################################################################################
 '''Imports'''
-#import rasterio
+
 import numpy as np
-#from PIL import Image
 from typing import List, Tuple
-#import scipy.ndimage.measurements
-#from skimage import morphology#, segmentation
-#import math
 from shapely.geometry import Point, LineString, Polygon
-#from shapely.ops import linemerge
 from dataclasses import dataclass
-#import rasterio.features
-#import json
-#import geopandas as gpd    
 import time
-#import multiprocessing as mp
-#import matplotlib.pyplot as plt
-#from geopandas.tools import sjoin
 
 
-
-#System epsilon
-epsilon = np.finfo(float).eps
 
 ##################################################################################
 '''Clases'''
@@ -88,4 +74,6 @@ import Prediction as Pred
 import Skeletonization as Skel
 import Vectorization as Vec
 import Quantification as Quant
+
+
 

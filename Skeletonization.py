@@ -4,21 +4,15 @@
 '''Imports'''
 
 import numpy as np
-#from PIL import Image
+
 from typing import List, Tuple
 import scipy.ndimage.measurements
 from skimage import morphology#, segmentation
 import math
-#from shapely.geometry import Point, LineString, Polygon
-#from shapely.ops import linemerge
 from dataclasses import dataclass
-#import rasterio#.features
-#import json
-#import geopandas as gpd    
 import time
 import multiprocessing as mp
 import matplotlib.pyplot as plt
-#from geopandas.tools import sjoin
 
 from WINMOL_Analyzer import Part
 from WINMOL_Analyzer import Timer
@@ -26,137 +20,78 @@ from WINMOL_Analyzer import Timer
 #System epsilon
 epsilon = np.finfo(float).eps
 
-
-
                
 ################################################################################## 
 '''Skeleton operations'''
 
 #####Find Nodes and connected segments in the Skeleton
 
-def find_segments(image, min_length: int, px_size:float,padding:int, verbose=0) -> (List[Part],List[Tuple[int]]):
+def find_segments(pred, config, profile) -> (List[Part],List[Tuple[int]]):
     t = Timer()
     t.start()
+       
     print("#######################################################")   
     print("Skeletonize Image") 
-    # binarize image    
-    image[np.where( image < 0.5 )] = 0
-    image[np.where( image > 0.5 )] = 1
     
-    skel = morphology.skeletonize(image)
-
-    if verbose >0:    
-        plt.figure(figsize=(15,15))
-        plt.imshow(skel[padding:-padding,padding:-padding])
-        plt.title('Skeleton') 
-        plt.gray()   
-        plt.show()
-        save_image(skel[padding:-padding,padding:-padding],'Skeleton.png')
+    px_size=profile['transform'][0]
+    min_length=config.min_length/4
+    padding=int(config.max_tree_height/px_size)+1
+    pred=np.pad(pred,((padding,padding),(padding,padding)),'constant', constant_values=False)
+    
+    # binarize image        
+    pred[np.where( pred < 0.5 )] = 0
+    pred[np.where( pred > 0.5 )] = 1
+    
+    skel = morphology.skeletonize(pred)
         
     t.stop()
     print("#######################################################")  
     print("")  
 
-    endnodes, skel = get_nodes(skel,padding, verbose=verbose)
-    segments, skel = find_skeleton_segments(skel, endnodes, math.floor(min_length/px_size),padding, verbose=verbose)
-    segments = refine_skeleton_segments(segments,skel, math.floor(min_length/px_size), verbose=verbose)
-    
-    if verbose==3:
-            plt.figure(figsize=(15,15))
-            plt.imshow(skel[padding:-padding,padding:-padding])
-            plt.title('Skeleton after removing nodes') 
-            for r in segments:
-                plt.plot(r.start[1]-padding,r.start[0]-padding, marker=".",markersize=12, color='red')
-                plt.plot(r.stop[1]-padding,r.stop[0]-padding, marker=".",markersize=12, color='red')
-                for inodes in r.path[1:-1]:
-                    plt.plot(inodes[1]-padding,inodes[0]-padding, marker=".",markersize=8, color='blue')
-            plt.gray()
-            plt.savefig('Skeleton_nodes_and_internodes_2.png', dpi=300)
-            plt.show()  
-                      
+    endnodes, skel = get_nodes(skel,padding)
+    segments, skel = find_skeleton_segments(skel, endnodes, math.floor(min_length/px_size),padding)
+    segments = refine_skeleton_segments(segments,skel, math.floor(min_length/px_size))
+                         
     return segments
 
 ####get nodes
 
-def get_nodes(skel: np.ndarray, padding:int, verbose=0) -> List[Tuple[int, int]]:    
+def get_nodes(skel: np.ndarray, padding:int) -> List[Tuple[int, int]]:    
     t = Timer()
     t.start()
     print("#######################################################") 
     print("Splitting the skeleton into segments and detecting endnodes") 
-    dense_nodes = find_dense_skeleton_nodes(skel, )
-    dn_count=len(dense_nodes)
-    while len(dense_nodes)>0:
-        skel=remove_dense_skeleton_nodes(skel)
-        dense_nodes = find_dense_skeleton_nodes(skel)
-        dn_count=dn_count+len(dense_nodes)
+    
+    skel, dn_count=remove_dense_skeleton_nodes(skel)   
+
     print("Dense nodes removed: ", dn_count) 
+
     endnodes, branchpoints = find_skeleton_nodes(skel)
     bp_count=len(branchpoints)
     while len(branchpoints)>0: 
             skel=remove_branchpoints_from_skel(skel, endnodes, branchpoints)   
             endnodes, branchpoints = find_skeleton_nodes(skel)  
             bp_count=bp_count+len(branchpoints)
+    skel = morphology.skeletonize(skel)  
     print("Brachpoints removed: ", bp_count)        
     print("Detected endnodes: ", len(endnodes))
     t.stop()
     print("#######################################################") 
     print("")
-    if verbose>0:
-        plt.figure(figsize=(15,15))
-        plt.imshow(skel[padding:-padding,padding:-padding])
-        plt.title('Skeleton after removing nodes') 
-        plt.gray()
-        plt.show()
-        save_image(skel[padding:-padding,padding:-padding],'Skeleton_nodes_removed.png')
-        if verbose==2:
-            for n in endnodes:
-                print("Endnode: ", n)
-                
-        if verbose==3:
-            plt.figure(figsize=(15,15))
-            plt.imshow(skel[padding:-padding,padding:-padding])
-            plt.title('Skeleton after removing nodes') 
-            for n in endnodes:
-                plt.plot(n[1]-padding,n[0]-padding, marker=".",markersize=12, color='red')
-            plt.gray()
-            plt.savefig('Skeleton_nodes.png', dpi=300)
-            plt.show()
     return endnodes, skel
-
-def find_dense_skeleton_nodes(skel: np.ndarray) -> List[Tuple[int, int]]:
-    """Find "dense" (2x2 or larger) regions in the skeleton.
-    """
-    eroded = morphology.binary_erosion(np.pad(skel, 1), np.ones((2, 2)))[1:-1, 1:-1]
-
-    # Find the centers of mass of connected components
-    labeled_array, num_features = scipy.ndimage.measurements.label(eroded)
-    centers = scipy.ndimage.measurements.center_of_mass(eroded, labeled_array, [*range(1, num_features+1)])
-    return [(int(x), int(y)) for (x, y) in centers]
 
 def remove_dense_skeleton_nodes(skel: np.ndarray) -> List[Tuple[int, int]]:
     """Remove "dense" (2x2 or larger) regions in the skeleton.
     """
-    eroded = morphology.binary_erosion(np.pad(skel, 1), np.ones((2, 2)))[1:-1, 1:-1]
-    skel[np.where(eroded==True)]=False
+    dense_nodes = morphology.binary_erosion(np.pad(skel, 1), np.ones((2, 2)))[1:-1, 1:-1]
+    labeled_array, num_features = scipy.ndimage.measurements.label(dense_nodes)
+    centers = scipy.ndimage.measurements.center_of_mass(dense_nodes, labeled_array, [*range(1, num_features+1)])
+    count=len(centers)
 
-    return skel
+    skel[np.where(dense_nodes==True)]=False
 
-def add_dense_nodes(nodes: List[Tuple[int, int]], dense_nodes: List[Tuple[int, int]], min_distance = 5) -> List[Tuple[int, int]]:
-    """Add in new nodes which are distinct from the old ones. ---legacy---
-    """
-    keep = []
-    min_d2 = min_distance ** 2
-    for node in dense_nodes:
-        x, y = node
-        is_ok = True
-        for nx, ny in nodes:
-            d2 = (x - nx) **2 + (y - ny) ** 2
-            if d2 < min_d2:
-                is_ok = False
-                break
-        if is_ok:
-            keep.append(node)
-    return [*nodes, *keep]
+    return skel, count
+
 
 def find_skeleton_nodes(skel: np.ndarray) -> List[Tuple[int]]:
     """Find nodes in a skeletonized bitmap.
@@ -218,13 +153,12 @@ def remove_branchpoints_from_skel(skel,endnodes,branchpoints):
 
 #######Parallel version of find_segments
 
-def find_skeleton_segments(skel: np.ndarray, endnodes:List[Tuple[int]], min_length:int,padding:int,verbose=0) -> (List[Part],np.ndarray):
+def find_skeleton_segments(skel: np.ndarray, endnodes:List[Tuple[int]], min_length:int,padding:int) -> (List[Part],np.ndarray):
     """Find stem parts between nodes using the connectivity in the skeleton.
     Returns a list of parts (pairs of nodes) with a minimum distance and a cleaned skeleton.        
     """
     t = Timer()
     t.start()
-
     out_skel=np.full(skel.shape,False)
     skeleton_parts=[]  
 
@@ -234,7 +168,8 @@ def find_skeleton_segments(skel: np.ndarray, endnodes:List[Tuple[int]], min_leng
         if result is not None:  
             skel_part, sub_skel, low_bounds, up_bounds  = result               
             skeleton_parts.append(skel_part) 
-            out_skel[low_bounds[0]:up_bounds[0]+1,low_bounds[1]:up_bounds[1]+1] = sub_skel|out_skel[low_bounds[0]:up_bounds[0]+1,low_bounds[1]:up_bounds[1]+1]
+            out_skel[low_bounds[0]:up_bounds[0]+1,low_bounds[1]:up_bounds[1]+1]=sub_skel|out_skel[low_bounds[0]:up_bounds[0]+1,
+                                                                                                  low_bounds[1]:up_bounds[1]+1]
                    
     def error_callback(error):
         print(error, flush=True)
@@ -248,10 +183,11 @@ def find_skeleton_segments(skel: np.ndarray, endnodes:List[Tuple[int]], min_leng
     pool = mp.Pool(mp.cpu_count()-1)
     r=[]    
     for endnode in endnodes:
-        low_bounds=(endnode[0]-padding,endnode[1]-padding)
-        up_bounds=(endnode[0]+padding,endnode[1]+padding)      
+        low_bounds=(endnode[0]-padding, endnode[1]-padding)
+        up_bounds=(endnode[0]+padding, endnode[1]+padding)      
         sub_skel=skel[low_bounds[0]:up_bounds[0]+1,low_bounds[1]:up_bounds[1]+1]
-        r.append(pool.apply_async(get_segment, args=(endnode,endnodes, sub_skel, low_bounds, up_bounds,min_length), callback=return_callback, error_callback=error_callback)) 
+        r.append(pool.apply_async(get_segment, args=(endnode,endnodes, sub_skel, low_bounds, up_bounds,min_length),
+                                  callback=return_callback, error_callback=error_callback)) 
     for r_ in r:
          r_.wait()   
     pool.close()                   
@@ -260,9 +196,6 @@ def find_skeleton_segments(skel: np.ndarray, endnodes:List[Tuple[int]], min_leng
     t.stop()
     print("#######################################################")   
     print("")  
-    if verbose>0:
-        for s in skeleton_parts:
-            print(s)
                 
     return skeleton_parts, out_skel
     
@@ -335,7 +268,7 @@ def get_segment(endnode,endnodes,skel, low_bounds, up_bounds, min_length):
 
 #######Parallel version of refine_skeleton_segments
 
-def refine_skeleton_segments(parts:List[Part], skel: np.ndarray, distance:int, verbose=0)  -> (List[Part],np.ndarray):
+def refine_skeleton_segments(parts:List[Part], skel: np.ndarray, distance:int)  -> (List[Part],np.ndarray):
     """Find stem parts between nodes using the connectivity in the skeleton.
     Returns a list of parts (pairs of nodes) with a minimum distance and a cleaned skeleton.        
     """
@@ -372,47 +305,29 @@ def refine_skeleton_segments(parts:List[Part], skel: np.ndarray, distance:int, v
         low_bounds=(part.l_bound[0]-5,part.l_bound[1]-5)
         up_bounds=(part.u_bound[0]+5,part.u_bound[1]+5)
         sub_skel=skel[low_bounds[0]:up_bounds[0]+1,low_bounds[1]:up_bounds[1]+1]
-        
-        if verbose>0:
-            print(part)
-            print("low: ", low_bounds," up: ", up_bounds)
-            print(sub_skel.shape)
-            plt.imshow(sub_skel)
-            plt.gray()
-            plt.show()
-            print("")
-
-           
-        r.append(pool.apply_async(refine_skeleton_segment, args=(part, low_bounds,up_bounds, sub_skel, distance), callback=return_callback, error_callback=error_callback)) 
+                   
+        r.append(pool.apply_async(refine_skeleton_segment, args=(part, low_bounds,up_bounds, sub_skel, distance),
+                                  callback=return_callback, error_callback=error_callback)) 
     
     for r_ in r:
          r_.wait()     
     pool.close()
-    
-
-   
+       
     print("Number of split segments:",split)   
     print("Number of removed segments:",out)
-    print("Number of refined segments:",len(refined_parts))
-    if verbose >0:    
-        for p in refined_parts:
-            print(p)
-            
+    print("Number of refined segments:",len(refined_parts))           
 
     t.stop()
     print("#######################################################") 
     print("")    
     return refined_parts    
 
-def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tuple[int, int],  skel: np.ndarray, distance:int) -> List[Part]:
-      #  print("",flush=True)
-      #  print("bounderies low:", low_bounds, " up:", up_bounds, flush=True )
-       # print("skel shape: ", skel.shape,flush=True)
-      #  print(part,flush=True)
+def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tuple[int, int],
+                            skel: np.ndarray, distance:int) -> List[Part]:
+
         part.start=(part.start[0]-low_bounds[0],part.start[1]-low_bounds[1])
         part.stop=(part.stop[0]-low_bounds[0],part.stop[1]-low_bounds[1])
         part.path=[part.start,part.stop]
-       # print(part,flush=True)
         refined_parts_=[]
         parts=[]
         parts.append(part)
@@ -444,8 +359,6 @@ def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tupl
                             print(w_2,flush=True)
                             print("!!!",flush=True)
                             
-                          #  new_part=Part(w_,parts[0].stop,[w_,parts[0].stop])
-                           # parts.append(new_part)
                     #Step foreward        
                     w=ww[0]
                     p_recent=[n,w]
@@ -455,8 +368,6 @@ def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tupl
                     
                     if w==z:
                         if angle >10:
-                  #          print("Stem split at the end", flush=True)
-                   #         print("org", parts[0], flush=True)
                             new_part=Part(n,parts[0].stop,[n,parts[0].stop],low_bounds,up_bounds)
                             parts.append(new_part)
                             parts[0].stop=n
@@ -465,7 +376,6 @@ def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tupl
                             temp=np.full(skel.shape, False)
                             split_=split_+1
                         else:
-                    #        print("endpoint reached w==z", flush=True)
                             parts[0].path.extend([w]) 
                            # x_,y_=w
                             temp=np.full(skel.shape, False)                          
@@ -473,11 +383,6 @@ def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tupl
                         if math.dist(n, w)>distance:
                             if n==parts[0].start:
                                 if angle >10:
-                     #               print("Stem split at the start", flush=True)
-                      #              print("a", flush=True)
-                       #             print("angle: ",angle, flush=True)
-                        #            print(p_last)
-                         #           print(p_recent)
                                     new_part=Part(w,parts[0].stop,[w,parts[0].stop],low_bounds,up_bounds)
                                     parts.append(new_part)
                                     parts[0].stop=w
@@ -485,23 +390,14 @@ def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tupl
                                     split_=split_+1
                                     z=w
                                 else:                                    #Add node for diameter measurement
-                        #            print("node added",flush=True)
                                     parts[0].path.extend([w])
                                     p_last=p_recent
                                     n=w
                                     temp=np.full(skel.shape, False)
-                               #     print("c", flush=True)
-                                #    print("Stem refined",Part(part.start,part.stop, part.path), flush=True)
-                                    
-                                    
+                                                                       
                             else:            
                                 if angle >30:
-                                    #Split on last node
-                                 #   print("Stem split", flush=True)
-                                #    print("angle: ",angle, flush=True)
-                                #    print("org", parts[0], flush=True)
                                     new_part=Part(n,parts[0].stop,[n,parts[0].stop],low_bounds,up_bounds)
-                                #    print("new:", new_part, flush=True)
                                     parts.append(new_part)
                                     parts[0].stop=n
                                     #restore points since last node
@@ -511,13 +407,10 @@ def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tupl
                                     
                                 else:   
                                     #Add node for diameter measurement
-                               #     print("node added",flush=True)
                                     parts[0].path.extend([w])
                                     p_last=p_recent
                                     n=w
                                     temp=np.full(skel.shape, False)
-                               #     print("c", flush=True)
-                               #     print("Stem refined",Part(part.start,part.stop, part.path), flush=True)
 
                 else:
                     print("no neighbours found", flush=True)  
@@ -549,8 +442,7 @@ def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tupl
                                          
         if len(refined_parts_) ==0:
             return None, split_, out_
-
-       # return refined_parts,low_bounds, up_bounds,  skel, split, out    
+ 
         return refined_parts_, split_, out_ 
 
 #######Helper functions for skeleton operations   
@@ -589,7 +481,6 @@ def ang(lineA, lineB):
     #Calculates the angle between 2 vectors
     vA = create_vector(lineA)
     vB = create_vector(lineB)
-  #  dot_product = np.dot(vA/(np.linalg.norm(vA)+epsilon), vB/(np.linalg.norm(vB)+epsilon))
     dot_product = np.dot(vA, vB)
     dot_product=np.clip(dot_product, -1, 1)
     angle = np.arccos(dot_product)

@@ -4,29 +4,10 @@
 '''Imports'''
 
 import numpy as np
-#from PIL import Image
-#from typing import List, Tuple
-#import scipy.ndimage.measurements
-#from skimage import morphology#, segmentation
-#import math
-#from shapely.geometry import Point, LineString, Polygon
-#from shapely.ops import linemerge
-#from dataclasses import dataclass
 import rasterio
 from rasterio.enums import Resampling
-#import rasterio.features
 import json
 import os
-#import sys
-#import geopandas as gpd    
-#import time
-#import multiprocessing as mp
-#import matplotlib.pyplot as plt
-#from geopandas.tools import sjoin
-#from rasterio.features import dataset_features
-
-#System epsilon
-#epsilon = np.finfo(float).eps
       
 
 ##################################################################################
@@ -63,7 +44,7 @@ def load_orthomosaic_with_resampling(path, config):
         profile['transform']=transform  
     return img, profile 
 
-def load_stem_map(path, padding):
+def load_stem_map(path):
     if path.endswith('.tif')or path.endswith('.tiff'):
         print("#######################################################")
         print("#######################################################")
@@ -77,13 +58,9 @@ def load_stem_map(path, padding):
        #     px_size=(pred.bounds.right-pred.bounds.left)/pred.width
             px_size=abs(src.profile['transform'][0])
             bounds=src.bounds
-            pred=np.pad(pred,((padding,padding),(padding,padding)),'constant', constant_values=False)
+   #         pred=np.pad(pred,((padding,padding),(padding,padding)),'constant', constant_values=False)
         return pred, crs, bounds, px_size
     
-def add_padding_to_stem_map(pred, padding):
-    pred=np.pad(pred,((padding,padding),(padding,padding)),'constant', constant_values=False)
-    return pred
-
 def export_stem_map(pred, profile, pred_dir, pred_name):
     profile.update(dtype=rasterio.float32, count=1) 
     height, width = pred.shape
