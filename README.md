@@ -3,11 +3,12 @@
 Installation in conda env:
 
 conda create --name WINMOL_Analyzer python==3.9
+
 conda activate WINMOL_Analyzer
 
 git clone https://github.com/StefanReder/WINMOL_Analyzer
 
-pip3 install tensorflow[and-cuda]
+python3 -m pip install tensorflow[and-cuda]
 
 Verify that the GPU is working
 
