@@ -6,4 +6,3 @@ scikit_image>=0.22.0
 scipy>=1.11.3
 Shapely>=2.0.2
 ipykernel
-tensorflow-gpu==2.10.1
