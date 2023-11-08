@@ -52,14 +52,15 @@ def load_stem_map(path):
         print(path)
         print("")
         with rasterio.open(path) as src:
-            crs=src.crs
+           # crs=src.crs
             pred=src.read()
             pred=pred[0,:,:]
+            profile=src.profile
        #     px_size=(pred.bounds.right-pred.bounds.left)/pred.width
-            px_size=abs(src.profile['transform'][0])
-            bounds=src.bounds
+       #     px_size=abs(src.profile['transform'][0])
+      #      bounds=src.bounds
    #         pred=np.pad(pred,((padding,padding),(padding,padding)),'constant', constant_values=False)
-        return pred, crs, bounds, px_size
+        return pred, profile
     
 def export_stem_map(pred, profile, pred_dir, pred_name):
     profile.update(dtype=rasterio.float32, count=1) 

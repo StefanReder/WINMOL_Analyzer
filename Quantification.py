@@ -35,20 +35,17 @@ epsilon = np.finfo(float).eps
 
 #####Parallel quantification of stem parameters
 
-def quantify_stems(stems:List[Stem],px, profile,path):
+def quantify_stems(stems:List[Stem],pred, profile):
     #Quantification of the stem parameters
     t = Timer()
     t.start()
-    
-    px_size=profile['transform'][0]
-    bounds=get_bounds_from_profile(profile)
-    
+       
     stems_=[]
     stems__=[]
 
     print("#######################################################")   
     print("Quantifying stems")   
-    stems=get_diameters(stems, px, bounds, px_size,path)   
+    stems=get_diameters(stems, pred, profile)   
     d_l=[s.d for s in stems]
     
     pool = mp.Pool(mp.cpu_count()-1)
@@ -67,40 +64,43 @@ def quantify_stems(stems:List[Stem],px, profile,path):
 
 #####Parallel version of get_diameters
 
-def get_diameters(stems:List[Stem], px, bounds, px_size,path):
+def get_diameters(stems:List[Stem], pred, profile):
     #Calculates the diameters for all stems in the list
+    
+    px_size=profile['transform'][0]
+    bounds=get_bounds_from_profile(profile)
+    transform=profile['transform']
     contours=[]
+    
     mask=None
-    with rasterio.Env():
-        with rasterio.open(path) as src:
-            image = src.read(1) # first band
-            image[np.where( image < 0.5 )] = 0
-            image[np.where( image > 0.5 )] = 1
-            results = ({'properties': {'raster_val': v}, 'geometry': s} for i, (s, v) in enumerate(rasterio.features.shapes(image, mask=mask, transform=src.transform)))
-            geoms = list(results)
-            contours  = gpd.GeoDataFrame.from_features(geoms)
-            contours = contours[contours['raster_val']==1]
+    pred[np.where( pred < 0.5 )] = 0
+    pred[np.where( pred >= 0.5 )] = 1
+    pred=pred.astype(np.int16)
+    pred_shapes_ = ({'properties': {'raster_val': v}, 'geometry': s} for i, (s, v) in enumerate(rasterio.features.shapes(pred, mask=mask, transform=transform))) 
+    pred_shapes = list(pred_shapes_)
+    pred_shapes  = gpd.GeoDataFrame.from_features(pred_shapes)
+    pred_shapes = pred_shapes[pred_shapes['raster_val']==1]
 
     diam_count=0
-    stems_=[]    
-    def return_callback(result):
-        stems_.append(result)
+    measured_stems=[]    
+    def return_callback(measured_stem):
+        measured_stems.append(measured_stem)
         nonlocal diam_count
-        diam_count=diam_count+len(result.d)
+        diam_count=diam_count+len(measured_stem.d)
     def error_callback(error):
         print(error, flush=True)
     
     pool = mp.Pool(mp.cpu_count()-1)
     r=[]
     for stem in stems:
-        r.append(pool.apply_async(calc_v_d, args=(stem, contours),callback=return_callback, error_callback=error_callback)) 
+        r.append(pool.apply_async(calc_v_d, args=(stem, pred_shapes),callback=return_callback, error_callback=error_callback)) 
       
     for r_ in r:
         r_.wait()
     pool.close()
     
     print(diam_count," measurements of diameters where conducted")    
-    return stems_     
+    return measured_stems    
 
 def quantify_stem(stem):
     #Calculates the volume and length of a stem
