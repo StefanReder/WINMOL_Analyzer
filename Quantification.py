@@ -4,21 +4,13 @@
 '''Imports'''
 
 import numpy as np
-from PIL import Image
 from typing import List, Tuple
-import scipy.ndimage.measurements
-from skimage import morphology#, segmentation
 import math
-from shapely.geometry import Point, LineString, Polygon
-from shapely.ops import linemerge
-from dataclasses import dataclass
+from shapely.geometry import Point, LineString
 import rasterio.features
-import json
 import geopandas as gpd    
-import time
 import multiprocessing as mp
-import matplotlib.pyplot as plt
-from geopandas.tools import sjoin
+
 
 from WINMOL_Analyzer import Stem
 from WINMOL_Analyzer import Timer
@@ -183,51 +175,12 @@ def calc_d(node,line,contours):
                 d=i.length   
     return d
 
-
-def calc_d__org(stem, contours):       
-    #calulate radial vector to mesure the diameter
-    vector=create_vector((stem.path.coords[0],stem.path.coords[1]))
-    vector=[-vector[1],vector[0]]
-    stem.d.append(calc_d(stem.path.coords[0],vector, contours))
-    stem.vector.append(vector)
-        
-    for i in range(1,len(stem.path.coords)-1):
-        vector=create_vector((stem.path.coords[i-1],stem.path.coords[i+1]))
-        vector=[-vector[1],vector[0]]
-        stem.d.append(calc_d(stem.path.coords[i],vector, contours))
-        stem.vector.append(vector)
-            
-    vector=create_vector((stem.path.coords[-2],stem.path.coords[-1]))
-    vector=[-vector[1],vector[0]]
-    stem.d.append(calc_d(stem.path.coords[-1],vector, contours))
-    stem.vector.append(vector)
-    return stem
-    
-def calc_d_org(node,v,contours):
-    #Calculate the diameter for a specific node
-    p1=Point(node[0]-v[0]*1.0,node[1]-v[1]*1.0)
-    p2=Point(node[0]+v[0]*1.0,node[1]+v[1]*1.0)
-    node=Point(node)
-    line=LineString([p1,p2])
-    d=0
-    intersects=contours.geometry.intersection(line)
-    intersects=intersects[~intersects.is_empty]  
-
-    for i in intersects:     
-        if node.distance(i)< 0.01:
-            if i.geom_type == 'MultiLineString':     
-                for i_ in i.geoms:
-                    if node.distance(i_)< 0.01:
-                        d=i_.length
-            else:
-                d=i.length   
-    return d
-
 def calc_l_v(p1,p2,d1,d2):
     #Calculate the length and volume of a segment described by 2 points and the respective diameters
     l=math.dist(p1,p2)
     v=1/3*math.pi*((d1/2)**2+(d1/2)*(d2/2)+(d2/2)**2)*l
     return l,v    
+
 
 #######Helper functions for skeleton operations   
 
@@ -238,25 +191,3 @@ def create_vector(line):
     else:
         v= [(line[1][0]-line[0][0]), (line[1][1]-line[0][1])]   
     return v/(np.linalg.norm(v)+epsilon)
-
-def create_vector_org(line):
-    #Creates a vecor from LineStrings or Tulple[Tuple[int]] 
-    if type(line)=='LineString':
-        return [line.coords[-1][0]-line.coords[0][0], line.coords[-1][1]-line.coords[0][1]]
-    else:
-        return [(line[1][0]-line[0][0]), (line[1][1]-line[0][1])]   
-    return v
-                     
-def ang(lineA, lineB):
-    #Calculates the angle between 2 vectors
-    vA = create_vector(lineA)
-    vB = create_vector(lineB)
-    dot_product = np.dot(vA, vB)
-    dot_product=np.clip(dot_product, -1, 1)
-    angle = np.arccos(dot_product)
-    ang_deg = np.degrees(angle)%380
-    if ang_deg > 180:
-        ang_deg = ang_deg-360
-    return ang_deg
-
-

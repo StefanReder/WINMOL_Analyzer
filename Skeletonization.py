@@ -225,10 +225,9 @@ def get_segment(endnode,endnodes,skel, low_bounds, up_bounds, min_length):
         if frontier:     
             length=length+1
             if len(frontier)>1:
-                print("dow where are all the neighbours from")
-                print(endnode)
-                print(x,y)
-                print(frontier)
+                print("Warning: Inconsistent skeleton. More than 1 neighbour found!!!",flush=True)
+                print(x,y, flush=True)
+                print("")
             x, y = frontier[0]
             if x<l_bound_x:
                 l_bound_x=x
@@ -353,19 +352,17 @@ def refine_skeleton_segment(part:Part,low_bounds:Tuple[int, int], up_bounds:Tupl
                 ww = get_neighbors(x, y, skel)
                 if ww:    
                     if len(ww)>1:
-                        print("ww>1, should never happen", flush=True)
+                        print("Warning! Inconsistency in the skeleton detected", flush=True)
                         print("w_: ",w_, flush=True)
                         for w_2 in ww:                         
                             print(w_2,flush=True)
-                            print("!!!",flush=True)
+                            print(" ",flush=True)
                             
                     #Step foreward        
                     w=ww[0]
                     p_recent=[n,w]
                     angle=ang(p_recent,p_last)
-
-                   
-                    
+                
                     if w==z:
                         if angle >10:
                             new_part=Part(n,parts[0].stop,[n,parts[0].stop],low_bounds,up_bounds)
@@ -468,14 +465,6 @@ def create_vector(line):
     else:
         v= [(line[1][0]-line[0][0]), (line[1][1]-line[0][1])]   
     return v/(np.linalg.norm(v)+epsilon)
-
-def create_vector_org(line):
-    #Creates a vecor from LineStrings or Tulple[Tuple[int]] 
-    if type(line)=='LineString':
-        return [line.coords[-1][0]-line.coords[0][0], line.coords[-1][1]-line.coords[0][1]]
-    else:
-        return [(line[1][0]-line[0][0]), (line[1][1]-line[0][1])]   
-    return v
                      
 def ang(lineA, lineB):
     #Calculates the angle between 2 vectors
@@ -484,7 +473,7 @@ def ang(lineA, lineB):
     dot_product = np.dot(vA, vB)
     dot_product=np.clip(dot_product, -1, 1)
     angle = np.arccos(dot_product)
-    ang_deg = np.degrees(angle)%380
+    ang_deg = np.degrees(angle)%360
     if ang_deg > 180:
         ang_deg = ang_deg-360
     return ang_deg

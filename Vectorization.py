@@ -43,8 +43,9 @@ def connect_stems(stems:List[Stem], config) -> List[Stem]:
     t = Timer()
     t.start()
     pool = mp.Pool(mp.cpu_count()-1)
-    print("#######################################################")       
-    print("Gethering stem segments ")
+    print("#######################################################")     
+    print("Reconstruction of windthrown stems")
+    print("Connecting respective stem segments")
     cycle_nbr=1
     c_count=0
     out_count=0
@@ -362,13 +363,6 @@ def create_vector(line):
         v= [(line[1][0]-line[0][0]), (line[1][1]-line[0][1])]   
     return v/(np.linalg.norm(v)+epsilon)
 
-def create_vector_org(line):
-    #Creates a vecor from LineStrings or Tulple[Tuple[int]] 
-    if type(line)=='LineString':
-        return [line.coords[-1][0]-line.coords[0][0], line.coords[-1][1]-line.coords[0][1]]
-    else:
-        return [(line[1][0]-line[0][0]), (line[1][1]-line[0][1])]   
-    return v
                      
 def ang(lineA, lineB):
     #Calculates the angle between 2 vectors
@@ -378,7 +372,7 @@ def ang(lineA, lineB):
     dot_product = np.dot(vA, vB)
     dot_product=np.clip(dot_product, -1, 1)
     angle = np.arccos(dot_product)
-    ang_deg = np.degrees(angle)%380
+    ang_deg = np.degrees(angle)%360
     if ang_deg > 180:
         ang_deg = ang_deg-360
     return ang_deg
