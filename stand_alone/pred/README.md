@@ -1,1 +1,0 @@
-Intermediate results of the semantic segmentation. The resulting stem map is stored as GeoTIFF.

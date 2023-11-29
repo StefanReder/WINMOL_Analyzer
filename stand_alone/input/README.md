@@ -1,1 +1,0 @@
-Input folder to store UAV orthomoasics 

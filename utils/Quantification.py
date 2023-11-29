@@ -11,8 +11,8 @@ import rasterio.features
 import geopandas as gpd
 import multiprocessing as mp
 
-from stand_alone.WINMOL_Analyzer import Stem
-from stand_alone.WINMOL_Analyzer import Timer
+from standalone.WINMOL_Analyzer import Stem
+from standalone.WINMOL_Analyzer import Timer
 from IO import get_bounds_from_profile
 
 #System epsilon

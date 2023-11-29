@@ -10,9 +10,9 @@ from shapely.geometry import Point, LineString
 from shapely.ops import linemerge
 import multiprocessing as mp
 
-from stand_alone.WINMOL_Analyzer import Stem
-from stand_alone.WINMOL_Analyzer import Part
-from stand_alone.WINMOL_Analyzer import Timer
+from standalone.WINMOL_Analyzer import Stem
+from standalone.WINMOL_Analyzer import Part
+from standalone.WINMOL_Analyzer import Timer
 from IO import get_bounds_from_profile
 
 #System epsilon

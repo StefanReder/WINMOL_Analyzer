@@ -8,13 +8,13 @@ import sys
 
 from tensorflow.python import keras
 
-import IO as IO
-import Prediction as Pred
-import Quantification as Quant
-import Skeletonization as Skel
-import Vectorization as Vec
-from Config import Config
-from Timer import Timer
+from classes.Config import Config
+from classes.Timer import Timer
+from utils import IO
+from utils import Prediction as Pred
+from utils import Quantification as Quant
+from utils import Skeletonization as Skel
+from utils import Vectorization as Vec
 
 if __name__ == '__main__':
     tt = Timer()

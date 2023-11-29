@@ -11,8 +11,8 @@ from skimage import morphology#, segmentation
 import math
 import multiprocessing as mp
 
-from stand_alone.WINMOL_Analyzer import Part
-from stand_alone.WINMOL_Analyzer import Timer
+from standalone.WINMOL_Analyzer import Part
+from standalone.WINMOL_Analyzer import Timer
 
 #System epsilon
 epsilon = np.finfo(float).eps
