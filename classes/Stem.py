@@ -11,11 +11,11 @@ class Stem:
     stop: Point
     path: LineString
     vector: List[Tuple[float, float]]
-    d: List[float]
-    l: List[float]
-    v: List[float]
-    Length: float
-    Volume: float
+    segment_diameter_list: List[float]
+    segment_length_list: List[float]
+    segment_volume_list: List[float]
+    length: float
+    volume: float
 
     def __eq__(self, other):
         return (self.start == other.start and self.stop == other.stop

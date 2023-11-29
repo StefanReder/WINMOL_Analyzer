@@ -105,11 +105,11 @@ def stems_to_geojson_(stems):
                     'stop': stems[i].stop.coords[:],
                     'path': stems[i].path.coords[:],
                     #                'Vector':stems[i].vector,
-                    'd': stems[i].d,
-                    'l': stems[i].l,
-                    'v': stems[i].v,
-                    'Length': stems[i].Length,
-                    'Volume': stems[i].Volume
+                    'd': stems[i].segment_diameter_list,
+                    'l': stems[i].segment_length_list,
+                    'v': stems[i].segment_volume_list,
+                    'Length': stems[i].length,
+                    'Volume': stems[i].volume
                 },
             }
             for i in range(len(stems))
@@ -131,7 +131,7 @@ def nodes_to_geojson_(stems):
                     'stem_id': i,
                     'node': j,
                     'Vector': stems[i].vector[j].coords[:],
-                    'd': stems[i].d[j],
+                    'd': stems[i].segment_diameter_list[j],
                 },
             } for i in range(len(stems))
             for j in range(len(stems[i].path.coords))
@@ -153,7 +153,7 @@ def vectors_to_geojson_(stems):
                     'stem_id': i,
                     'node': j,
                     'Vector': stems[i].vector[j].coords[:],
-                    'd': stems[i].d[j],
+                    'd': stems[i].segment_diameter_list[j],
                 },
             } for i in range(len(stems))
             for j in range(len(stems[i].path.coords))

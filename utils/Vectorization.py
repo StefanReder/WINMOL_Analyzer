@@ -111,7 +111,7 @@ def connect_stems(stems:List[Stem], config) -> List[Stem]:
                 stems[0]=canidates[index_min]
                 stems.remove(slaves[index_min])
                 #the new length is calculated
-                stems[0].Length=stems[0].start.distance(stems[0].stop)
+                stems[0].length=stems[0].start.distance(stems[0].stop)
                 global_change=True
                 c_count=c_count+1
                 stems, dub_count_=remove_duplicates(stems,stems[0])
@@ -138,7 +138,7 @@ def connect_stems(stems:List[Stem], config) -> List[Stem]:
 
     connected_stems=[]
     for stem in stems:
-        if stem.Length > min_length:
+        if stem.length > min_length:
             connected_stems.append(stem)
         else:
             out_count=out_count+1
@@ -307,7 +307,7 @@ def rebuild_endnodes_from_stems(stems: List[Stem])->List[Point]:
 
 def remove_duplicates(stems:List[Stem], stems0=None) -> List[Stem]:
     #Removes duplicates from stem list
-    stems.sort(key=lambda x: x.Length, reverse=True)
+    stems.sort(key=lambda x: x.length, reverse=True)
     stems_=[]
     count=0
     if type(stems0) is Stem:
@@ -344,7 +344,7 @@ def restore_geoinformation(stems: List[Stem], config, profile):
         stems[j].stop=(bounds.left+(stems[j].stop[1]-padding)*px_size, bounds.top-(stems[j].stop[0]-padding)*px_size)
         for k in range(len(stems[j].path)):
             stems[j].path[k]=(bounds.left+(stems[j].path[k][1]-padding)*px_size, bounds.top-(stems[j].path[k][0]-padding)*px_size)
-        stems[j].Length=math.dist(stems[j].start,stems[j].stop)
+        stems[j].length=math.dist(stems[j].start, stems[j].stop)
     t.stop()
     print("#######################################################")
     print("")
