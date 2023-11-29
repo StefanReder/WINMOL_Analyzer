@@ -160,7 +160,7 @@ cython_debug/
 .idea/
 *.iml
 
-# Input, output and predicions
-output
-input
-pred
+## Input, output and predicions
+#output
+#input
+#pred
