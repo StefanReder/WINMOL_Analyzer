@@ -1,0 +1,48 @@
+# This file contains metadata for your plugin.
+
+# This file should be included when you package your plugin.# Mandatory items:
+
+[general]
+name=WINMOL Analyzer
+
+qgisMinimumVersion=3.0
+description=Plugin to detect stems from UAV
+version=0.1
+author=Hochschule für nachhaltige Entwicklung Eberswalde | mundialis GmbH & Co. KG | terrestris GmbH & Co. KG
+email=Stefan.Reder@hnee.de
+
+about=Provide a brief description of the plugin and its purpose.
+
+tracker=https://github.com/StefanReder/WINMOL_Analyzer/issues
+repository=https://github.com/StefanReder/WINMOL_Analyzer
+# End of mandatory metadata
+
+# Recommended items:
+
+hasProcessingProvider=no
+# Uncomment the following line and add your changelog:
+# changelog=
+
+# Tags are comma separated with spaces allowed
+tags=analysis, remote sensing, raster, python
+
+homepage=https://github.com/StefanReder/WINMOL_Analyzer
+category=Plugins
+icon=icon.png
+# experimental flag
+experimental=False
+
+# deprecated flag (applies to the whole plugin, not just a single version)
+deprecated=False
+
+# Since QGIS 3.8, a comma separated list of plugins to be installed
+# (or upgraded) can be specified.
+# Check the documentation for more information.
+# plugin_dependencies=
+
+Category of the plugin: Raster, Vector, Database or Web
+# category=
+
+# If the plugin can run on QGIS Server.
+server=False
+

@@ -4,17 +4,15 @@
 '''Imports'''
 
 import numpy as np
-from typing import List, Tuple
+from typing import List
 import math
 from shapely.geometry import Point, LineString
 from shapely.ops import linemerge
-import time
 import multiprocessing as mp
-import rasterio
 
-from WINMOL_Analyzer import Stem
-from WINMOL_Analyzer import Part
-from WINMOL_Analyzer import Timer
+from stand_alone.WINMOL_Analyzer import Stem
+from stand_alone.WINMOL_Analyzer import Part
+from stand_alone.WINMOL_Analyzer import Timer
 from IO import get_bounds_from_profile
 
 #System epsilon

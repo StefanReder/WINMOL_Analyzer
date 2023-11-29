@@ -9,13 +9,10 @@ from typing import List, Tuple
 import scipy.ndimage.measurements
 from skimage import morphology#, segmentation
 import math
-from dataclasses import dataclass
-import time
 import multiprocessing as mp
-import matplotlib.pyplot as plt
 
-from WINMOL_Analyzer import Part
-from WINMOL_Analyzer import Timer
+from stand_alone.WINMOL_Analyzer import Part
+from stand_alone.WINMOL_Analyzer import Timer
 
 #System epsilon
 epsilon = np.finfo(float).eps

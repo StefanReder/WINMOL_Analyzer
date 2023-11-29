@@ -4,10 +4,9 @@
 '''Imports'''
 import numpy as np
 import tensorflow as tf
-import rasterio
 from rasterio import Affine
 from skimage.transform import resize
-from WINMOL_Analyzer import Timer
+from stand_alone.WINMOL_Analyzer import Timer
 
 
 

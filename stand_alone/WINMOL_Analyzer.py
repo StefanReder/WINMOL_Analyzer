@@ -3,9 +3,8 @@
 ##################################################################################
 '''Imports'''
 
-import numpy as np
 from typing import List, Tuple
-from shapely.geometry import Point, LineString, Polygon
+from shapely.geometry import Point, LineString
 from dataclasses import dataclass
 import time
 
@@ -69,23 +68,17 @@ class Stem:
     def __hash__(self):
         return hash(('start', tuple(list(self.start.coords)), 'stop', tuple(list(self.stop.coords)), 'path', tuple(list(self.path.coords))))
 
-import IO as IO   
-import Prediction as Pred    
-import Skeletonization as Skel
-import Vectorization as Vec
-import Quantification as Quant
 
-
+from utils import Vectorization as Vec, Skeletonization as Skel, IO as IO, \
+    Prediction as Pred, Quantification as Quant
 
 if __name__ == '__main__':
     
     import os
     import sys
-    import rasterio
-    import tensorflow as tf
     from tensorflow import keras
 
-    from Config import Config
+    from utils.Config import Config
     
     tt = Timer()
     tt.start()
@@ -107,7 +100,7 @@ if __name__ == '__main__':
     file_name = os.path.splitext(os.path.basename(img_path))[0]
     pred_name = pred_dir+'pred_'+file_name+'.tiff'
 
-    img, profile =IO.load_orthomosaic(img_path, config)
+    img, profile = IO.load_orthomosaic(img_path, config)
 
     pred, profile=Pred.predict_with_resampling_per_tile(img, profile, model,config)   
     segments = Skel.find_segments(pred, config, profile)
@@ -118,6 +111,6 @@ if __name__ == '__main__':
     stems = Quant.quantify_stems(stems, pred, profile)
 
     IO.export_stem_map(pred, profile, pred_dir, file_name) 
-    IO.stems_to_geojson(stems, output_dir+file_name)
+    IO.stems_to_geojson(stems, output_dir + file_name)
 
-    tt.stop()    
+    tt.stop()

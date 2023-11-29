@@ -4,24 +4,15 @@
 '''Imports'''
 
 import numpy as np
-from PIL import Image
-from typing import List, Tuple
-import scipy.ndimage.measurements
-from skimage import morphology#, segmentation
+from typing import List
 import math
-from shapely.geometry import Point, LineString, Polygon
-from shapely.ops import linemerge
-from dataclasses import dataclass
+from shapely.geometry import Point, LineString
 import rasterio.features
-import json
-import geopandas as gpd    
-import time
+import geopandas as gpd
 import multiprocessing as mp
-import matplotlib.pyplot as plt
-from geopandas.tools import sjoin
 
-from WINMOL_Analyzer import Stem
-from WINMOL_Analyzer import Timer
+from stand_alone.WINMOL_Analyzer import Stem
+from stand_alone.WINMOL_Analyzer import Timer
 from IO import get_bounds_from_profile
 
 #System epsilon
