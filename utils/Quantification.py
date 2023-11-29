@@ -14,6 +14,7 @@ from shapely.geometry import LineString, Point
 
 from classes.Stem import Stem
 from classes.Timer import Timer
+from utils.Geometry import create_vector
 
 # System epsilon
 epsilon = np.finfo(float).eps
@@ -230,7 +231,7 @@ def calc_d_org(node, v, contours):
     p2 = Point(node[0] + v[0] * 1.0, node[1] + v[1] * 1.0)
     node = Point(node)
     line = LineString([p1, p2])
-    d = 0
+    distance = 0
     intersects = contours.geometry.intersection(line)
     intersects = intersects[~intersects.is_empty]
 
@@ -239,10 +240,10 @@ def calc_d_org(node, v, contours):
             if i.geom_type == 'MultiLineString':
                 for i_ in i.geoms:
                     if node.distance(i_) < 0.01:
-                        d = i_.length
+                        distance = i_.length
             else:
-                d = i.length
-    return d
+                distance = i.length
+    return distance
 
 
 # Calculate the length and volume of a segment described by 2 points and the
@@ -253,37 +254,3 @@ def calc_l_v(p1, p2, d1, d2):
         (d1 / 2) ** 2 + (d1 / 2) * (d2 / 2) + (d2 / 2) ** 2
     ) * length
     return length, v
-
-
-# --- Helper functions for skeleton operations ---
-
-# Creates a normalized vector from LineStrings or Tuple[Tuple[int]]
-def create_vector(line):
-    if isinstance(line, LineString):
-        v = [line.coords[-1][0] - line.coords[0][0],
-             line.coords[-1][1] - line.coords[0][1]]
-    else:
-        v = [(line[1][0] - line[0][0]), (line[1][1] - line[0][1])]
-    return v / (np.linalg.norm(v) + epsilon)
-
-
-# Creates a vector from LineStrings or Tuple[Tuple[int]]
-def create_vector_org(line):
-    if isinstance(line, LineString):
-        return [line.coords[-1][0] - line.coords[0][0],
-                line.coords[-1][1] - line.coords[0][1]]
-    else:
-        return [(line[1][0] - line[0][0]), (line[1][1] - line[0][1])]
-
-
-# Calculates the angle between 2 vectors
-def ang(line_a, line_b):
-    v_a = create_vector(line_a)
-    v_b = create_vector(line_b)
-    dot_product = np.dot(v_a, v_b)
-    dot_product = np.clip(dot_product, -1, 1)
-    angle = np.arccos(dot_product)
-    ang_deg = np.degrees(angle) % 380
-    if ang_deg > 180:
-        ang_deg = ang_deg - 360
-    return ang_deg

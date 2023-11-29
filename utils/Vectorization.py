@@ -3,17 +3,16 @@
 ##################################################################################
 '''Imports'''
 
-import numpy as np
-from typing import List
 import math
-from shapely.geometry import Point, LineString
-from shapely.ops import linemerge
 import multiprocessing as mp
+from typing import List
 
-from standalone.WINMOL_Analyzer import Stem
-from standalone.WINMOL_Analyzer import Part
-from standalone.WINMOL_Analyzer import Timer
+import numpy as np
 from IO import get_bounds_from_profile
+from shapely.geometry import LineString, Point
+from shapely.ops import linemerge
+
+from standalone.WINMOL_Analyzer import Part, Stem, Timer
 
 #System epsilon
 epsilon = np.finfo(float).eps
@@ -348,37 +347,4 @@ def restore_geoinformation(stems: List[Stem], config, profile):
     t.stop()
     print("#######################################################")
     print("")
-    return  stems
-
-#######Helper functions for skeleton operations
-
-def create_vector(line):
-    #Creates a normalized vecor from LineStrings or Tulple[Tuple[int]]
-    if type(line)=='LineString':
-        v= [line.coords[-1][0]-line.coords[0][0], line.coords[-1][1]-line.coords[0][1]]
-    else:
-        v= [(line[1][0]-line[0][0]), (line[1][1]-line[0][1])]
-    return v/(np.linalg.norm(v)+epsilon)
-
-def create_vector_org(line):
-    #Creates a vecor from LineStrings or Tulple[Tuple[int]]
-    if type(line)=='LineString':
-        return [line.coords[-1][0]-line.coords[0][0], line.coords[-1][1]-line.coords[0][1]]
-    else:
-        return [(line[1][0]-line[0][0]), (line[1][1]-line[0][1])]
-    return v
-
-def ang(lineA, lineB):
-    #Calculates the angle between 2 vectors
-    vA = create_vector(lineA)
-    vB = create_vector(lineB)
-  #  dot_product = np.dot(vA/(np.linalg.norm(vA)+epsilon), vB/(np.linalg.norm(vB)+epsilon))
-    dot_product = np.dot(vA, vB)
-    dot_product=np.clip(dot_product, -1, 1)
-    angle = np.arccos(dot_product)
-    ang_deg = np.degrees(angle)%380
-    if ang_deg > 180:
-        ang_deg = ang_deg-360
-    return ang_deg
-
-
+    return stems
