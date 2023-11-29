@@ -5,10 +5,10 @@
 class Config(object):
     # Configuration for the semantic segmentation
     tile_size = 15
-    IMG_width = 512
-    IMG_height = 512
-    IMG_bit = 8
-    n_Channels = 3
+    img_width = 512
+    img_height = 512
+    img_bit = 8
+    n_channels = 3
     num_classes = 1
     overlap_pred = 8
 
