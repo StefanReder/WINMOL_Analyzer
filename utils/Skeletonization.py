@@ -51,7 +51,7 @@ def find_segments(pred, config, profile) -> (List[Part], List[Tuple[int]]):
     print("#######################################################")
     print("")
 
-    end_nodes, skel = get_nodes(skel, padding)
+    end_nodes, skel = get_nodes(skel)
     segments, skel = find_skeleton_segments(skel, end_nodes,
                                             math.floor(min_length / px_size),
                                             padding)
