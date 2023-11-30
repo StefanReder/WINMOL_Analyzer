@@ -30,7 +30,7 @@ from qgis.PyQt import QtWidgets
 
 # This loads your .ui file so that PyQt can populate your plugin with the elements from Qt Designer
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
-    os.path.dirname(__file__), 'ui', 'main.ui'))
+    os.path.dirname(__file__), 'winmol_analyzer_dialog_base.ui'))
 
 
 class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
@@ -42,6 +42,32 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
     def set_connections(self):
         self.run_button.clicked.connect(self.run_process)
+        self.model_comboBox.currentIndexChanged.connect(self.handleModelComboBoxChange)
+
+    def handleModelComboBoxChange(self, index):
+        selected_text = self.model_comboBox.currentText()
+        if selected_text == "Custom":
+            self.tileside_label.setEnabled(True)
+            self.image_spinBox.setEnabled(True)
+            self.model_lineEdit.setEnabled(True)
+            self.model_toolButton.setEnabled(True)
+            self.segm_label.setEnabled(True)
+            self.tileside_doubleSpinBox.setEnabled(True)
+            self.tileside_unit_label.setEnabled(True)
+            self.image_label.setEnabled(True)
+            self.image_spinBox.setEnabled(True)
+            self.image_unit_label.setEnabled(True)
+        else:
+            self.tileside_label.setEnabled(False)
+            self.image_spinBox.setEnabled(False)
+            self.model_lineEdit.setEnabled(False)
+            self.model_toolButton.setEnabled(False)
+            self.segm_label.setEnabled(False)
+            self.tileside_doubleSpinBox.setEnabled(False)
+            self.tileside_unit_label.setEnabled(False)
+            self.image_label.setEnabled(False)
+            self.image_spinBox.setEnabled(False)
+            self.image_unit_label.setEnabled(False)
 
     def run_process(self):
         print("run process")
