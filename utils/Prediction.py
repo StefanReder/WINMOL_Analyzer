@@ -7,7 +7,7 @@ import tensorflow as tf
 from rasterio import Affine
 from skimage.transform import resize
 
-from standalone.WINMOL_Analyzer import Timer
+from classes.Timer import Timer
 
 ################################################################################
 """Prediction of the semantic stem map with U-Net"""

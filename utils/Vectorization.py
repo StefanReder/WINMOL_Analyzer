@@ -8,7 +8,7 @@ import multiprocessing as mp
 from typing import List
 
 import numpy as np
-from IO import get_bounds_from_profile
+from utils.IO import get_bounds_from_profile
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge
 
