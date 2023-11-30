@@ -6,7 +6,7 @@
 import os
 import sys
 
-from tensorflow.python import keras
+from tensorflow import keras
 
 from classes.Config import Config
 from classes.Timer import Timer
