@@ -119,8 +119,8 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             ]
         ])
 
-        stem1 = Stem(
-            id=1909,
+        stem_1 = Stem(
+            stem_id=1909,
             path=a,
             start=Point(
                 361154.7731872301,
@@ -164,22 +164,29 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             )]
         )
 
-        feature = self.ff.create_stem_feature(stem1)
-
         vector_layer_stems = QgsVectorLayer("LineString", "stems", "memory")
         vector_layer_nodes = QgsVectorLayer("Point", "nodes", "memory")
-
         data_provider_stems = vector_layer_stems.dataProvider()
-        data_provider_stems.addFeature(feature)
-
-        node_features = self.ff.create_subsidiary_features(stem1)
-
         data_provider_nodes = vector_layer_nodes.dataProvider()
-        data_provider_nodes.addFeatures(node_features)
 
-        # Commit changes
-        vector_layer_stems.commitChanges()
-        vector_layer_nodes.commitChanges()
+        # based on original script => TODO
+        # stems = Quant.quantify_stems(stems, pred, profile)
+        stems = [stem_1]
+
+        for stem in stems:
+            stem_feature = self.ff.create_stem_feature(stem)
+
+            # add feature to layer
+            data_provider_stems.addFeature(stem_feature)
+
+            node_features = self.ff.create_subsidiary_features(stem_feature)
+
+            # add nodes to layer
+            data_provider_nodes.addFeatures(node_features)
+
+            # Commit changes
+            vector_layer_stems.commitChanges()
+            vector_layer_nodes.commitChanges()
 
         # Show in project
         QgsProject.instance().addMapLayer(vector_layer_stems)
