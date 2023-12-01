@@ -24,24 +24,43 @@ Dialog
 """
 
 import os
+import sys
 
+# Set up current path.
+currentPath = os.path.dirname(__file__)
+sys.path.append(os.path.abspath(os.path.dirname(__file__) + 'classes'))
+sys.path.append(os.path.abspath(os.path.dirname(__file__) + 'utils'))
+sys.path.append(os.path.abspath(os.path.dirname(__file__) + 'qgisutil'))
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+
+from qgis.core import QgsProject, QgsVectorLayer
 from qgis.PyQt import QtWidgets, uic
+from shapely import LineString, Point
 
-# This loads your .ui file so that PyQt can populate your plugin with the elements from Qt Designer
+from classes.Stem import Stem
+from qgisutil.FeatureFactory import FeatureFactory
+
+# This loads your .ui file so that PyQt can populate your plugin with the
+# elements from Qt Designer
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'winmol_analyzer_dialog_base.ui'))
 
 
 class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
+    ff: FeatureFactory
+
     def __init__(self, parent=None):
         """Constructor."""
         super(WINMOLAnalyzerDialog, self).__init__(parent)
         self.setupUi(self)
         self.set_connections()
 
+        self.ff = FeatureFactory()
+
     def set_connections(self):
         self.run_button.clicked.connect(self.run_process)
-        self.model_comboBox.currentIndexChanged.connect(self.handleModelComboBoxChange)
+        self.model_comboBox.currentIndexChanged.connect(
+            self.handleModelComboBoxChange)
 
     def handleModelComboBoxChange(self, index):
         selected_text = self.model_comboBox.currentText()
@@ -69,4 +88,99 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.image_unit_label.setEnabled(False)
 
     def run_process(self):
-        print("run process")
+        a = LineString([
+            [
+                361156.58896794985,
+                6003996.762501755
+            ],
+            [
+                361156.20823973446,
+                6003997.026082827
+            ],
+            [
+                361155.7689379474,
+                6003997.318950685
+            ],
+            [
+                361154.3924590147,
+                6003998.314701403
+            ],
+            [
+                361153.98244401347,
+                6003998.6368560465
+            ],
+            [
+                361153.3967082974,
+                6003999.076157833
+            ],
+            [
+                361152.9866932962,
+                6003999.369025691
+            ]
+        ])
+
+        stem1 = Stem(
+            id=1909,
+            path=a,
+            start=Point(
+                361154.7731872301,
+                6003990.846571023
+            ),
+            stop=Point(
+                361157.4968583097,
+                6003990.905144595
+            ),
+            segment_volume_list=[
+                0.004305881006598045,
+                0.021641570747067584,
+                0.02569845966691071,
+                0.03233204097910344,
+                0.03710009610640275,
+                0.02764223892790801
+            ],
+            segment_diameter_list=[
+                0.14643392898142338,
+                0.20520117743424895,
+                0.26368863414475346,
+                0.23429428599774837,
+                0.3222861088143731,
+                0.2929945035305768,
+                0.23591012782614462
+            ],
+            segment_length_list=[
+                0.17572071484755725,
+                0.49873599083334513,
+                0.5271621444262564,
+                0.5271621444844641,
+                0.49873599083334513,
+                0.5013090225121442
+            ],
+            vector=[(
+                361154.7731872301,
+                6003989.846571023
+            ), (
+                361154.7731872301,
+                6003991.846571023
+            )]
+        )
+
+        feature = self.ff.create_stem_feature(stem1)
+
+        vector_layer_stems = QgsVectorLayer("LineString", "stems", "memory")
+        vector_layer_nodes = QgsVectorLayer("Point", "nodes", "memory")
+
+        data_provider_stems = vector_layer_stems.dataProvider()
+        data_provider_stems.addFeature(feature)
+
+        node_features = self.ff.create_subsidiary_features(stem1)
+
+        data_provider_nodes = vector_layer_nodes.dataProvider()
+        data_provider_nodes.addFeatures(node_features)
+
+        # Commit changes
+        vector_layer_stems.commitChanges()
+        vector_layer_nodes.commitChanges()
+
+        # Show in project
+        QgsProject.instance().addMapLayer(vector_layer_stems)
+        QgsProject.instance().addMapLayer(vector_layer_nodes)
