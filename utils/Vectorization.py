@@ -8,7 +8,6 @@ import multiprocessing as mp
 from typing import List
 
 import numpy as np
-from utils.IO import get_bounds_from_profile
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge
 
@@ -16,6 +15,7 @@ from classes.Part import Part
 from classes.Stem import Stem
 from classes.Timer import Timer
 from utils.Geometry import ang
+from utils.IO import get_bounds_from_profile
 
 # System epsilon
 epsilon = np.finfo(float).eps
