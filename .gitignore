@@ -160,7 +160,5 @@ cython_debug/
 .idea/
 *.iml
 
-## Input, output and predicions
-#output
-#input
-#pred
+# dependencies loaded by plugin
+dependencies
