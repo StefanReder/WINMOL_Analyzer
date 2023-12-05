@@ -1,0 +1,24 @@
+name: Create and release archive
+on:
+  push:
+    branches:
+      - main
+      - start_plugin
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Archive Release
+        uses: thedoctor0/zip-release@0.7.5
+        with:
+          type: 'zip'
+          filename: 'release.zip'
+          exclusions: '*.git* dependencies/* startDocker.sh .github/* standalone/*'
+      - name: Upload Release
+        uses: ncipollo/release-action@v1.12.0
+        with:
+          artifacts: "release.zip"
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
