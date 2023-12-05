@@ -8,6 +8,7 @@ from subprocess import run
 from pkg_resources import find_distributions
 
 
+# Return qgis python path depending on OS
 def get_qgis_python_path():
     if sys.platform.startswith("linux"):
         return sys.executable
@@ -26,8 +27,7 @@ def ensure_folder_exists(base_path: Path, folder_name: str) -> Path:
 
 
 print("Starting module dependency installation")
-print(sys.executable)
-
+print("Using executable {}".format(sys.executable))
 PYTHON_PATH = get_qgis_python_path()
 
 
