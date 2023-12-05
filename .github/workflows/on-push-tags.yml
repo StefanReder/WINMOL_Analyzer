@@ -1,0 +1,4 @@
+name: Create and release archive
+on: [push]
+jobs:
+  docs:
