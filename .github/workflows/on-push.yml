@@ -1,10 +1,8 @@
 name: Create and release archive
 on:
   push:
-    branches:
-      - main
-      - start_plugin
-  workflow_dispatch:
+    tags:
+      - '*'
 jobs:
   build:
     runs-on: ubuntu-latest
