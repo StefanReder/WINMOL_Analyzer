@@ -201,51 +201,6 @@ def calc_d(node, line, contours):
     return d
 
 
-# Calculate radial vector to measure the diameter
-def calc_d__org(stem, contours):
-    vector = create_vector((stem.path.coords[0], stem.path.coords[1]))
-    vector = [-vector[1], vector[0]]
-    stem.segment_diameter_list.append(
-        calc_d(stem.path.coords[0], vector, contours))
-    stem.vector.append(vector)
-
-    for i in range(1, len(stem.path.coords) - 1):
-        vector = create_vector(
-            (stem.path.coords[i - 1], stem.path.coords[i + 1]))
-        vector = [-vector[1], vector[0]]
-        stem.segment_diameter_list.append(
-            calc_d(stem.path.coords[i], vector, contours))
-        stem.vector.append(vector)
-
-    vector = create_vector((stem.path.coords[-2], stem.path.coords[-1]))
-    vector = [-vector[1], vector[0]]
-    stem.segment_diameter_list.append(
-        calc_d(stem.path.coords[-1], vector, contours))
-    stem.vector.append(vector)
-    return stem
-
-
-# Calculate the diameter for a specific node
-def calc_d_org(node, v, contours):
-    p1 = Point(node[0] - v[0] * 1.0, node[1] - v[1] * 1.0)
-    p2 = Point(node[0] + v[0] * 1.0, node[1] + v[1] * 1.0)
-    node = Point(node)
-    line = LineString([p1, p2])
-    distance = 0
-    intersects = contours.geometry.intersection(line)
-    intersects = intersects[~intersects.is_empty]
-
-    for i in intersects:
-        if node.distance(i) < 0.01:
-            if i.geom_type == 'MultiLineString':
-                for i_ in i.geoms:
-                    if node.distance(i_) < 0.01:
-                        distance = i_.length
-            else:
-                distance = i.length
-    return distance
-
-
 # Calculate the length and volume of a segment described by 2 points and the
 # respective diameters
 def calc_l_v(p1, p2, d1, d2):
