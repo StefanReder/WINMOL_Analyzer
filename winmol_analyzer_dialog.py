@@ -180,7 +180,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             # add feature to layer
             data_provider_stems.addFeature(stem_feature)
 
-            node_features = self.ff.create_subsidiary_features(stem_feature)
+            node_features = self.ff.create_subsidiary_features(stem)
 
             # add nodes to layer
             data_provider_nodes.addFeatures(node_features)
