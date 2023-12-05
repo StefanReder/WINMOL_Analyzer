@@ -26,11 +26,16 @@ Dialog
 import os
 import sys
 
-# Set up current path.
+from tensorflow import keras
+
+#from utils import IO
+from utils import Prediction as Pred
+
 from qgis.core import QgsProject, QgsVectorLayer
 from qgis.PyQt import QtWidgets, uic
 from shapely import LineString, Point
 
+# Set up current path.
 current_path = os.path.dirname(__file__)
 sys.path.append(os.path.abspath(current_path + 'classes'))
 sys.path.append(os.path.abspath(current_path + 'utils'))
@@ -38,7 +43,11 @@ sys.path.append(os.path.abspath(current_path + 'qgisutil'))
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from classes.Stem import Stem
+from classes.Config import Config
 from qgisutil.FeatureFactory import FeatureFactory
+
+from PyQt5.QtWidgets import QFileDialog
+
 
 # This loads your .ui file so that PyQt can populate your plugin with the
 # elements from Qt Designer
@@ -54,14 +63,30 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         """Constructor."""
         super(WINMOLAnalyzerDialog, self).__init__(parent)
         self.setupUi(self)
-        self.set_connections()
 
         self.ff = FeatureFactory()
+
+        # parameters
+        self.img_path = None
+        self.model_path = None
+        self.stem_dir = None
+        self.trees_dir = None
+        self.nodes_dir = None
+
+        # Create a Config instance
+        self.config = Config()
+
+        self.set_connections()
 
     def set_connections(self):
         self.run_button.clicked.connect(self.run_process)
         self.model_comboBox.currentIndexChanged.connect(
             self.handleModelComboBoxChange)
+        self.set_parameters()
+        self.set_default_config_parameters()
+        self.get_config_parameters_from_gui()
+        self.uav_toolButton.clicked.connect(self.uav_file_dialog)
+        self.output_toolButton_stem.clicked.connect(self.stem_file_dialog)
 
     def handleModelComboBoxChange(self, index):
         selected_text = self.model_comboBox.currentText()
@@ -88,107 +113,68 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.image_spinBox.setEnabled(False)
             self.image_unit_label.setEnabled(False)
 
-    def run_process(self):
-        a = LineString([
-            [
-                361156.58896794985,
-                6003996.762501755
-            ],
-            [
-                361156.20823973446,
-                6003997.026082827
-            ],
-            [
-                361155.7689379474,
-                6003997.318950685
-            ],
-            [
-                361154.3924590147,
-                6003998.314701403
-            ],
-            [
-                361153.98244401347,
-                6003998.6368560465
-            ],
-            [
-                361153.3967082974,
-                6003999.076157833
-            ],
-            [
-                361152.9866932962,
-                6003999.369025691
-            ]
-        ])
+    def set_parameters(self):
+        # Extract command-line arguments
+        self.img_path = self.uav_lineEdit.text()
+        self.model_path = self.model_lineEdit.text()
+        self.stem_dir = self.output_lineEdit_stem.text()
+        self.trees_dir = self.output_lineEdit_trees.text()
+        self.nodes_dir = self.output_lineEdit_nodes.text()
 
-        stem_1 = Stem(
-            stem_id=1909,
-            path=a,
-            start=Point(
-                361154.7731872301,
-                6003990.846571023
-            ),
-            stop=Point(
-                361157.4968583097,
-                6003990.905144595
-            ),
-            segment_volume_list=[
-                0.004305881006598045,
-                0.021641570747067584,
-                0.02569845966691071,
-                0.03233204097910344,
-                0.03710009610640275,
-                0.02764223892790801
-            ],
-            segment_diameter_list=[
-                0.14643392898142338,
-                0.20520117743424895,
-                0.26368863414475346,
-                0.23429428599774837,
-                0.3222861088143731,
-                0.2929945035305768,
-                0.23591012782614462
-            ],
-            segment_length_list=[
-                0.17572071484755725,
-                0.49873599083334513,
-                0.5271621444262564,
-                0.5271621444844641,
-                0.49873599083334513,
-                0.5013090225121442
-            ],
-            vector=[(
-                361154.7731872301,
-                6003989.846571023
-            ), (
-                361154.7731872301,
-                6003991.846571023
-            )]
+    def set_default_config_parameters(self):
+        # set default values
+        self.minlength_doubleSpinBox.setValue(self.config.min_length)
+        self.maxdistance_doubleSpinBox.setValue(self.config.max_distance)
+        self.tolerance_doubleSpinBox.setValue(self.config.tolerance_angle)
+        self.maxtree_doubleSpinBox.setValue(self.config.max_tree_height)
+
+    def get_config_parameters_from_gui(self):
+        self.config.min_length = self.minlength_doubleSpinBox.value()
+        self.config.max_distance = self.maxdistance_doubleSpinBox.value()
+        self.config.tolerance_angle = self.tolerance_doubleSpinBox.value()
+        self.config.max_tree_height = self.maxtree_doubleSpinBox.value()
+
+    def uav_file_dialog(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select TIFF File", "", "TIFF Files (*.tiff *.tif);;All Files (*)", options=options)
+        if file_path:
+            self.uav_lineEdit.setText(file_path)
+
+    def stem_file_dialog(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select TIFF File", "", "TIFF Files (*.tiff *.tif);;All Files (*)", options=options)
+        if file_path:
+            self.output_lineEdit_stem.setText(file_path)
+
+    def run_process(self):
+        # Load the model from the HDF5 file
+        model = keras.models.load_model(self.model_path, compile=False)
+
+        # Display a summary of the loaded model architecture
+        model.summary()
+
+        # Load the input orthomosaic image and its profile using IO module
+        img, profile = IO.load_orthomosaic(self.uav_lineEdit.text(), self.config)
+
+        # Perform prediction on the input image with resampling
+        pred, profile = Pred.predict_with_resampling_per_tile(
+            img,
+            profile,
+            model,
+            self.config
         )
 
-        vector_layer_stems = QgsVectorLayer("LineString", "stems", "memory")
-        vector_layer_nodes = QgsVectorLayer("Point", "nodes", "memory")
-        data_provider_stems = vector_layer_stems.dataProvider()
-        data_provider_nodes = vector_layer_nodes.dataProvider()
+        # Export the predicted stem map and stems information to GeoJSON
+        # (first checkbox)
+        stem_dir = os.path.dirname(self.output_lineEdit_stem.text())
+        file_name = os.path.splitext(os.path.basename(self.output_lineEdit_stem.text()))[0]
+        IO.export_stem_map(pred, profile, stem_dir, file_name)
 
-        # based on original script => TODO
-        # stems = Quant.quantify_stems(stems, pred, profile)
-        stems = [stem_1]
 
-        for stem in stems:
-            stem_feature = self.ff.create_stem_feature(stem)
 
-            # add feature to layer
-            data_provider_stems.addFeature(stem_feature)
-
-            node_features = self.ff.create_subsidiary_features(stem)
-
-            # add nodes to layer
-            data_provider_nodes.addFeatures(node_features)
-
-            # Commit changes
-            vector_layer_stems.commitChanges()
-            vector_layer_nodes.commitChanges()
-
-        # Show in project
-        QgsProject.instance().addMapLayer(vector_layer_stems)
-        QgsProject.instance().addMapLayer(vector_layer_nodes)
+#/home/mmawad/miniconda3/envs/WINMOL_Analyzer/bin/python.exe
+# standalone/WINMOL_Analyzer.py
+# /home/mmawad/repos/WINMOL_Analyzer/standalone/model/UNet_SpecDS_UNet_Mask-RCNN_512_Spruce_2_model_2023-02-27_061925.hdf5
+# /home/mmawad/repos/WINMOL_Analyzer/standalone/input/test.tiff
+# /home/mmawad/repos/WINMOL_Analyzer/standalone/predict/
+# /home/mmawad/repos/WINMOL_Analyzer/standalone/output/

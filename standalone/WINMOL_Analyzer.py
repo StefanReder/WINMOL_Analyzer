@@ -17,6 +17,7 @@ from utils import Skeletonization as Skel
 from utils import Vectorization as Vec
 
 if __name__ == '__main__':
+
     # Create a timer to measure the execution time of the script
     tt = Timer()
     tt.start()
