@@ -16,15 +16,6 @@ def create_vector(line):
     return v / (np.linalg.norm(v) + epsilon)
 
 
-# Creates a vector from LineStrings or Tuple[Tuple[int]]
-def create_vector_org(line):
-    if isinstance(line, LineString):
-        return [line.coords[-1][0] - line.coords[0][0],
-                line.coords[-1][1] - line.coords[0][1]]
-    else:
-        return [(line[1][0] - line[0][0]), (line[1][1] - line[0][1])]
-
-
 # Calculates the angle between 2 vectors
 def ang(line_a, line_b):
     v_a = create_vector(line_a)
