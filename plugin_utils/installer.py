@@ -110,7 +110,7 @@ def install_requirements(install_path: str) -> None:
             "-r",
             str(get_requirements_path()),
         ],
-        capture_output=True,
+        shell=True, check=True, capture_output=True,
     )
 
     if completed_process.returncode != 0:
@@ -132,12 +132,13 @@ def install_dependencies(dep_path: str) -> None:
 
 def ensure_dependencies(dep_path: str) -> None:
     try:
+        print(dep_path)
         install_dependencies(dep_path)
-        invalidate_caches()
+        #invalidate_caches()
         print("Successfully found dependencies")
-        if dep_path not in sys.path:
-            sys.path.append(dep_path)
-            print("Added {} to global path {}", dep_path, sys.path)
+        # if dep_path not in sys.path:
+        #     sys.path.append(dep_path)
+        #     print("Added {} to global path {}", dep_path, sys.path)
     except ImportError:
         raise Exception(
             f"Cannot automatically ensure dependencies of WINMOL_Analyser. "

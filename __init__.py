@@ -39,7 +39,7 @@ def classFactory(iface):  # pylint: disable=invalid-name
     """
 
     # TODO: set proper path
-    dep_path = os.path.dirname(__file__) + "/dependencies"
+    dep_path = os.path.join(os.path.dirname(__file__), "dependencies")
     if not os.path.exists(dep_path):
         os.makedirs(dep_path)
     print(dep_path)
