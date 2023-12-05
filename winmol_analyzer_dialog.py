@@ -27,23 +27,24 @@ import os
 import sys
 
 # Set up current path.
-currentPath = os.path.dirname(__file__)
-sys.path.append(os.path.abspath(os.path.dirname(__file__) + 'classes'))
-sys.path.append(os.path.abspath(os.path.dirname(__file__) + 'utils'))
-sys.path.append(os.path.abspath(os.path.dirname(__file__) + 'qgisutil'))
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-
 from qgis.core import QgsProject, QgsVectorLayer
 from qgis.PyQt import QtWidgets, uic
 from shapely import LineString, Point
+
+current_path = os.path.dirname(__file__)
+sys.path.append(os.path.abspath(current_path + 'classes'))
+sys.path.append(os.path.abspath(current_path + 'utils'))
+sys.path.append(os.path.abspath(current_path + 'qgisutil'))
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from classes.Stem import Stem
 from qgisutil.FeatureFactory import FeatureFactory
 
 # This loads your .ui file so that PyQt can populate your plugin with the
 # elements from Qt Designer
-FORM_CLASS, _ = uic.loadUiType(os.path.join(
-    os.path.dirname(__file__), 'winmol_analyzer_dialog_base.ui'))
+FORM_CLASS, _ = uic.loadUiType(
+    os.path.join(current_path, 'winmol_analyzer_dialog_base.ui')
+)
 
 
 class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
@@ -179,7 +180,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             # add feature to layer
             data_provider_stems.addFeature(stem_feature)
 
-            node_features = self.ff.create_subsidiary_features(stem_feature)
+            node_features = self.ff.create_subsidiary_features(stem)
 
             # add nodes to layer
             data_provider_nodes.addFeatures(node_features)

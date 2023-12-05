@@ -23,6 +23,9 @@
  ***************************************************************************/
  This script initializes the plugin, making it known to QGIS.
 """
+import os
+
+from .plugin_utils.installer import ensure_dependencies
 
 
 # noinspection PyPep8Naming
@@ -34,7 +37,13 @@ def classFactory(iface):  # pylint: disable=invalid-name
     :param iface: A QGIS interface instance.
     :type iface: QgsInterface
     """
-    #
-    from .winmol_analyzer import WINMOLAnalyzer
 
+    # TODO: set proper path
+    dep_path = os.path.dirname(__file__) + "/dependencies"
+    if not os.path.exists(dep_path):
+        os.makedirs(dep_path)
+    print(dep_path)
+    ensure_dependencies(dep_path)
+
+    from .winmol_analyzer import WINMOLAnalyzer
     return WINMOLAnalyzer(iface)
