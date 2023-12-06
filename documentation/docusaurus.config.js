@@ -58,7 +58,7 @@ const config = {
         title: 'WINMOL_Analyzer',
         logo: {
           alt: 'WINMOL_Analyzer logo',
-          src: 'img/logo.svg',
+          src: 'img/logo_winmol_analyser.png',
         },
         items: [
           {
