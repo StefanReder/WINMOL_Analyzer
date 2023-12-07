@@ -25,20 +25,31 @@ Dialog
 
 import os
 import sys
+import subprocess
 
-# Set up current path.
+#from tensorflow import keras
+
+
 from qgis.core import QgsProject, QgsVectorLayer
 from qgis.PyQt import QtWidgets, uic
-from shapely import LineString, Point
+#from shapely import LineString, Point
 
+# Set up current path.
 current_path = os.path.dirname(__file__)
 sys.path.append(os.path.abspath(current_path + 'classes'))
 sys.path.append(os.path.abspath(current_path + 'utils'))
 sys.path.append(os.path.abspath(current_path + 'qgisutil'))
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
+#from utils import IO
+#from utils import Prediction as Pred
+
 from classes.Stem import Stem
+from classes.Config import Config
 from qgisutil.FeatureFactory import FeatureFactory
+
+from PyQt5.QtWidgets import QFileDialog
+
 
 # This loads your .ui file so that PyQt can populate your plugin with the
 # elements from Qt Designer
@@ -54,141 +65,209 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         """Constructor."""
         super(WINMOLAnalyzerDialog, self).__init__(parent)
         self.setupUi(self)
-        self.set_connections()
 
         self.ff = FeatureFactory()
+
+        # parameters
+        self.img_path = None
+        self.model_path = None
+        self.stem_dir = None
+        self.trees_dir = None
+        self.nodes_dir = None
+
+        # Create a Config instance
+        self.config = Config()
+
+        self.set_connections()
+        self.output_log.setReadOnly(True)
 
     def set_connections(self):
         self.run_button.clicked.connect(self.run_process)
         self.model_comboBox.currentIndexChanged.connect(
             self.handleModelComboBoxChange)
+        self.set_parameters()
+        self.set_default_config_parameters()
+        self.get_config_parameters_from_gui()
+        self.uav_toolButton.clicked.connect(self.uav_file_dialog)
+        self.model_toolButton.clicked.connect(self.model_file_dialog)
+        self.output_toolButton_stem.clicked.connect(self.file_dialog_stem)
+        self.output_toolButton_trees.clicked.connect(self.file_dialog_trees)
+        self.output_toolButton_nodes.clicked.connect(self.file_dialog_nodes)
+        self.output_checkBox_stem.stateChanged.connect(self.checkbox_changed_stem)
+        self.output_checkBox_trees.stateChanged.connect(self.checkbox_changed_trees)
+        self.output_checkBox_nodes.stateChanged.connect(self.checkbox_changed_nodes)
+        self.close_button.clicked.connect(self.close_application)
 
     def handleModelComboBoxChange(self, index):
         selected_text = self.model_comboBox.currentText()
+        widgets_to_enable = [
+            self.tileside_label, self.image_spinBox, self.model_lineEdit,
+            self.model_toolButton, self.segm_label, self.tileside_doubleSpinBox,
+            self.tileside_unit_label, self.image_label, self.image_spinBox,
+            self.image_unit_label
+        ]
+
+        for widget in widgets_to_enable:
+            widget.setEnabled(selected_text == "Custom")
+
         if selected_text == "Custom":
-            self.tileside_label.setEnabled(True)
-            self.image_spinBox.setEnabled(True)
-            self.model_lineEdit.setEnabled(True)
-            self.model_toolButton.setEnabled(True)
-            self.segm_label.setEnabled(True)
-            self.tileside_doubleSpinBox.setEnabled(True)
-            self.tileside_unit_label.setEnabled(True)
-            self.image_label.setEnabled(True)
-            self.image_spinBox.setEnabled(True)
-            self.image_unit_label.setEnabled(True)
+            self.apply_style_to_line_edit(self.model_lineEdit, True)
         else:
-            self.tileside_label.setEnabled(False)
-            self.image_spinBox.setEnabled(False)
-            self.model_lineEdit.setEnabled(False)
-            self.model_toolButton.setEnabled(False)
-            self.segm_label.setEnabled(False)
-            self.tileside_doubleSpinBox.setEnabled(False)
-            self.tileside_unit_label.setEnabled(False)
-            self.image_label.setEnabled(False)
-            self.image_spinBox.setEnabled(False)
-            self.image_unit_label.setEnabled(False)
+            self.apply_style_to_line_edit(self.model_lineEdit, False)
+    def model_file_dialog(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Model File", "", "Model File (*.hdf5);;All Files (*)", options=options)
+        if file_path:
+            self.model_lineEdit.setText(file_path)
+
+    def set_parameters(self):
+        # Extract command-line arguments
+        self.img_path = self.uav_lineEdit.text()
+        self.model_path = self.model_lineEdit.text()
+        self.stem_dir = self.output_lineEdit_stem.text()
+        self.trees_dir = self.output_lineEdit_trees.text()
+        self.nodes_dir = self.output_lineEdit_nodes.text()
+
+    def set_default_config_parameters(self):
+        # set default values
+        self.minlength_doubleSpinBox.setValue(self.config.min_length)
+        self.maxdistance_doubleSpinBox.setValue(self.config.max_distance)
+        self.tolerance_doubleSpinBox.setValue(self.config.tolerance_angle)
+        self.maxtree_doubleSpinBox.setValue(self.config.max_tree_height)
+        self.tileside_doubleSpinBox.setValue(self.config.tile_size)
+        self.image_spinBox.setValue(self.config.img_width)
+
+    def get_config_parameters_from_gui(self):
+        self.config.min_length = self.minlength_doubleSpinBox.value()
+        self.config.max_distance = self.maxdistance_doubleSpinBox.value()
+        self.config.tolerance_angle = self.tolerance_doubleSpinBox.value()
+        self.config.max_tree_height = self.maxtree_doubleSpinBox.value()
+
+    def uav_file_dialog(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select TIFF File", "", "TIFF Files (*.tiff *.tif);;All Files (*)", options=options)
+        if file_path:
+            self.uav_lineEdit.setText(file_path)
+
+    def file_dialog_stem(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Stem Map", "", "All Files (*)", options=options)
+        if file_path:
+            self.output_lineEdit_stem.setText(file_path)
+
+    def file_dialog_trees(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Semantic Stem Map", "", "All Files (*)", options=options)
+        if file_path:
+            self.output_lineEdit_trees.setText(file_path)
+
+    def file_dialog_nodes(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Measuring Nodes", "", "All Files (*)", options=options)
+        if file_path: # C:/Users/49176/Documents/WINMOL_Analyzer/test_stem
+            self.output_lineEdit_nodes.setText(file_path)
+
+    def checkbox_changed_stem(self, state):
+        is_checked = state == 2
+        self.output_lineEdit_stem.setEnabled(is_checked)
+        self.output_toolButton_stem.setEnabled(is_checked)
+        self.apply_style_to_line_edit(self.output_lineEdit_stem, is_checked)
+
+    def checkbox_changed_trees(self, state):
+        is_checked = state == 2
+        self.output_lineEdit_trees.setEnabled(is_checked)
+        self.output_toolButton_trees.setEnabled(is_checked)
+        self.apply_style_to_line_edit(self.output_lineEdit_trees, is_checked)
+
+    def checkbox_changed_nodes(self, state):
+        is_checked = state == 2
+        self.output_lineEdit_nodes.setEnabled(is_checked)
+        self.output_toolButton_nodes.setEnabled(is_checked)
+        self.apply_style_to_line_edit(self.output_lineEdit_nodes, is_checked)
+
+    def apply_style_to_line_edit(self, line_edit, is_checked):
+        # Enable or disable the QLineEdit based on the checkbox state
+        line_edit.setEnabled(is_checked)
+
+        # Set the stylesheet to gray out the QLineEdit when it is disabled
+        if not is_checked:
+            line_edit.setStyleSheet("")
+        else:
+            line_edit.setStyleSheet("QLineEdit { background-color: rgb(255, 255, 255) }")
+
+    def close_application(self):
+        print("Closing application")
+        self.close()
 
     def run_process(self):
-        a = LineString([
-            [
-                361156.58896794985,
-                6003996.762501755
-            ],
-            [
-                361156.20823973446,
-                6003997.026082827
-            ],
-            [
-                361155.7689379474,
-                6003997.318950685
-            ],
-            [
-                361154.3924590147,
-                6003998.314701403
-            ],
-            [
-                361153.98244401347,
-                6003998.6368560465
-            ],
-            [
-                361153.3967082974,
-                6003999.076157833
-            ],
-            [
-                361152.9866932962,
-                6003999.369025691
-            ]
-        ])
+        # Path to the Python script
+        script_path = r'C:\Users\49176\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins\WINMOL_Analyzer\winmol_run.py'
 
-        stem_1 = Stem(
-            stem_id=1909,
-            path=a,
-            start=Point(
-                361154.7731872301,
-                6003990.846571023
-            ),
-            stop=Point(
-                361157.4968583097,
-                6003990.905144595
-            ),
-            segment_volume_list=[
-                0.004305881006598045,
-                0.021641570747067584,
-                0.02569845966691071,
-                0.03233204097910344,
-                0.03710009610640275,
-                0.02764223892790801
-            ],
-            segment_diameter_list=[
-                0.14643392898142338,
-                0.20520117743424895,
-                0.26368863414475346,
-                0.23429428599774837,
-                0.3222861088143731,
-                0.2929945035305768,
-                0.23591012782614462
-            ],
-            segment_length_list=[
-                0.17572071484755725,
-                0.49873599083334513,
-                0.5271621444262564,
-                0.5271621444844641,
-                0.49873599083334513,
-                0.5013090225121442
-            ],
-            vector=[(
-                361154.7731872301,
-                6003989.846571023
-            ), (
-                361154.7731872301,
-                6003991.846571023
-            )]
-        )
+        model_path = self.model_lineEdit.text()
+        img_path = self.uav_lineEdit.text()
+        stem_dir = os.path.dirname(self.output_lineEdit_stem.text())
+        trees_dir = os.path.dirname(self.output_lineEdit_trees.text())
 
-        vector_layer_stems = QgsVectorLayer("LineString", "stems", "memory")
-        vector_layer_nodes = QgsVectorLayer("Point", "nodes", "memory")
-        data_provider_stems = vector_layer_stems.dataProvider()
-        data_provider_nodes = vector_layer_nodes.dataProvider()
+        # Command to run the script
+        command = [
+            'python',
+            script_path,
+            model_path,
+            img_path,
+            stem_dir,
+            trees_dir
+        ]
 
-        # based on original script => TODO
-        # stems = Quant.quantify_stems(stems, pred, profile)
-        stems = [stem_1]
+        # Switch to the log tab in the QTabWidget
+        self.log_widget.setCurrentIndex(1)
 
-        for stem in stems:
-            stem_feature = self.ff.create_stem_feature(stem)
+        # Run the process
+        try:
+            #print(os.getenv('PATH'))
+            process = subprocess.run(command, check=True, capture_output=True, text=True)
+            # Display the output in the QPlainTextEdit
+            output_text = process.stdout + process.stderr
+            print(process.stderr)
+            self.output_log.setPlainText(output_text)
 
-            # add feature to layer
-            data_provider_stems.addFeature(stem_feature)
+            print("Process output:", process.stdout)
+        except subprocess.CalledProcessError as e:
+            print("Error running the process:", e)
+            error_output = e.output if e.output else e.stderr
+            print("Process output (if any):", error_output)
+            self.output_log.setPlainText("Error running the process:\n" + e.output)
 
-            node_features = self.ff.create_subsidiary_features(stem)
 
-            # add nodes to layer
-            data_provider_nodes.addFeatures(node_features)
 
-            # Commit changes
-            vector_layer_stems.commitChanges()
-            vector_layer_nodes.commitChanges()
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
-        # Show in project
-        QgsProject.instance().addMapLayer(vector_layer_stems)
-        QgsProject.instance().addMapLayer(vector_layer_nodes)
+
+class RunProcessThread(QThread):
+    update_signal = pyqtSignal(str)
+
+    def __init__(self, command):
+        super(RunProcessThread, self).__init__()
+        self.command = command
+
+    def run(self):
+        try:
+            process = subprocess.run(self.command, check=True, capture_output=True, text=True, stderr=subprocess.PIPE)
+            output = process.stdout
+            if process.stderr:
+                output += "\nError output:\n" + process.stderr
+            self.update_signal.emit(output)
+        except subprocess.CalledProcessError as e:
+            error_output = e.output
+            if e.stderr:
+                error_output += "\nError output:\n" + e.stderr
+            self.update_signal.emit(f"Error running the process: {e}\n{error_output}")
+
+
+
+
+#/home/mmawad/miniconda3/envs/WINMOL_Analyzer/bin/python.exe
+# standalone/WINMOL_Analyzer.py
+# /home/mmawad/repos/WINMOL_Analyzer/standalone/model/UNet_SpecDS_UNet_Mask-RCNN_512_Spruce_2_model_2023-02-27_061925.hdf5
+# /home/mmawad/repos/WINMOL_Analyzer/standalone/input/test.tiff
+# /home/mmawad/repos/WINMOL_Analyzer/standalone/predict/
+# /home/mmawad/repos/WINMOL_Analyzer/standalone/output/

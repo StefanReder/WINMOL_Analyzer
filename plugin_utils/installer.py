@@ -110,7 +110,7 @@ def install_requirements(install_path: str) -> None:
             "-r",
             str(get_requirements_path()),
         ],
-        capture_output=True,
+        shell=True, check=True, capture_output=True,
     )
 
     if completed_process.returncode != 0:
