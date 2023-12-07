@@ -5,11 +5,10 @@ import sys
 from tensorflow import keras
 
 from classes.Config import Config
-from plugin_utils.installer import Installer
 from classes.Timer import Timer
+from plugin_utils.installer import Installer
 from utils import IO
 from utils import Prediction as Pred
-
 
 if __name__ == '__main__':
 
@@ -72,4 +71,3 @@ if __name__ == '__main__':
     # Stop the timer and display the elapsed time
     tt.stop()
     print("\nElapsed Time:", tt.elapsed_time)
-

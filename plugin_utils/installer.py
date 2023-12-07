@@ -14,7 +14,7 @@ class Installer:
     def __init__(self):
         print("Starting module dependency installation")
         print("Using executable {}".format(sys.executable))
-        PYTHON_PATH = self.get_qgis_python_path()
+        self.PYTHON_PATH = self.get_qgis_python_path()
 
     # Return qgis python path depending on OS
     def get_qgis_python_path(self):
@@ -47,12 +47,16 @@ class Installer:
             print("Successfully installed pip")
         else:
             raise Exception(
-                f"Failed to install pip, got {process_cmp.returncode} return code"
+                f"Failed to install pip, got {process_cmp.returncode}"
             )
 
     def get_requirements_path(self) -> Path:
         # we assume that a base.txt exists in a requirements folder
-        path = Path(Path(__file__).parent.parent, "requirements", "base.txt")
+        path = Path(
+            Path(__file__).parent.parent,
+            "requirements",
+            "base.txt"
+        )
         assert path.exists(), f"path not found {path}"
         return path
 
@@ -95,7 +99,12 @@ class Installer:
             raise Exception("Could not resolve dependency path.")
         return p
 
-    def install_requirements(self, install_path: str, requirements_path: Path, is_tf: bool) -> None:
+    def install_requirements(
+            self,
+            install_path: str,
+            requirements_path: Path,
+            is_tf: bool
+    ) -> None:
         # set up addons/modules under the user
         # script path. Here we'll install the
         # dependencies
@@ -118,8 +127,11 @@ class Installer:
 
         print(f"Installing WINMOL_Analyser dependencies to {install_path}")
 
-        print("{} -m pip install -t {} -r {}".format(self.PYTHON_PATH, install_path,
-                                                     requirements_path))
+        print("{} -m pip install -t {} -r {}".format(
+            self.PYTHON_PATH,
+            install_path,
+            requirements_path)
+        )
 
         from subprocess import run
         completed_process = run(
@@ -149,10 +161,18 @@ class Installer:
             self.ensure_pip()
 
         print("Check / install base requirements now")
-        self.install_requirements(dep_path, self.get_requirements_path(), False)
+        self.install_requirements(
+            dep_path,
+            self.get_requirements_path(),
+            False
+        )
 
         print("Check / install base tensorflow requirement now")
-        self.install_requirements(dep_path, self.get_tf_requirements_path(), True)
+        self.install_requirements(
+            dep_path,
+            self.get_tf_requirements_path(),
+            True
+        )
 
     def set_path(self, dep_path) -> None:
         print("Setting Path")

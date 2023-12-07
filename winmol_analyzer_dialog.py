@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import QFileDialog
 from qgis.PyQt import QtWidgets, uic
 
 from .classes.Config import Config
+
 current_path = os.path.dirname(__file__)
 
 # This loads your .ui file so that PyQt can populate your plugin with the
@@ -144,7 +145,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
     def file_dialog_nodes(self):
         options = QFileDialog.Options()
         file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Measuring Nodes", "", "All Files (*)", options=options)
-        if file_path: # C:/Users/49176/Documents/WINMOL_Analyzer/test_stem
+        if file_path:
             self.output_lineEdit_nodes.setText(file_path)
 
     def checkbox_changed_stem(self, state):
@@ -227,7 +228,13 @@ class RunProcessThread(QThread):
 
     def run(self):
         try:
-            process = subprocess.run(self.command, check=True, capture_output=True, text=True, stderr=subprocess.PIPE)
+            process = subprocess.run(
+                self.command,
+                check=True,
+                capture_output=True,
+                text=True,
+                stderr=subprocess.PIPE
+            )
             output = process.stdout
             if process.stderr:
                 output += "\nError output:\n" + process.stderr
