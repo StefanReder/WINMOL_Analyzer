@@ -21,7 +21,7 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_7">
    <item>
-    <widget class="QTabWidget" name="tabWidget">
+    <widget class="QTabWidget" name="log_widget">
      <property name="autoFillBackground">
       <bool>false</bool>
      </property>
@@ -156,7 +156,7 @@
               <bool>false</bool>
              </property>
              <property name="styleSheet">
-              <string notr="true">background-color: rgb(255, 255, 255)</string>
+              <string notr="true"/>
              </property>
             </widget>
            </item>
@@ -247,6 +247,9 @@
                </property>
                <property name="styleSheet">
                 <string notr="true">background-color: rgb(255, 255, 255)</string>
+               </property>
+               <property name="maximum">
+                <number>1000</number>
                </property>
               </widget>
              </item>
@@ -438,7 +441,7 @@
        <item>
         <widget class="QCheckBox" name="output_checkBox_stem">
          <property name="text">
-          <string>Semantic stem map (Raster Layer)</string>
+          <string>Semantic Stem Map (Raster Layer)</string>
          </property>
          <property name="checked">
           <bool>true</bool>
@@ -450,7 +453,7 @@
          <item>
           <widget class="QLineEdit" name="output_lineEdit_stem">
            <property name="enabled">
-            <bool>false</bool>
+            <bool>true</bool>
            </property>
            <property name="autoFillBackground">
             <bool>false</bool>
@@ -466,7 +469,7 @@
          <item>
           <widget class="QToolButton" name="output_toolButton_stem">
            <property name="enabled">
-            <bool>false</bool>
+            <bool>true</bool>
            </property>
            <property name="text">
             <string>...</string>
@@ -478,7 +481,7 @@
        <item>
         <widget class="QCheckBox" name="output_checkBox_trees">
          <property name="text">
-          <string>Detected windthrown trees (Line Layer)</string>
+          <string>Detected Wind-Thrown Trees (Line Layer)</string>
          </property>
          <property name="checked">
           <bool>true</bool>
@@ -490,7 +493,7 @@
          <item>
           <widget class="QLineEdit" name="output_lineEdit_trees">
            <property name="enabled">
-            <bool>false</bool>
+            <bool>true</bool>
            </property>
            <property name="autoFillBackground">
             <bool>false</bool>
@@ -506,7 +509,7 @@
          <item>
           <widget class="QToolButton" name="output_toolButton_trees">
            <property name="enabled">
-            <bool>false</bool>
+            <bool>true</bool>
            </property>
            <property name="text">
             <string>...</string>
@@ -518,7 +521,7 @@
        <item>
         <widget class="QCheckBox" name="output_checkBox_nodes">
          <property name="text">
-          <string>Measuring nodes (Point Layer)</string>
+          <string>Measuring Nodes (Point Layer)</string>
          </property>
          <property name="checked">
           <bool>true</bool>
@@ -530,7 +533,7 @@
          <item>
           <widget class="QLineEdit" name="output_lineEdit_nodes">
            <property name="enabled">
-            <bool>false</bool>
+            <bool>true</bool>
            </property>
            <property name="autoFillBackground">
             <bool>false</bool>
@@ -546,7 +549,7 @@
          <item>
           <widget class="QToolButton" name="output_toolButton_nodes">
            <property name="enabled">
-            <bool>false</bool>
+            <bool>true</bool>
            </property>
            <property name="text">
             <string>...</string>
@@ -563,7 +566,7 @@
       </attribute>
       <layout class="QVBoxLayout" name="verticalLayout_9">
        <item>
-        <widget class="QPlainTextEdit" name="plainTextEdit">
+        <widget class="QPlainTextEdit" name="output_log">
          <property name="styleSheet">
           <string notr="true">background-color: rgb(255, 255, 255)</string>
          </property>
@@ -598,7 +601,7 @@
      <item row="0" column="0" colspan="3">
       <widget class="QProgressBar" name="progress_bar">
        <property name="value">
-        <number>24</number>
+        <number>0</number>
        </property>
       </widget>
      </item>

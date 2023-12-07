@@ -25,15 +25,14 @@ Dialog
 
 import os
 import sys
+import subprocess
 
-from tensorflow import keras
+#from tensorflow import keras
 
-#from utils import IO
-from utils import Prediction as Pred
 
 from qgis.core import QgsProject, QgsVectorLayer
 from qgis.PyQt import QtWidgets, uic
-from shapely import LineString, Point
+#from shapely import LineString, Point
 
 # Set up current path.
 current_path = os.path.dirname(__file__)
@@ -41,6 +40,9 @@ sys.path.append(os.path.abspath(current_path + 'classes'))
 sys.path.append(os.path.abspath(current_path + 'utils'))
 sys.path.append(os.path.abspath(current_path + 'qgisutil'))
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+
+#from utils import IO
+#from utils import Prediction as Pred
 
 from classes.Stem import Stem
 from classes.Config import Config
@@ -77,6 +79,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.config = Config()
 
         self.set_connections()
+        self.output_log.setReadOnly(True)
 
     def set_connections(self):
         self.run_button.clicked.connect(self.run_process)
@@ -86,32 +89,36 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.set_default_config_parameters()
         self.get_config_parameters_from_gui()
         self.uav_toolButton.clicked.connect(self.uav_file_dialog)
-        self.output_toolButton_stem.clicked.connect(self.stem_file_dialog)
+        self.model_toolButton.clicked.connect(self.model_file_dialog)
+        self.output_toolButton_stem.clicked.connect(self.file_dialog_stem)
+        self.output_toolButton_trees.clicked.connect(self.file_dialog_trees)
+        self.output_toolButton_nodes.clicked.connect(self.file_dialog_nodes)
+        self.output_checkBox_stem.stateChanged.connect(self.checkbox_changed_stem)
+        self.output_checkBox_trees.stateChanged.connect(self.checkbox_changed_trees)
+        self.output_checkBox_nodes.stateChanged.connect(self.checkbox_changed_nodes)
+        self.close_button.clicked.connect(self.close_application)
 
     def handleModelComboBoxChange(self, index):
         selected_text = self.model_comboBox.currentText()
+        widgets_to_enable = [
+            self.tileside_label, self.image_spinBox, self.model_lineEdit,
+            self.model_toolButton, self.segm_label, self.tileside_doubleSpinBox,
+            self.tileside_unit_label, self.image_label, self.image_spinBox,
+            self.image_unit_label
+        ]
+
+        for widget in widgets_to_enable:
+            widget.setEnabled(selected_text == "Custom")
+
         if selected_text == "Custom":
-            self.tileside_label.setEnabled(True)
-            self.image_spinBox.setEnabled(True)
-            self.model_lineEdit.setEnabled(True)
-            self.model_toolButton.setEnabled(True)
-            self.segm_label.setEnabled(True)
-            self.tileside_doubleSpinBox.setEnabled(True)
-            self.tileside_unit_label.setEnabled(True)
-            self.image_label.setEnabled(True)
-            self.image_spinBox.setEnabled(True)
-            self.image_unit_label.setEnabled(True)
+            self.apply_style_to_line_edit(self.model_lineEdit, True)
         else:
-            self.tileside_label.setEnabled(False)
-            self.image_spinBox.setEnabled(False)
-            self.model_lineEdit.setEnabled(False)
-            self.model_toolButton.setEnabled(False)
-            self.segm_label.setEnabled(False)
-            self.tileside_doubleSpinBox.setEnabled(False)
-            self.tileside_unit_label.setEnabled(False)
-            self.image_label.setEnabled(False)
-            self.image_spinBox.setEnabled(False)
-            self.image_unit_label.setEnabled(False)
+            self.apply_style_to_line_edit(self.model_lineEdit, False)
+    def model_file_dialog(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Model File", "", "Model File (*.hdf5);;All Files (*)", options=options)
+        if file_path:
+            self.model_lineEdit.setText(file_path)
 
     def set_parameters(self):
         # Extract command-line arguments
@@ -127,6 +134,8 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.maxdistance_doubleSpinBox.setValue(self.config.max_distance)
         self.tolerance_doubleSpinBox.setValue(self.config.tolerance_angle)
         self.maxtree_doubleSpinBox.setValue(self.config.max_tree_height)
+        self.tileside_doubleSpinBox.setValue(self.config.tile_size)
+        self.image_spinBox.setValue(self.config.img_width)
 
     def get_config_parameters_from_gui(self):
         self.config.min_length = self.minlength_doubleSpinBox.value()
@@ -140,35 +149,119 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         if file_path:
             self.uav_lineEdit.setText(file_path)
 
-    def stem_file_dialog(self):
+    def file_dialog_stem(self):
         options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select TIFF File", "", "TIFF Files (*.tiff *.tif);;All Files (*)", options=options)
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Stem Map", "", "All Files (*)", options=options)
         if file_path:
             self.output_lineEdit_stem.setText(file_path)
 
+    def file_dialog_trees(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Semantic Stem Map", "", "All Files (*)", options=options)
+        if file_path:
+            self.output_lineEdit_trees.setText(file_path)
+
+    def file_dialog_nodes(self):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Measuring Nodes", "", "All Files (*)", options=options)
+        if file_path: # C:/Users/49176/Documents/WINMOL_Analyzer/test_stem
+            self.output_lineEdit_nodes.setText(file_path)
+
+    def checkbox_changed_stem(self, state):
+        is_checked = state == 2
+        self.output_lineEdit_stem.setEnabled(is_checked)
+        self.output_toolButton_stem.setEnabled(is_checked)
+        self.apply_style_to_line_edit(self.output_lineEdit_stem, is_checked)
+
+    def checkbox_changed_trees(self, state):
+        is_checked = state == 2
+        self.output_lineEdit_trees.setEnabled(is_checked)
+        self.output_toolButton_trees.setEnabled(is_checked)
+        self.apply_style_to_line_edit(self.output_lineEdit_trees, is_checked)
+
+    def checkbox_changed_nodes(self, state):
+        is_checked = state == 2
+        self.output_lineEdit_nodes.setEnabled(is_checked)
+        self.output_toolButton_nodes.setEnabled(is_checked)
+        self.apply_style_to_line_edit(self.output_lineEdit_nodes, is_checked)
+
+    def apply_style_to_line_edit(self, line_edit, is_checked):
+        # Enable or disable the QLineEdit based on the checkbox state
+        line_edit.setEnabled(is_checked)
+
+        # Set the stylesheet to gray out the QLineEdit when it is disabled
+        if not is_checked:
+            line_edit.setStyleSheet("")
+        else:
+            line_edit.setStyleSheet("QLineEdit { background-color: rgb(255, 255, 255) }")
+
+    def close_application(self):
+        print("Closing application")
+        self.close()
+
     def run_process(self):
-        # Load the model from the HDF5 file
-        model = keras.models.load_model(self.model_path, compile=False)
+        # Path to the Python script
+        script_path = r'C:\Users\49176\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins\WINMOL_Analyzer\winmol_run.py'
 
-        # Display a summary of the loaded model architecture
-        model.summary()
-
-        # Load the input orthomosaic image and its profile using IO module
-        img, profile = IO.load_orthomosaic(self.uav_lineEdit.text(), self.config)
-
-        # Perform prediction on the input image with resampling
-        pred, profile = Pred.predict_with_resampling_per_tile(
-            img,
-            profile,
-            model,
-            self.config
-        )
-
-        # Export the predicted stem map and stems information to GeoJSON
-        # (first checkbox)
+        model_path = self.model_lineEdit.text()
+        img_path = self.uav_lineEdit.text()
         stem_dir = os.path.dirname(self.output_lineEdit_stem.text())
-        file_name = os.path.splitext(os.path.basename(self.output_lineEdit_stem.text()))[0]
-        IO.export_stem_map(pred, profile, stem_dir, file_name)
+        trees_dir = os.path.dirname(self.output_lineEdit_trees.text())
+
+        # Command to run the script
+        command = [
+            'python',
+            script_path,
+            model_path,
+            img_path,
+            stem_dir,
+            trees_dir
+        ]
+
+        # Switch to the log tab in the QTabWidget
+        self.log_widget.setCurrentIndex(1)
+
+        # Run the process
+        try:
+            #print(os.getenv('PATH'))
+            process = subprocess.run(command, check=True, capture_output=True, text=True)
+            # Display the output in the QPlainTextEdit
+            output_text = process.stdout + process.stderr
+            print(process.stderr)
+            self.output_log.setPlainText(output_text)
+
+            print("Process output:", process.stdout)
+        except subprocess.CalledProcessError as e:
+            print("Error running the process:", e)
+            error_output = e.output if e.output else e.stderr
+            print("Process output (if any):", error_output)
+            self.output_log.setPlainText("Error running the process:\n" + e.output)
+
+
+
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+
+
+class RunProcessThread(QThread):
+    update_signal = pyqtSignal(str)
+
+    def __init__(self, command):
+        super(RunProcessThread, self).__init__()
+        self.command = command
+
+    def run(self):
+        try:
+            process = subprocess.run(self.command, check=True, capture_output=True, text=True, stderr=subprocess.PIPE)
+            output = process.stdout
+            if process.stderr:
+                output += "\nError output:\n" + process.stderr
+            self.update_signal.emit(output)
+        except subprocess.CalledProcessError as e:
+            error_output = e.output
+            if e.stderr:
+                error_output += "\nError output:\n" + e.stderr
+            self.update_signal.emit(f"Error running the process: {e}\n{error_output}")
+
 
 
 
