@@ -1,28 +1,23 @@
 #!/usr/bin/env python
-
-################################################################################
-"""Imports"""
-
 import os
 import sys
 
 from tensorflow import keras
 
-current_path = os.path.dirname(os.path.realpath(__file__))
-parent_path = os.path.abspath(os.path.join(current_path, '..'))
-
-sys.path.append(parent_path)
-
-
 from classes.Config import Config
 from classes.Timer import Timer
+from plugin_utils.installer import Installer
 from utils import IO
 from utils import Prediction as Pred
-from utils import Quantification as Quant
-from utils import Skeletonization as Skel
-from utils import Vectorization as Vec
 
 if __name__ == '__main__':
+
+    installer = Installer()
+
+    path_dirname = os.path.dirname(__file__)
+    dep_path = os.path.join(path_dirname, "dependencies")
+    dep_path = installer.ensure_dependency_dir(dep_path, True)
+    installer.set_path(dep_path)
 
     # Create a timer to measure the execution time of the script
     tt = Timer()
@@ -76,4 +71,3 @@ if __name__ == '__main__':
     # Stop the timer and display the elapsed time
     tt.stop()
     print("\nElapsed Time:", tt.elapsed_time)
-

@@ -25,7 +25,7 @@
 """
 import os
 
-from .plugin_utils.installer import ensure_dependencies
+from .plugin_utils.installer import Installer
 
 
 # noinspection PyPep8Naming
@@ -38,12 +38,10 @@ def classFactory(iface):  # pylint: disable=invalid-name
     :type iface: QgsInterface
     """
 
-    # TODO: set proper path
+    installer = Installer()
     dep_path = os.path.join(os.path.dirname(__file__), "dependencies")
-    if not os.path.exists(dep_path):
-        os.makedirs(dep_path)
-    print(dep_path)
-    ensure_dependencies(dep_path)
+    dep_path = installer.ensure_dependency_dir(dep_path)
+    installer.ensure_dependencies(dep_path)
 
     from .winmol_analyzer import WINMOLAnalyzer
     return WINMOLAnalyzer(iface)
