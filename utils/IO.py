@@ -168,6 +168,7 @@ def stems_to_geojson(stems, path):
     fc_stems = stems_to_geojson_(stems)
     fc_nodes = nodes_to_geojson_(stems)
     fc_vectors = vectors_to_geojson_(stems)
+    # TODO: extend the finction to consider one of the three outputs
     s_path = path + "_stems.geojson"
     n_path = path + "_nodes.geojson"
     v_path = path + "_vectors.geojson"

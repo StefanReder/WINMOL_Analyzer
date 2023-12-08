@@ -26,8 +26,11 @@ Dialog
 import os
 import sys
 import subprocess
-
+import threading
+import queue
 #from tensorflow import keras
+
+from PyQt5.QtCore import QThread
 
 
 from qgis.core import QgsProject, QgsVectorLayer
@@ -49,6 +52,8 @@ from classes.Config import Config
 from qgisutil.FeatureFactory import FeatureFactory
 
 from PyQt5.QtWidgets import QFileDialog
+
+from .tasks_threads import Worker
 
 
 # This loads your .ui file so that PyQt can populate your plugin with the
@@ -201,66 +206,58 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
     def run_process(self):
         # Path to the Python script
-        script_path = r'C:\Users\49176\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins\WINMOL_Analyzer\winmol_run.py'
+        script_path = os.path.join(current_path, 'winmol_run.py')
 
         model_path = self.model_lineEdit.text()
         img_path = self.uav_lineEdit.text()
         stem_dir = os.path.dirname(self.output_lineEdit_stem.text())
         trees_dir = os.path.dirname(self.output_lineEdit_trees.text())
+        nodes_dir = os.path.dirname(self.output_lineEdit_nodes.text())
+
+        if self.output_checkBox_stem.isChecked():
+            process_type = "Stems"
+        elif self.output_checkBox_trees.isChecked():
+            process_type = "Trees"
+        elif self.output_checkBox_nodes.isChecked():
+            process_type = "Nodes"
 
         # Command to run the script
         command = [
-            'python',
+            'python3',
             script_path,
             model_path,
             img_path,
             stem_dir,
-            trees_dir
+            trees_dir,
+            process_type
         ]
 
         # Switch to the log tab in the QTabWidget
         self.log_widget.setCurrentIndex(1)
 
-        # Run the process
-        try:
-            #print(os.getenv('PATH'))
-            process = subprocess.run(command, check=True, capture_output=True, text=True)
-            # Display the output in the QPlainTextEdit
-            output_text = process.stdout + process.stderr
-            print(process.stderr)
-            self.output_log.setPlainText(output_text)
+        # Create and start the print thread
+        print("Starting the process...")
 
-            print("Process output:", process.stdout)
-        except subprocess.CalledProcessError as e:
-            print("Error running the process:", e)
-            error_output = e.output if e.output else e.stderr
-            print("Process output (if any):", error_output)
-            self.output_log.setPlainText("Error running the process:\n" + e.output)
+        self.thread = QThread()
+        self.worker = Worker(command)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run_process)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.worker.update_signal.connect(self.update_output_log)
+        self.thread.start()
 
-
-
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+    def update_output_log(self, text):
+        # Update your QPlainTextEdit with the output
+        print("text")
+        self.output_log.appendPlainText(text)
 
 
-class RunProcessThread(QThread):
-    update_signal = pyqtSignal(str)
 
-    def __init__(self, command):
-        super(RunProcessThread, self).__init__()
-        self.command = command
 
-    def run(self):
-        try:
-            process = subprocess.run(self.command, check=True, capture_output=True, text=True, stderr=subprocess.PIPE)
-            output = process.stdout
-            if process.stderr:
-                output += "\nError output:\n" + process.stderr
-            self.update_signal.emit(output)
-        except subprocess.CalledProcessError as e:
-            error_output = e.output
-            if e.stderr:
-                error_output += "\nError output:\n" + e.stderr
-            self.update_signal.emit(f"Error running the process: {e}\n{error_output}")
+
+
 
 
 
@@ -271,3 +268,10 @@ class RunProcessThread(QThread):
 # /home/mmawad/repos/WINMOL_Analyzer/standalone/input/test.tiff
 # /home/mmawad/repos/WINMOL_Analyzer/standalone/predict/
 # /home/mmawad/repos/WINMOL_Analyzer/standalone/output/
+
+
+#C:/Users/49176/AppData/Roaming/QGIS/QGIS3/profiles/default/python/plugins/WINMOL_Analyzer/standalone/test_stems
+
+#C:/Users/49176/AppData/Roaming/QGIS/QGIS3/profiles/default/python/plugins/WINMOL_Analyzer/standalone/test_trees
+
+#C:/Users/49176/AppData/Roaming/QGIS/QGIS3/profiles/default/python/plugins/WINMOL_Analyzer/standalone/test_nodes
