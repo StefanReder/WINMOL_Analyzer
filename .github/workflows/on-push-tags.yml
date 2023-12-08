@@ -13,7 +13,7 @@ jobs:
         with:
           type: 'zip'
           filename: 'release.zip'
-          exclusions: '*.git* dependencies/* startDocker.sh .github/* standalone/*'
+          exclusions: '*.git* documentation/* winmol_venv/* Dockerfile startDocker.sh .github/* standalone/input/* standalone/output/* standalone/model/* standalone/pred/*'
       - name: Upload Release
         uses: ncipollo/release-action@v1.12.0
         with:
