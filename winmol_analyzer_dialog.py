@@ -24,8 +24,10 @@ Dialog
 """
 
 import os
-import sys
 import subprocess
+
+from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtWidgets import QFileDialog
 import threading
 import queue
 #from tensorflow import keras
@@ -35,26 +37,12 @@ from PyQt5.QtCore import QThread
 
 from qgis.core import QgsProject, QgsVectorLayer
 from qgis.PyQt import QtWidgets, uic
-#from shapely import LineString, Point
 
-# Set up current path.
-current_path = os.path.dirname(__file__)
-sys.path.append(os.path.abspath(current_path + 'classes'))
-sys.path.append(os.path.abspath(current_path + 'utils'))
-sys.path.append(os.path.abspath(current_path + 'qgisutil'))
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-
-#from utils import IO
-#from utils import Prediction as Pred
-
-from classes.Stem import Stem
-from classes.Config import Config
-from qgisutil.FeatureFactory import FeatureFactory
-
-from PyQt5.QtWidgets import QFileDialog
-
+from .classes.Config import Config
+from .plugin_utils.installer import get_venv_python_path
 from .tasks_threads import Worker
 
+current_path = os.path.dirname(__file__)
 
 # This loads your .ui file so that PyQt can populate your plugin with the
 # elements from Qt Designer
@@ -64,14 +52,11 @@ FORM_CLASS, _ = uic.loadUiType(
 
 
 class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
-    ff: FeatureFactory
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, venv_path=None):
         """Constructor."""
         super(WINMOLAnalyzerDialog, self).__init__(parent)
         self.setupUi(self)
-
-        self.ff = FeatureFactory()
 
         # parameters
         self.img_path = None
@@ -85,11 +70,12 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
         self.set_connections()
         self.output_log.setReadOnly(True)
+        self.venv_path = venv_path
 
     def set_connections(self):
         self.run_button.clicked.connect(self.run_process)
         self.model_comboBox.currentIndexChanged.connect(
-            self.handleModelComboBoxChange)
+            self.handle_model_combo_box_change)
         self.set_parameters()
         self.set_default_config_parameters()
         self.get_config_parameters_from_gui()
@@ -103,7 +89,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.output_checkBox_nodes.stateChanged.connect(self.checkbox_changed_nodes)
         self.close_button.clicked.connect(self.close_application)
 
-    def handleModelComboBoxChange(self, index):
+    def handle_model_combo_box_change(self):
         selected_text = self.model_comboBox.currentText()
         widgets_to_enable = [
             self.tileside_label, self.image_spinBox, self.model_lineEdit,
@@ -119,6 +105,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.apply_style_to_line_edit(self.model_lineEdit, True)
         else:
             self.apply_style_to_line_edit(self.model_lineEdit, False)
+
     def model_file_dialog(self):
         options = QFileDialog.Options()
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Model File", "", "Model File (*.hdf5);;All Files (*)", options=options)
@@ -169,7 +156,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
     def file_dialog_nodes(self):
         options = QFileDialog.Options()
         file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Measuring Nodes", "", "All Files (*)", options=options)
-        if file_path: # C:/Users/49176/Documents/WINMOL_Analyzer/test_stem
+        if file_path:
             self.output_lineEdit_nodes.setText(file_path)
 
     def checkbox_changed_stem(self, state):
@@ -206,7 +193,8 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
     def run_process(self):
         # Path to the Python script
-        script_path = os.path.join(current_path, 'winmol_run.py')
+        path_dirname = os.path.dirname(__file__)
+        script_path = os.path.join(path_dirname, "winmol_run.py")
 
         model_path = self.model_lineEdit.text()
         img_path = self.uav_lineEdit.text()
@@ -221,9 +209,9 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         elif self.output_checkBox_nodes.isChecked():
             process_type = "Nodes"
 
-        # Command to run the script
+        # use python of venv (!)
         command = [
-            'python3',
+            get_venv_python_path(self.venv_path),
             script_path,
             model_path,
             img_path,
@@ -251,22 +239,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # Update your QPlainTextEdit with the output
         print("text")
         self.output_log.appendPlainText(text)
-
-
-
-
-
-
-
-
-
-
-#/home/mmawad/miniconda3/envs/WINMOL_Analyzer/bin/python.exe
-# standalone/WINMOL_Analyzer.py
-# /home/mmawad/repos/WINMOL_Analyzer/standalone/model/UNet_SpecDS_UNet_Mask-RCNN_512_Spruce_2_model_2023-02-27_061925.hdf5
-# /home/mmawad/repos/WINMOL_Analyzer/standalone/input/test.tiff
-# /home/mmawad/repos/WINMOL_Analyzer/standalone/predict/
-# /home/mmawad/repos/WINMOL_Analyzer/standalone/output/
 
 
 #C:/Users/49176/AppData/Roaming/QGIS/QGIS3/profiles/default/python/plugins/WINMOL_Analyzer/standalone/test_stems

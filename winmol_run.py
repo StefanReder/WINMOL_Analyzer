@@ -1,26 +1,12 @@
 #!/usr/bin/env python
-
-################################################################################
-"""Imports"""
-
-
-
-
 import os
 import sys
 from tensorflow import keras
 
-current_path = os.path.dirname(os.path.realpath(__file__))
-parent_path = os.path.abspath(os.path.join(current_path, '..'))
-
-sys.path.append(parent_path)
 from classes.Config import Config
 from classes.Timer import Timer
 from utils import IO
 from utils import Prediction as Pred
-from utils import Quantification as Quant
-from utils import Skeletonization as Skel
-from utils import Vectorization as Vec
 
 
 class ImageProcessing:

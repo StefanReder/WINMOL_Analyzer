@@ -1,7 +1,3 @@
-###############################################################################
-"""Imports"""
-
-
 class Config(object):
     # Configuration for the semantic segmentation
     tile_size = 15
