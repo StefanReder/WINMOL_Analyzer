@@ -76,10 +76,10 @@ def _dependencies_installed(requirements: str, path: str, is_tf: bool) -> bool:
 
 def ensure_venv(p, exit_on_miss: bool = False):
     if not os.path.exists(p) and not exit_on_miss:
-        message = ("The following Python venv is required update / to use the "
-                   "plugin WINMOL_Analyser:\n\n")
-        message += ("\n\nWould you like to create / install it now and install "
-                    "the required dependencies afterwards?")
+        message = ("A Python virtual environment (venv) is required update / to"
+                   " use the WINMOL_Analyser plugin.\n")
+        message += ("Would you like to create / install this venv and the "
+                    "required dependencies afterwards?")
 
         reply = QMessageBox.question(
             None,
