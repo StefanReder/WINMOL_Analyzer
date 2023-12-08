@@ -160,5 +160,6 @@ cython_debug/
 .idea/
 *.iml
 
-# dependencies loaded by plugin
-dependencies
+# venv created by plugin
+winmol_venv
+venv

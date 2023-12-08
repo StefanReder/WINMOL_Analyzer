@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import QFileDialog
 from qgis.PyQt import QtWidgets, uic
 
 from .classes.Config import Config
+from .plugin_utils.installer import get_venv_python_path
 
 current_path = os.path.dirname(__file__)
 
@@ -43,7 +44,7 @@ FORM_CLASS, _ = uic.loadUiType(
 
 class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, venv_path=None):
         """Constructor."""
         super(WINMOLAnalyzerDialog, self).__init__(parent)
         self.setupUi(self)
@@ -60,6 +61,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
         self.set_connections()
         self.output_log.setReadOnly(True)
+        self.venv_path = venv_path
 
     def set_connections(self):
         self.run_button.clicked.connect(self.run_process)
@@ -190,9 +192,9 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         stem_dir = os.path.dirname(self.output_lineEdit_stem.text())
         trees_dir = os.path.dirname(self.output_lineEdit_trees.text())
 
-        # Command to run the script
+        # use python of venv (!)
         command = [
-            'python',
+            get_venv_python_path(self.venv_path),
             script_path,
             model_path,
             img_path,
