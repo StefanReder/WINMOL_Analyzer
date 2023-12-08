@@ -34,18 +34,18 @@ class ImageProcessing:
 
     def stem_processing(self):
         model = keras.models.load_model(self.model_path, compile=False)
-        print("\nLoaded Model Summary:")
-        model.summary()
+        # print("\nLoaded Model Summary:")
+        # model.summary()
 
         file_name = os.path.splitext(os.path.basename(self.img_path))[0]
 
-        print("\nLoading Orthomosaic Image:")
+        # Loading Orthomosaic Image:
         img, profile = IO.load_orthomosaic(self.img_path, self.config)
 
         print("\nPerforming Prediction with Resampling:")
         pred, profile = Pred.predict_with_resampling_per_tile(img, profile, model, self.config)
 
-        print("\nExporting Predicted Stem Map:")
+        print("\nExporting Predicted Stem Map")
         IO.export_stem_map(pred, profile, self.stem_dir, file_name)
         return pred, profile, file_name
 
@@ -105,6 +105,7 @@ if __name__ == '__main__':
         trees_dir,
         process_type
     )
+    image_processor.display_starting_text()
     image_processor.main()
 
     # Stop the timer and display the elapsed time

@@ -235,8 +235,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # Switch to the log tab in the QTabWidget
         self.log_widget.setCurrentIndex(1)
 
-        # Create and start the print thread
-        print("Starting the process...")
+        self.update_output_log("Starting the process...")
 
         self.thread = QThread()
         self.worker = Worker(command)
