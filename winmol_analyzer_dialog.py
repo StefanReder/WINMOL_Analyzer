@@ -30,8 +30,8 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QFileDialog
 from qgis.PyQt import QtWidgets, uic
 
-from .plugin_utils.installer import get_venv_python_path
 from .classes.Config import Config
+from .plugin_utils.installer import get_venv_python_path
 
 current_path = os.path.dirname(__file__)
 

@@ -3,9 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QMessageBox, QProgressDialog
 from pkg_resources import find_distributions
+from PyQt5.QtWidgets import QMessageBox
 
 WINMOL_VENV_NAME = "winmol_venv"
 
@@ -156,6 +155,7 @@ def install_dependencies(venv_path: str) -> None:
         get_tf_requirements_path()
     )
 
+
 def ensure_dependencies(venv_path: str) -> None:
     try:
         if venv_path is None:
@@ -164,6 +164,6 @@ def ensure_dependencies(venv_path: str) -> None:
         print("Successfully found dependencies")
     except ImportError:
         raise Exception(
-            f"Cannot automatically ensure dependencies of WINMOL_Analyser. "
-            f"Please try restarting the host application!"
+            "Cannot automatically ensure dependencies of WINMOL_Analyser. "
+            "Please try restarting the host application!"
         )
