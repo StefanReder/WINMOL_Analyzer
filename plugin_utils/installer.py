@@ -121,8 +121,7 @@ def install_requirements(
         requirements_path)
     )
 
-    from subprocess import run
-    completed_process = run(
+    completed_process = subprocess.run(
         [
             venv_python_path,
             "-m",
