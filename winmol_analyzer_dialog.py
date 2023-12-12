@@ -353,8 +353,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.output_log.appendPlainText(text)
 
     def load_layers_to_session(self):
-        if self.stem_path:
-            self.load_raster(self.stem_path)
+        self.load_raster(self.stem_path)
         if self.trees_path:
             self.load_geojson(self.trees_path + '_stems.geojson')
         if self.nodes_path:
@@ -365,7 +364,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # Extract the base name of the input image file
         name = os.path.splitext(os.path.basename(path))[0]
         # Load raster layer
-        raster_layer = QgsRasterLayer(path, name, "gdal")
+        raster_layer = QgsRasterLayer(path, name)
         QgsProject.instance().addMapLayer(raster_layer)
 
 
