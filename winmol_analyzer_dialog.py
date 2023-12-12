@@ -286,11 +286,8 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
     def close_application(self):
         print("Closing application")
-        if self.worker and self.thread:
-            self.worker.finished.emit()
-            self.thread.quit()
-
         self.close()
+
 
     def run_process(self):
         # Path to the Python script
@@ -303,8 +300,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
         # check if uav image is loaded in qgis
         self.check_uav_input_exists(self.stem_path)
-        import time
-        time.sleep(1)
 
         # use python of venv (!)
         command = [
@@ -358,21 +353,21 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.output_log.appendPlainText(text)
 
     def load_layers_to_session(self):
-        self.load_raster(self.stem_path)
-        self.load_geojson(self.trees_path + '_stems.geojson')
-        self.load_geojson(self.nodes_path + '_vectors.geojson')
-        self.load_geojson(self.nodes_path + '_nodes.geojson')
+        if self.stem_path:
+            self.load_raster(self.stem_path)
+        if self.trees_path:
+            self.load_geojson(self.trees_path + '_stems.geojson')
+        if self.nodes_path:
+            self.load_geojson(self.nodes_path + '_vectors.geojson')
+            self.load_geojson(self.nodes_path + '_nodes.geojson')
 
     def load_raster(self, path):
         # Extract the base name of the input image file
         name = os.path.splitext(os.path.basename(path))[0]
         # Load raster layer
         raster_layer = QgsRasterLayer(path, name, "gdal")
-        if not raster_layer.isValid():
-            print(f"Error loading raster layer from {path}")
-        else:
-            # Add the raster layer to the map
-            QgsProject.instance().addMapLayer(raster_layer)
+        QgsProject.instance().addMapLayer(raster_layer)
+
 
     def load_geojson(self, path):
         # Extract the base name of the input image file

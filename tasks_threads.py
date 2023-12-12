@@ -1,4 +1,5 @@
 import subprocess
+import sys
 
 from PyQt5.QtCore import (
     QThread,
@@ -28,7 +29,19 @@ class Worker(QObject):
         total_lines = 0
         self.progress_signal.emit(0)
         try:
-            popen = subprocess.Popen(self.command, stdout=subprocess.PIPE, universal_newlines=True)
+
+            startupinfo = None
+            if sys.platform.startswith('win'):
+                # Hide the console window on Windows
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+
+
+            popen = subprocess.Popen(self.command,
+                                     stdout=subprocess.PIPE,
+                                     universal_newlines=True,
+                                     startupinfo=startupinfo)
             for stdout_line in iter(popen.stdout.readline, ""):
                 print(stdout_line)
                 total_lines += 1
