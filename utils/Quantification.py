@@ -104,8 +104,8 @@ def quantify_stem(stem: Stem):
         )
         stem.segment_length_list.append(seg_l)
         stem.segment_volume_list.append(seg_vol)
-    stem.volume = sum(stem.segment_volume_list)
-    stem.length = stem.start.distance(stem.stop)
+    #stem.volume = sum(stem.segment_volume_list)
+    #stem.length = stem.start.distance(stem.stop)
     return stem
 
 

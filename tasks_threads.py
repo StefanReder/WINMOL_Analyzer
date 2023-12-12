@@ -12,9 +12,11 @@ from PyQt5.QtCore import (
     Qt,
 )
 
+
 class Worker(QObject):
     finished = pyqtSignal()
     update_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(int)
     command = None
 
     def __init__(self, command):
@@ -22,29 +24,38 @@ class Worker(QObject):
         self.command = command
 
     def run_process(self):
+        total_expected_lines = self.get_total_lines()
+        total_lines = 0
+        self.progress_signal.emit(0)
         try:
-            process = subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, text=True)
+            popen = subprocess.Popen(self.command, stdout=subprocess.PIPE, universal_newlines=True)
+            for stdout_line in iter(popen.stdout.readline, ""):
+                print(stdout_line)
+                total_lines += 1
+                self.update_signal.emit(stdout_line)
 
-            # Read stdout and stderr in a non-blocking way
-            while process.poll() is None:
-                # Check if there is data to read from stdout
-                stdout_data = process.stdout.readline()
-                if stdout_data:
-                    print(f"STDOUT: {stdout_data.strip()}")
-                    self.update_signal.emit(stdout_data.strip())
-             # Wait for the process to complete
-            process.wait()
-            # Read any remaining output after the process has finished
-            remaining_stdout = process.stdout.read()
-            if remaining_stdout:
-                print(f"STDOUT: {remaining_stdout.strip()}")
-                self.update_signal.emit(remaining_stdout.strip())
+                # Calculate progress based on total lines
+                progress_percentage = (total_lines / total_expected_lines) * 100
+                # Update the progress bar
+                self.progress_signal.emit(progress_percentage)
+            self.progress_signal.emit(100)
 
-            self.finished.emit()
-        except Exception as e:
-            print(f"Error running the process: {e}")
-            self.update_signal.emit(f"Error running the process: {e}")
+            popen.stdout.close()
+            return_code = popen.wait()
+            if return_code:
+                raise subprocess.CalledProcessError(return_code, self.command)
             self.finished.emit()
 
-    def run(self):
-        self.run_process()
+        except subprocess.CalledProcessError as e:
+            print(str(e))
+            self.finished.emit()
+            return
+
+
+    def get_total_lines(self):
+        if self.command[-1] == 'Stems':
+            return 34
+        elif self.command[-1] == 'Trees':
+            return 118
+        elif self.command[-1] == 'Nodes':
+            return 125

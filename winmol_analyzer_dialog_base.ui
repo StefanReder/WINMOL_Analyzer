@@ -462,7 +462,7 @@
             <string notr="true">background-color: rgb(255, 255, 255)</string>
            </property>
            <property name="placeholderText">
-            <string>[Save to temporary file]</string>
+            <string/>
            </property>
           </widget>
          </item>
@@ -484,7 +484,7 @@
           <string>Detected Wind-Thrown Trees (Line Layer)</string>
          </property>
          <property name="checked">
-          <bool>true</bool>
+          <bool>false</bool>
          </property>
         </widget>
        </item>
@@ -502,7 +502,7 @@
             <string notr="true">background-color: rgb(255, 255, 255)</string>
            </property>
            <property name="placeholderText">
-            <string>[Save to temporary file]</string>
+            <string/>
            </property>
           </widget>
          </item>
@@ -524,7 +524,7 @@
           <string>Measuring Nodes (Point Layer)</string>
          </property>
          <property name="checked">
-          <bool>true</bool>
+          <bool>false</bool>
          </property>
         </widget>
        </item>
@@ -542,7 +542,7 @@
             <string notr="true">background-color: rgb(255, 255, 255)</string>
            </property>
            <property name="placeholderText">
-            <string>[Save to temporary file]</string>
+            <string/>
            </property>
           </widget>
          </item>

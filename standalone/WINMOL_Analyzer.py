@@ -8,6 +8,8 @@ import sys
 
 from tensorflow import keras
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from classes.Config import Config
 from classes.Timer import Timer
 from utils import IO

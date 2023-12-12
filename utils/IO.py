@@ -75,7 +75,7 @@ def export_stem_map(pred, profile, pred_dir, pred_name):
     profile['height'] = height
     with rasterio.open(
             os.path.join(
-                pred_dir, f'pred_{pred_name}.tiff'
+                pred_dir, f'{pred_name}.tiff'
             ), 'w', **profile
     ) as dst:
         dst.write(pred.astype(rasterio.float32), 1)
@@ -92,6 +92,12 @@ def get_bounds_from_profile(profile):
 def stems_to_geojson_(stems):
     return {
         'type': 'FeatureCollection',
+        'crs': {
+            'type': 'name',
+            'properties': {
+                'name': 'urn:ogc:def:crs:EPSG::25833'
+            }
+        },
         'features': [
             {
                 'type': "Feature",
@@ -120,6 +126,12 @@ def stems_to_geojson_(stems):
 def nodes_to_geojson_(stems):
     return {
         'type': 'FeatureCollection',
+        'crs': {
+            'type': 'name',
+            'properties': {
+                'name': 'urn:ogc:def:crs:EPSG::25833'
+            }
+        },
         'features': [
             {
                 'type': "Feature",
@@ -142,6 +154,12 @@ def nodes_to_geojson_(stems):
 def vectors_to_geojson_(stems):
     return {
         'type': 'FeatureCollection',
+        'crs': {
+            'type': 'name',
+            'properties': {
+                'name': 'urn:ogc:def:crs:EPSG::25833'
+            }
+        },
         'features': [
             {
                 'type': "Feature",
@@ -162,32 +180,45 @@ def vectors_to_geojson_(stems):
 
 
 def stems_to_geojson(stems, path):
-    print("#######################################################")
-    print("Export to GeoJSON")
+    # second checkbox
+    print("Export Stems to GeoJSON")
 
     fc_stems = stems_to_geojson_(stems)
-    fc_nodes = nodes_to_geojson_(stems)
-    fc_vectors = vectors_to_geojson_(stems)
-    # TODO: extend the finction to consider one of the three outputs
     s_path = path + "_stems.geojson"
-    n_path = path + "_nodes.geojson"
-    v_path = path + "_vectors.geojson"
 
     with open(s_path, 'w') as out:
         json.dump(fc_stems, out)
-    print(f'Wrote {s_path}')
 
-    with open(n_path, 'w') as out:
-        json.dump(fc_nodes, out)
-    print(f'Wrote {n_path}')
+    print(f'\nWrote {s_path}')
+
+
+def vector_to_geojson(stems, path):
+    # third checkbox
+    print("Export Vectors to GeoJSON")
+
+    fc_vectors = vectors_to_geojson_(stems)
+
+    v_path = path + "_vectors.geojson"
 
     with open(v_path, 'w') as out:
         json.dump(fc_vectors, out)
-    print(f'Wrote {v_path}')
-
-    print("#######################################################")
     print("")
 
+
+def nodes_to_geojson(stems, path):
+    #third checkbox
+    print("#######################################################")
+    print("Export Nodes to GeoJSON")
+
+    fc_nodes = nodes_to_geojson_(stems)
+
+    n_path = path + "_nodes.geojson"
+
+    with open(n_path, 'w') as out:
+        json.dump(fc_nodes, out)
+
+    print('#######################################################')
+    print("")
 
 def save_image(data, output_name, size=(15, 15), dpi=300):
     fig = plt.figure()
