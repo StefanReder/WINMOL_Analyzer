@@ -361,12 +361,21 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.load_geojson(self.nodes_path + '_nodes.geojson')
 
     def load_raster(self, path):
+        # Check if the path ends with ".tiff" (case-insensitive)
+        if not path.lower().endswith(".tiff"):
+            path += ".tiff"
         # Extract the base name of the input image file
         name = os.path.splitext(os.path.basename(path))[0]
         # Load raster layer
-        raster_layer = QgsRasterLayer(path, name)
-        QgsProject.instance().addMapLayer(raster_layer)
+        raster_layer = QgsRasterLayer(path, name, "gdal")
+        # Check if the layer was loaded successfully
+        if not raster_layer.isValid():
+            print(f"Error loading raster layer from {path}")
+            return
 
+        # Add the raster layer to the current QGIS project
+        QgsProject.instance().addMapLayer(raster_layer)
+        print(f"Raster layer loaded successfully from {path}")
 
     def load_geojson(self, path):
         # Extract the base name of the input image file
