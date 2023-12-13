@@ -132,28 +132,6 @@ def install_requirements(
 
     venv_python_path = get_venv_python_path(venv_path)
 
-    print("{} -m pip install --upgrade pip".format(venv_python_path))
-
-    # upgrade pip
-    completed_process = subprocess.run(
-        [
-            venv_python_path,
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
-            "pip"
-        ], capture_output=True, text=True, shell=True)
-
-    if completed_process.returncode != 0:
-        m = (f"Failed to update pip, got "
-             f"{completed_process.returncode} as return code. "
-             f"Full log: {completed_process}")
-        print(m)
-        print(completed_process.stdout)
-        print(completed_process.stderr)
-        raise Exception(m)
-
     print("{} -m pip install -r {}".format(
         venv_python_path,
         requirements_path)
