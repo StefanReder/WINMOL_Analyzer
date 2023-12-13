@@ -10,7 +10,10 @@ WINMOL_VENV_NAME = "winmol_venv"
 
 
 def get_venv_python_path(venv_path):
-    venv_python_path = os.path.join(venv_path, "Scripts", "python.exe")
+    if sys.platform == "win32":
+        venv_python_path = os.path.join(venv_path, "Scripts", "python.exe")
+    else:
+        venv_python_path = os.path.join(venv_path, "bin", "python")
     return venv_python_path
 
 
