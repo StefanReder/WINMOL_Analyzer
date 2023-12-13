@@ -2,15 +2,8 @@ import subprocess
 import sys
 
 from PyQt5.QtCore import (
-    QThread,
     QObject,
     pyqtSignal,
-    pyqtSlot,
-    QRunnable,
-    QEventLoop,
-    QThreadPool,
-    QSize,
-    Qt,
 )
 
 
@@ -37,7 +30,6 @@ class Worker(QObject):
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = subprocess.SW_HIDE
 
-
             popen = subprocess.Popen(self.command,
                                      stdout=subprocess.PIPE,
                                      universal_newlines=True,
@@ -63,7 +55,6 @@ class Worker(QObject):
             print(str(e))
             self.finished.emit()
             return
-
 
     def get_total_lines(self):
         if self.command[-1] == 'Stems':

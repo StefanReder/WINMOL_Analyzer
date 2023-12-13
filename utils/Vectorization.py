@@ -136,8 +136,6 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                 # stem is updated and the merged part is removed
                 stems[0] = candidates[index_min]
                 stems.remove(slaves[index_min])
-                # the new length is calculated
-                #stems[0].length = stems[0].start.distance(stems[0].stop)
                 global_change = True
                 c_count = c_count + 1
                 stems, dub_count_ = remove_duplicates(stems, stems[0])
@@ -352,7 +350,6 @@ def build_stem_parts(segments: List[Part]):
             segments[i].path.reverse()
     segments = set(segments)
     for seg in segments:
-        length = math.dist(seg.start, seg.stop)
         stem = Stem(Point(seg.start), Point(seg.stop), LineString(seg.path), [],
                     [], [], [])
         stems.append(stem)
@@ -426,7 +423,6 @@ def restore_geoinformation(stems: List[Stem], config, profile):
                 bounds.left + (stems[j].path[k][1] - padding) * px_size,
                 bounds.top - (stems[j].path[k][0] - padding) * px_size
             )
-        #stems[j].length = math.dist(stems[j].start, stems[j].stop)
     t.stop()
     print("#######################################################")
     print("")

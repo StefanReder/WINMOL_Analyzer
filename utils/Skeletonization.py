@@ -322,48 +322,6 @@ def get_segment(end_node, end_nodes, skel, low_bounds, up_bounds, min_length):
 # Returns a list of parts (pairs of nodes) with a minimum distance and a
 # cleaned skeleton.
 
-def refine_skeleton_segments2(parts: List[Part], skel: np.ndarray,
-                             distance: int) -> (List[Part], int, int):
-    split = 0
-    out = 0
-    refined_parts = []
-
-    print("#######################################################")
-    print("# Refining and sorting out skeleton segments")
-    print("Initial length of skeleton: ", np.count_nonzero(skel))
-    print("Number of initial skeleton segments", len(parts))
-
-    for part in parts:
-        low_bounds = (part.l_bound[0] - 5, part.l_bound[1] - 5)
-        up_bounds = (part.u_bound[0] + 5, part.u_bound[1] + 5)
-        sub_skel = skel[
-            low_bounds[0]:up_bounds[0] + 1,
-            low_bounds[1]:up_bounds[1] + 1
-        ]
-
-        refined_parts_, split_, out_ = refine_skeleton_segment(
-            part,
-            low_bounds,
-            up_bounds,
-            sub_skel,
-            distance
-        )
-
-        if refined_parts_ is not None:
-            refined_parts.extend(refined_parts_)
-
-        split += split_
-        out += out_
-
-    print("Number of split segments:", split)
-    print("Number of removed segments:", out)
-    print("Number of refined segments:", len(refined_parts))
-    print("#######################################################")
-    print("")
-
-    return refined_parts, split, out
-
-
 def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
                              distance: int) -> (List[Part], np.ndarray):
     split = 0

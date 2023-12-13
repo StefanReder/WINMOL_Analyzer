@@ -109,7 +109,9 @@ def ensure_venv(p, exit_on_miss: bool = False):
 
 def ensure_pip(venv_path) -> None:
     print("Installing pip... ")
-    process_cmp = subprocess.run([get_venv_python_path(venv_path), "-m", "ensurepip"])
+    process_cmp = subprocess.run(
+        [get_venv_python_path(venv_path), "-m", "ensurepip"]
+    )
     if process_cmp.returncode == 0:
         print("Successfully installed pip")
     else:

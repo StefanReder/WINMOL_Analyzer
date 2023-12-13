@@ -14,7 +14,15 @@ from utils import Quantification as Quant
 
 
 class ImageProcessing:
-    def __init__(self, model_path, uav_path, stem_path, trees_path, nodes_path, process_type):
+    def __init__(
+            self,
+            model_path,
+            uav_path,
+            stem_path,
+            trees_path,
+            nodes_path,
+            process_type
+    ):
         self.model_path = model_path
         self.uav_path = uav_path
         self.stem_path = stem_path
@@ -31,7 +39,9 @@ class ImageProcessing:
         img, profile = IO.load_orthomosaic(self.uav_path, self.config)
 
         print("\nPerforming Prediction with Resampling...")
-        pred, profile = Pred.predict_with_resampling_per_tile(img, profile, model, self.config)
+        pred, profile = Pred.predict_with_resampling_per_tile(
+            img, profile, model, self.config
+        )
 
         print("\nExporting Predicted Stem Map...")
         stem_file_name = os.path.splitext(os.path.basename(self.stem_path))[0]
@@ -50,7 +60,7 @@ class ImageProcessing:
         print("\nConnecting Stem Parts...")
         stems = Vec.connect_stems(stems, self.config)
         print("\nRebuilding End Nodes...")
-        end_nodes = Vec.rebuild_endnodes_from_stems(stems)
+        Vec.rebuild_endnodes_from_stems(stems)
         print("\nQuantifying Stems...")
         stems = Quant.quantify_stems(stems, pred, profile)
         # exporting as geojson
@@ -98,7 +108,7 @@ if __name__ == '__main__':
     nodes_path = str(sys.argv[5])
     process_type = str(sys.argv[6])
 
-    #Create an instance of the ImageProcessing class and run the main method
+    # Create an instance of the ImageProcessing class and run the main method
     image_processor = ImageProcessing(
         model_path,
         uav_path,

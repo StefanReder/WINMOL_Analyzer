@@ -206,7 +206,7 @@ def vector_to_geojson(stems, path):
 
 
 def nodes_to_geojson(stems, path):
-    #third checkbox
+    # third checkbox
     print("#######################################################")
     print("Export Nodes to GeoJSON")
 
@@ -219,6 +219,7 @@ def nodes_to_geojson(stems, path):
 
     print('#######################################################')
     print("")
+
 
 def save_image(data, output_name, size=(15, 15), dpi=300):
     fig = plt.figure()

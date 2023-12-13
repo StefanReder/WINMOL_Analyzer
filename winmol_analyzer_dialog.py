@@ -24,19 +24,14 @@ Dialog
 """
 
 import os
-import subprocess
 
-from PyQt5.QtCore import QThread, pyqtSignal
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QFileDialog
 
-import threading
-import queue
-#from tensorflow import keras
 
 from PyQt5.QtCore import QThread
 
 
-from qgis.core import QgsProject, QgsVectorLayer, QgsRasterLayer, QgsCoordinateReferenceSystem
+from qgis.core import QgsProject, QgsVectorLayer, QgsRasterLayer
 from qgis.PyQt import QtWidgets, uic
 
 from .classes.Config import Config
@@ -288,12 +283,10 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         print("Closing application")
         self.close()
 
-
     def run_process(self):
         # Path to the Python script
         path_dirname = os.path.dirname(__file__)
         script_path = os.path.join(path_dirname, "winmol_run.py")
-
 
         # check process type from checkboxes
         self.set_selected_process_type()
@@ -322,7 +315,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
         self.update_output_log("Starting the process...")
 
-
         # for debugging run subprocess directly
         # process = subprocess.run(
         #     command,
@@ -333,7 +325,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # print(process.stderr)
         # self.update_output_log(process.stdout)
         # self.update_output_log(process.stderr)
-
 
         # Run this part for responcive GUI
         self.thread = QThread()
