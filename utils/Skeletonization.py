@@ -321,6 +321,7 @@ def get_segment(end_node, end_nodes, skel, low_bounds, up_bounds, min_length):
 # Find stem parts between nodes using the connectivity in the skeleton.
 # Returns a list of parts (pairs of nodes) with a minimum distance and a
 # cleaned skeleton.
+
 def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
                              distance: int) -> (List[Part], np.ndarray):
     split = 0

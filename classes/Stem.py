@@ -10,7 +10,6 @@ from classes.Vector import Vector
 
 @dataclass
 class Stem:
-    stem_id: int
     start: Point
     stop: Point
     path: LineString
@@ -30,11 +29,15 @@ class Stem:
              'path', tuple(list(self.path.coords)))
         )
 
+    @property
     def length(self):
         if len(self.segment_length_list) == 0:
+            if self.start is not None and self.stop is not None:
+                return self.start.distance(self.stop)
             return 0
         return sum(self.segment_length_list)
 
+    @property
     def volume(self):
         if len(self.segment_volume_list) == 0:
             return 0

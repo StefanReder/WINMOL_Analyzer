@@ -10,7 +10,10 @@ WINMOL_VENV_NAME = "winmol_venv"
 
 
 def get_venv_python_path(venv_path):
-    venv_python_path = os.path.join(venv_path, "bin", "python")
+    if sys.platform == "win32":
+        venv_python_path = os.path.join(venv_path, "Scripts", "python.exe")
+    else:
+        venv_python_path = os.path.join(venv_path, "bin", "python")
     return venv_python_path
 
 
@@ -104,6 +107,19 @@ def ensure_venv(p, exit_on_miss: bool = False):
     return p
 
 
+def ensure_pip(venv_path) -> None:
+    print("Installing pip... ")
+    process_cmp = subprocess.run(
+        [get_venv_python_path(venv_path), "-m", "ensurepip"]
+    )
+    if process_cmp.returncode == 0:
+        print("Successfully installed pip")
+    else:
+        raise Exception(
+            f"Failed to install pip, got {process_cmp.returncode}"
+        )
+
+
 def install_requirements(
         venv_path: str,
         requirements_path: Path
@@ -129,8 +145,7 @@ def install_requirements(
             "install",
             "-r",
             str(requirements_path),
-        ]
-    )
+        ], capture_output=True, text=True, shell=True)
 
     if completed_process.returncode != 0:
         m = (f"Failed to install dependencies through pip, got "
@@ -143,6 +158,7 @@ def install_requirements(
 
 
 def install_dependencies(venv_path: str) -> None:
+    ensure_pip(venv_path)
     print("Check / install base requirements now")
     install_requirements(
         venv_path,
