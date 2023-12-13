@@ -145,7 +145,7 @@ def install_requirements(
             "install",
             "-r",
             str(requirements_path),
-        ], capture_output=True, text=True, shell=True)
+        ], capture_output=True)
 
     if completed_process.returncode != 0:
         m = (f"Failed to install dependencies through pip, got "
