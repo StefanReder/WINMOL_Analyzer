@@ -20,7 +20,6 @@ def predict(img, model, config):
     print("Prediction of semantic stem map")
 
     x_tiles = int(
-        np.floor(img.shape[1] / (config.img_width - config.overlap_pred))) + 1
         np.ceil(img.shape[1] / (config.img_width - config.overlap_pred)))
     y_tiles = int(
         np.ceil(img.shape[0] / (config.img_width - config.overlap_pred)))
@@ -90,7 +89,6 @@ def predict_with_resampling_per_tile(img, profile, model, config):
     print("Resampling tiles while analyzing")
 
     px_per_tile_x = int(
-        np.floor(config.tile_size / abs(profile['transform'][0])))
         np.ceil(config.tile_size / abs(profile['transform'][0])))
     px_per_tile_y = int(
         np.ceil(config.tile_size / abs(profile['transform'][4])))
