@@ -21,8 +21,9 @@ def predict(img, model, config):
 
     x_tiles = int(
         np.floor(img.shape[1] / (config.img_width - config.overlap_pred))) + 1
+        np.ceil(img.shape[1] / (config.img_width - config.overlap_pred)))
     y_tiles = int(
-        np.floor(img.shape[0] / (config.img_width - config.overlap_pred))) + 1
+        np.ceil(img.shape[0] / (config.img_width - config.overlap_pred)))
 
     # padding to full tiles
     img_pad = np.full((
@@ -90,19 +91,18 @@ def predict_with_resampling_per_tile(img, profile, model, config):
 
     px_per_tile_x = int(
         np.floor(config.tile_size / abs(profile['transform'][0])))
+        np.ceil(config.tile_size / abs(profile['transform'][0])))
     px_per_tile_y = int(
-        np.floor(config.tile_size / abs(profile['transform'][4])))
-    overlap_img_x = int(
-        np.floor(config.overlap_pred * px_per_tile_x / config.img_width))
-    overlap_img_y = int(
-        np.floor(config.overlap_pred * px_per_tile_y / config.img_width))
-    x_tiles = int(np.floor(img.shape[1] / (px_per_tile_x - overlap_img_x))) + 1
-    y_tiles = int(np.floor(img.shape[0] / (px_per_tile_y - overlap_img_y))) + 1
+        np.ceil(config.tile_size / abs(profile['transform'][4])))
+    overlap_img_x = config.overlap_pred * px_per_tile_x / config.img_width
+    overlap_img_y = config.overlap_pred * px_per_tile_y / config.img_width
+    x_tiles = int(np.ceil(img.shape[1] / (px_per_tile_x - overlap_img_x)))
+    y_tiles = int(np.ceil(img.shape[0] / (px_per_tile_y - overlap_img_y)))
 
     # padding to full tiles
     img_pd = np.full(
-        (y_tiles * (px_per_tile_y - overlap_img_y) + overlap_img_y,
-         x_tiles * (px_per_tile_x - overlap_img_x) + overlap_img_x,
+        (int(np.ceil(y_tiles * (px_per_tile_y - overlap_img_y) + overlap_img_y)),
+         int(np.ceil(x_tiles * (px_per_tile_x - overlap_img_x) + overlap_img_x)),
          config.n_channels), fill_value=0, dtype=np.float64)
     img_pd[0:img.shape[0], 0:img.shape[1], ] = img
 
@@ -113,9 +113,9 @@ def predict_with_resampling_per_tile(img, profile, model, config):
     mask = resize(mask, prediction.shape)
 
     for i in range(y_tiles):
-        x = i * (px_per_tile_y - overlap_img_y)
+        x = int(np.floor(i * (px_per_tile_y - overlap_img_y))) 
         for j in range(x_tiles):
-            y = j * (px_per_tile_x - overlap_img_x)
+            y = int(np.floor(j * (px_per_tile_x - overlap_img_x))) 
             tile = img_pd[x:x + px_per_tile_x - 1, y:y + px_per_tile_y - 1, 0:3]
             tile = tf.convert_to_tensor(tile, dtype=np.float32)
             tile = tf.image.resize(tile,
