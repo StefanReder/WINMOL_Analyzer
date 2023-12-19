@@ -99,6 +99,7 @@ def ensure_venv(p, exit_on_miss: bool = False):
                 "python",
                 "-m",
                 "venv",
+                "--copies",
                 p
             ]
         )
