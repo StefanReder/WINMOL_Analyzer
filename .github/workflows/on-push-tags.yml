@@ -14,7 +14,7 @@ jobs:
         uses: thedoctor0/zip-release@0.7.5
         with:
           type: 'zip'
-          filename: 'release.zip'
+          filename: 'WINMOL_Analyser_QGIS_Plugin.zip'
           exclusions: '*.git* documentation/* winmol_venv/* Dockerfile startDocker.sh .github/* standalone/input/* standalone/output/* standalone/model/* standalone/pred/*'
       - name: Upload Release
         uses: ncipollo/release-action@v1.12.0
