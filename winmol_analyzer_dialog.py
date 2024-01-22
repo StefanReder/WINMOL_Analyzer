@@ -77,6 +77,9 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.set_connections()
         self.output_log.setReadOnly(True)
         self.venv_path = venv_path
+        self.models_dir = os.path.join(
+            os.path.dirname(self.venv_path) , 'models'
+            )
         self.process_type = None
 
         # hide warning label
@@ -159,7 +162,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             # set crs
             self.set_crs(layer)
 
-            # Get the raster's pixel size in map units (usually meters)
+            # Get the raster's pixel size in map units
             x_pixel_size = layer.rasterUnitsPerPixelX()
             y_pixel_size = layer.rasterUnitsPerPixelY()
 
@@ -198,7 +201,12 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             # File is not loaded in QGIS or user chose to remove, set the text in the line edit
             self.output_lineEdit_stem.setText(file_path)
             self.stem_path = self.output_lineEdit_stem.text()
-
+            
+    def set_path_from_line_edit(self):
+        self.stem_path = self.output_lineEdit_stem.text()
+        self.trees_path = self.output_lineEdit_trees.text()
+        self.nodes_path = self.output_lineEdit_nodes.text()
+        
     def check_uav_input_exists(self, file_path):
         # Check if the file is already loaded in QGIS
         loaded_layers = QgsProject.instance().mapLayers().values()
@@ -241,6 +249,20 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.output_lineEdit_nodes.setEnabled(is_checked)
         self.output_toolButton_nodes.setEnabled(is_checked)
         self.apply_style_to_line_edit(self.output_lineEdit_nodes, is_checked)
+
+    def set_selected_model(self):
+        selected_text = self.model_comboBox.currentText()
+        if selected_text == "Beech":
+            self.model_path = os.path.join(self.models_dir, 'Beech.hdf5')
+        elif selected_text == "Spruce":
+            self.model_path = os.path.join(self.models_dir, 'Spruce.hdf5')
+        elif selected_text == "General":
+            self.model_path = os.path.join(self.models_dir, 'General.hdf5')
+        elif selected_text == "Custom":
+            self.model_path = self.model_lineEdit.text()
+        
+        print(self.model_path)
+                    
 
     def set_selected_process_type(self):
         stem_checked = self.output_checkBox_stem.isChecked()
@@ -287,9 +309,11 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # Path to the Python script
         path_dirname = os.path.dirname(__file__)
         script_path = os.path.join(path_dirname, "winmol_run.py")
-
-        # check process type from checkboxes
+        
+        # set chosen parameters
+        self.set_selected_model()
         self.set_selected_process_type()
+        self.set_path_from_line_edit()
 
         # check if uav image is loaded in qgis
         self.check_uav_input_exists(self.stem_path)
@@ -316,6 +340,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.update_output_log("Starting the process...")
 
         # for debugging run subprocess directly
+        # import subprocess
         # process = subprocess.run(
         #     command,
         #     capture_output=True,
@@ -326,7 +351,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # self.update_output_log(process.stdout)
         # self.update_output_log(process.stderr)
 
-        # Run this part for responcive GUI
+        # Run this part for responsive GUI
         self.thread = QThread()
         self.worker = Worker(command)
         self.worker.moveToThread(self.thread)

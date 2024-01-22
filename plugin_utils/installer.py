@@ -7,6 +7,7 @@ from pkg_resources import find_distributions
 from PyQt5.QtWidgets import QMessageBox
 
 WINMOL_VENV_NAME = "winmol_venv"
+MODELS_PATH = "models"
 
 
 def get_venv_python_path(venv_path):
@@ -78,10 +79,11 @@ def _dependencies_installed(requirements: str, path: str, is_tf: bool) -> bool:
 
 def ensure_venv(p, exit_on_miss: bool = False):
     if not os.path.exists(p) and not exit_on_miss:
-        message = ("A Python virtual environment (venv) is required update / to"
-                   " use the WINMOL_Analyser plugin.\n")
-        message += ("Would you like to create / install this venv and the "
-                    "required dependencies afterwards?")
+        message = ("A Python virtual environment (venv) as well as models"
+                   " data are required to use the WINMOL_Analyser"
+                   " plugin.\n")
+        message += ("Would you like to create / install these "
+                    "required dependencies?")
 
         reply = QMessageBox.question(
             None,
@@ -177,9 +179,44 @@ def ensure_dependencies(venv_path: str) -> None:
         if venv_path is None:
             raise ImportError()
         install_dependencies(venv_path)
+        download_models(venv_path)
         print("Successfully found dependencies")
     except ImportError:
         raise Exception(
             "Cannot automatically ensure dependencies of WINMOL_Analyser. "
-            "Please try restarting the host application!"
+            "Please try restarting QGIS and / or reinstalling the plugin."
         )
+
+
+
+import urllib.request
+import json
+
+def download_models(venv_path: str):
+    # get project path from venv path
+    project_path = os.path.dirname(venv_path)
+    download_directory = os.path.join(project_path, MODELS_PATH)
+    if not os.path.exists(download_directory):
+        os.makedirs(download_directory)   
+    try:
+        with open(os.path.join(project_path, "config.json")) as f:
+            files = json.load(f)
+
+        for file_name, url in files.items():
+            file_path = os.path.join(download_directory, f"{file_name}.hdf5")
+            # check if file exists
+            if not os.path.exists(file_path):
+                print(f"{file_name} data not found, downloading...")
+                urllib.request.urlretrieve(url, file_path)
+                print(f"Downloaded {file_name} data.")
+            else:
+                print(f"{file_name} data exists.")
+    
+    # except download error
+    except urllib.error.URLError as e:
+        print(e.reason)
+        raise Exception(
+            "Cannot automatically ensure models of WINMOL_Analyser. "
+            "Please try restarting QGIS and / or reinstalling the plugin."
+        )
+        
