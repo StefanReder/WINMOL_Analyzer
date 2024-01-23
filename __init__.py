@@ -26,7 +26,7 @@
 import os
 
 from .plugin_utils.installer import WINMOL_VENV_NAME, \
-    ensure_venv, ensure_dependencies
+    ensure_venv, ensure_dependencies, download_models
 
 
 # noinspection PyPep8Naming
@@ -38,14 +38,17 @@ def classFactory(iface):  # pylint: disable=invalid-name
     :param iface: A QGIS interface instance.
     :type iface: QgsInterface
     """
+    project_path = os.path.dirname(__file__)
 
     venv_path = ensure_venv(
         os.path.join(
-            os.path.dirname(__file__),
+            project_path,
             WINMOL_VENV_NAME
         )
     )
     ensure_dependencies(venv_path)
+    
+    
 
     from .winmol_analyzer import WINMOLAnalyzer
     return WINMOLAnalyzer(iface, venv_path)
