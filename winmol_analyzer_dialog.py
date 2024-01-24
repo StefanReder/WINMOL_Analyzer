@@ -260,7 +260,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.model_path = os.path.join(self.models_dir, 'General.hdf5')
         elif selected_text == "Custom":
             self.model_path = self.model_lineEdit.text()
-                            
+                    
     def set_selected_process_type(self):
         stem_checked = self.output_checkBox_stem.isChecked()
         trees_checked = self.output_checkBox_trees.isChecked()
