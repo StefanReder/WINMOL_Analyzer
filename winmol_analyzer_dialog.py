@@ -78,8 +78,8 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.output_log.setReadOnly(True)
         self.venv_path = venv_path
         self.models_dir = os.path.join(
-            os.path.dirname(self.venv_path) , 'models'
-            )
+            os.path.dirname(self.venv_path), 'models'
+        )
         self.process_type = None
 
         # hide warning label
@@ -201,12 +201,12 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             # File is not loaded in QGIS or user chose to remove, set the text in the line edit
             self.output_lineEdit_stem.setText(file_path)
             self.stem_path = self.output_lineEdit_stem.text()
-            
+
     def set_path_from_line_edit(self):
         self.stem_path = self.output_lineEdit_stem.text()
         self.trees_path = self.output_lineEdit_trees.text()
         self.nodes_path = self.output_lineEdit_nodes.text()
-        
+
     def check_uav_input_exists(self, file_path):
         # Check if the file is already loaded in QGIS
         loaded_layers = QgsProject.instance().mapLayers().values()
@@ -309,7 +309,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # Path to the Python script
         path_dirname = os.path.dirname(__file__)
         script_path = os.path.join(path_dirname, "winmol_run.py")
-        
+
         # set chosen parameters
         self.set_selected_model()
         self.set_selected_process_type()

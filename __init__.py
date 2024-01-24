@@ -26,7 +26,7 @@
 import os
 
 from .plugin_utils.installer import WINMOL_VENV_NAME, \
-    ensure_venv, ensure_dependencies, download_models
+    ensure_venv, ensure_dependencies
 
 
 # noinspection PyPep8Naming
@@ -46,9 +46,7 @@ def classFactory(iface):  # pylint: disable=invalid-name
             WINMOL_VENV_NAME
         )
     )
-    ensure_dependencies(venv_path)
-    
-    
+    ensure_dependencies(venv_path)  
 
     from .winmol_analyzer import WINMOLAnalyzer
     return WINMOLAnalyzer(iface, venv_path)
