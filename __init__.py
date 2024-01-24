@@ -46,7 +46,7 @@ def classFactory(iface):  # pylint: disable=invalid-name
             WINMOL_VENV_NAME
         )
     )
-    ensure_dependencies(venv_path)  
+    ensure_dependencies(venv_path)
 
     from .winmol_analyzer import WINMOLAnalyzer
     return WINMOLAnalyzer(iface, venv_path)
