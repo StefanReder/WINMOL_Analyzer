@@ -352,17 +352,22 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # self.update_output_log(process.stderr)
 
         # Run this part for responsive GUI
-        self.thread = QThread()
-        self.worker = Worker(command)
-        self.worker.moveToThread(self.thread)
-        self.worker.progress_signal.connect(self.update_progress)
-        self.thread.started.connect(self.worker.run_process)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.finished.connect(self.load_layers_to_session)
-        self.worker.update_signal.connect(self.update_output_log)
-        self.thread.start()
+        try:
+            self.thread = QThread()
+            self.worker = Worker(command)
+            self.worker.moveToThread(self.thread)
+            self.worker.progress_signal.connect(self.update_progress)
+            self.thread.started.connect(self.worker.run_process)
+            self.worker.finished.connect(self.thread.quit)
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.thread.finished.connect(self.thread.deleteLater)
+            self.thread.finished.connect(self.load_layers_to_session)
+            self.worker.update_signal.connect(self.update_output_log)
+            self.thread.start()
+        except MemoryError:
+            self.update_output_log("The operation ran out of memory. "
+                                   "Please free up some memory and "
+                                   "try again.")
 
     def update_output_log(self, text):
         # Update your QPlainTextEdit with the output
