@@ -2,6 +2,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import urllib.request
+import json
 
 from pkg_resources import find_distributions
 from PyQt5.QtWidgets import QMessageBox
@@ -188,16 +190,12 @@ def ensure_dependencies(venv_path: str) -> None:
         )
 
 
-
-import urllib.request
-import json
-
 def download_models(venv_path: str):
     # get project path from venv path
     project_path = os.path.dirname(venv_path)
     download_directory = os.path.join(project_path, MODELS_PATH)
     if not os.path.exists(download_directory):
-        os.makedirs(download_directory)   
+        os.makedirs(download_directory)
     try:
         with open(os.path.join(project_path, "config.json")) as f:
             files = json.load(f)
@@ -211,7 +209,7 @@ def download_models(venv_path: str):
                 print(f"Downloaded {file_name} data.")
             else:
                 print(f"{file_name} data exists.")
-    
+
     # except download error
     except urllib.error.URLError as e:
         print(e.reason)
@@ -219,4 +217,3 @@ def download_models(venv_path: str):
             "Cannot automatically ensure models of WINMOL_Analyser. "
             "Please try restarting QGIS and / or reinstalling the plugin."
         )
-        
