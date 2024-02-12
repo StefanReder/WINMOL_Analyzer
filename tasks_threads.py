@@ -40,7 +40,7 @@ class Worker(QObject):
                 self.update_signal.emit(stdout_line)
 
                 # Calculate progress based on total lines
-                progress_percentage = (total_lines / total_expected_lines) * 100
+                progress_percentage = int((total_lines / total_expected_lines) * 100)
                 # Update the progress bar
                 self.progress_signal.emit(progress_percentage)
             self.progress_signal.emit(100)

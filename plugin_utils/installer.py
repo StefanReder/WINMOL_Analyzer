@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 import urllib.request
 import json
+import shutil
 
 from pkg_resources import find_distributions
 from PyQt5.QtWidgets import QMessageBox
@@ -11,12 +12,17 @@ from PyQt5.QtWidgets import QMessageBox
 WINMOL_VENV_NAME = "winmol_venv"
 MODELS_PATH = "models"
 
+def get_python_command():
+    python_command = "python3" if shutil.which("python3") else "python"
+    return python_command
+
 
 def get_venv_python_path(venv_path):
     if sys.platform == "win32":
         venv_python_path = os.path.join(venv_path, "Scripts", "python.exe")
     else:
-        venv_python_path = os.path.join(venv_path, "bin", "python")
+        python_command = get_python_command()
+        venv_python_path = os.path.join(venv_path, "bin", python_command)
     return venv_python_path
 
 
@@ -98,9 +104,10 @@ def ensure_venv(p, exit_on_miss: bool = False):
         if reply == QMessageBox.No:
             return None
 
+        python_command = get_python_command()        
         subprocess.run(
             [
-                "python",
+                python_command,
                 "-m",
                 "venv",
                 "--copies",
@@ -114,15 +121,14 @@ def ensure_venv(p, exit_on_miss: bool = False):
 
 def ensure_pip(venv_path) -> None:
     print("Installing pip... ")
-    process_cmp = subprocess.run(
-        [get_venv_python_path(venv_path), "-m", "ensurepip"]
-    )
-    if process_cmp.returncode == 0:
-        print("Successfully installed pip")
-    else:
-        raise Exception(
-            f"Failed to install pip, got {process_cmp.returncode}"
+    try:
+        process_cmp = subprocess.run(
+            [get_venv_python_path(venv_path), "-m", "ensurepip"]
         )
+        if process_cmp.returncode == 0:
+            print("Successfully installed pip")
+    except subprocess.CalledProcessError as e:
+        raise Exception(f"error: {e.stderr}")
 
 
 def install_requirements(

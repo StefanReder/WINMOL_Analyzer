@@ -24,6 +24,7 @@ Dialog
 """
 
 import os
+import psutil
 
 from PyQt5.QtWidgets import QFileDialog
 
@@ -349,6 +350,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # self.update_output_log(process.stderr)
 
         # Run this part for responsive GUI
+        print("Starting the process...")
         try:
             self.thread = QThread()
             self.worker = Worker(command)
@@ -361,10 +363,14 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.thread.finished.connect(self.load_layers_to_session)
             self.worker.update_signal.connect(self.update_output_log)
             self.thread.start()
+        # catch out of memory error
         except MemoryError:
+            self.worker.update_signal.disconnect(self.update_output_log)
             self.update_output_log("The operation ran out of memory. "
                                    "Please free up some memory and "
                                    "try again.")
+            self.check_swap_memory()
+
 
     def update_output_log(self, text):
         # Update your QPlainTextEdit with the output
@@ -408,3 +414,15 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
     def update_progress(self, value):
         self.progress_bar.setValue(value)
+
+    def check_swap_memory(self):
+        swap = psutil.swap_memory()
+        ram = psutil.virtual_memory()
+
+        # Convert bytes to GB
+        swap_in_gb = swap.total / (1024 ** 3)
+        ram_in_gb = ram.total / (1024 ** 3)
+
+        if swap_in_gb < ram_in_gb:
+            self.update_output_log(f"Warning: Your swap memory ({swap_in_gb} GB) is less than your physical memory ({ram_in_gb} GB). "
+                "It is recommended to increase your swap memory to at least be equal to your physical memory.")
