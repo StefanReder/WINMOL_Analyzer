@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QMessageBox
 WINMOL_VENV_NAME = "winmol_venv"
 MODELS_PATH = "models"
 
+
 def get_python_command():
     python_command = "python3" if shutil.which("python3") else "python"
     return python_command
@@ -34,11 +35,7 @@ def ensure_folder_exists(base_path: Path, folder_name: str) -> Path:
 
 def get_requirements_path() -> Path:
     # we assume that a base.txt exists in a requirements folder
-    path = Path(
-        Path(__file__).parent.parent,
-        "requirements",
-        "base.txt"
-    )
+    path = Path(Path(__file__).parent.parent, "requirements", "base.txt")
     assert path.exists(), f"path not found {path}"
     return path
 
@@ -50,9 +47,7 @@ def get_tf_requirements_path() -> Path:
     else:
         tf_requirements_file = "tensorflow.txt"
     path = Path(
-        Path(__file__).parent.parent,
-        "requirements",
-        tf_requirements_file
+        Path(__file__).parent.parent, "requirements", tf_requirements_file
     )
     assert path.exists(), f"path not found {path}"
     return path
@@ -73,10 +68,9 @@ def _dependencies_installed(requirements: str, path: str, is_tf: bool) -> bool:
             requirements = requirements.replace(entry, "")
 
     print(requirements)
-    requirements = (requirements
-                    .replace(" ", "")
-                    .replace(";", "")
-                    .replace(",", ""))
+    requirements = (
+        requirements.replace(" ", "").replace(";", "").replace(",", "")
+    )
 
     print(requirements)
     if len(requirements) > 0:
@@ -87,33 +81,28 @@ def _dependencies_installed(requirements: str, path: str, is_tf: bool) -> bool:
 
 def ensure_venv(p, exit_on_miss: bool = False):
     if not os.path.exists(p) and not exit_on_miss:
-        message = ("A Python virtual environment (venv) as well as models"
-                   " data are required to use the WINMOL_Analyser"
-                   " plugin.\n")
-        message += ("Would you like to create / install these "
-                    "required dependencies?")
+        message = (
+            "A Python virtual environment (venv) as well as models"
+            " data are required to use the WINMOL_Analyser"
+            " plugin.\n"
+        )
+        message += (
+            "Would you like to create / install these " "required dependencies?"
+        )
 
         reply = QMessageBox.question(
             None,
-            'Missing VENV / Dependencies',
+            "Missing VENV / Dependencies",
             message,
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.No,
         )
 
         if reply == QMessageBox.No:
             return None
 
-        python_command = get_python_command()        
-        subprocess.run(
-            [
-                python_command,
-                "-m",
-                "venv",
-                "--copies",
-                p
-            ]
-        )
+        python_command = get_python_command()
+        subprocess.run([python_command, "-m", "venv", "--copies", p])
     if not os.path.exists(p) and exit_on_miss:
         raise Exception("Could not resolve venv path.")
     return p
@@ -131,10 +120,7 @@ def ensure_pip(venv_path) -> None:
         raise Exception(f"error: {e.stderr}")
 
 
-def install_requirements(
-        venv_path: str,
-        requirements_path: Path
-) -> None:
+def install_requirements(venv_path: str, requirements_path: Path) -> None:
     print(
         "Installing / checking WINMOL_Analyser dependencies in venv {}".format(
             venv_path
@@ -143,10 +129,7 @@ def install_requirements(
 
     venv_python_path = get_venv_python_path(venv_path)
 
-    print("{} -m pip install -r {}".format(
-        venv_python_path,
-        requirements_path)
-    )
+    print("{} -m pip install -r {}".format(venv_python_path, requirements_path))
 
     completed_process = subprocess.run(
         [
@@ -156,12 +139,16 @@ def install_requirements(
             "install",
             "-r",
             str(requirements_path),
-        ], capture_output=True)
+        ],
+        capture_output=True,
+    )
 
     if completed_process.returncode != 0:
-        m = (f"Failed to install dependencies through pip, got "
-             f"{completed_process.returncode} as return code. "
-             f"Full log: {completed_process}")
+        m = (
+            f"Failed to install dependencies through pip, got "
+            f"{completed_process.returncode} as return code. "
+            f"Full log: {completed_process}"
+        )
         print(m)
         print(completed_process.stdout)
         print(completed_process.stderr)
@@ -171,15 +158,9 @@ def install_requirements(
 def install_dependencies(venv_path: str) -> None:
     ensure_pip(venv_path)
     print("Check / install base requirements now")
-    install_requirements(
-        venv_path,
-        get_requirements_path()
-    )
+    install_requirements(venv_path, get_requirements_path())
     print("Check / install base tensorflow requirement now")
-    install_requirements(
-        venv_path,
-        get_tf_requirements_path()
-    )
+    install_requirements(venv_path, get_tf_requirements_path())
 
 
 def ensure_dependencies(venv_path: str) -> None:
