@@ -24,6 +24,7 @@ Dialog
 """
 
 import os
+import psutil
 
 from PyQt5.QtWidgets import QFileDialog
 
@@ -43,7 +44,7 @@ current_path = os.path.dirname(__file__)
 # This loads your .ui file so that PyQt can populate your plugin with the
 # elements from Qt Designer
 FORM_CLASS, _ = uic.loadUiType(
-    os.path.join(current_path, 'winmol_analyzer_dialog_base.ui')
+    os.path.join(current_path, "winmol_analyzer_dialog_base.ui")
 )
 
 
@@ -55,15 +56,15 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.setupUi(self)
 
         # Set the initial title
-        self.setWindowTitle('WINMOL Analyzer')
+        self.setWindowTitle("WINMOL Analyzer")
 
         # parameters
-        self.uav_path = ''
-        self.model_path = ''
-        self.stem_path = ''
-        self.trees_path = ''
-        self.nodes_path = ''
-        self.process_type = 'Stems'
+        self.uav_path = ""
+        self.model_path = ""
+        self.stem_path = ""
+        self.trees_path = ""
+        self.nodes_path = ""
+        self.process_type = "Stems"
 
         self.uav_layer_path = None
         self.uav_layer_name = None
@@ -77,9 +78,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.set_connections()
         self.output_log.setReadOnly(True)
         self.venv_path = venv_path
-        self.models_dir = os.path.join(
-            os.path.dirname(self.venv_path), 'models'
-        )
+        self.models_dir = os.path.join(os.path.dirname(self.venv_path), "models")
         self.process_type = None
 
         # hide warning label
@@ -88,7 +87,8 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
     def set_connections(self):
         self.run_button.clicked.connect(self.run_process)
         self.model_comboBox.currentIndexChanged.connect(
-            self.handle_model_combo_box_change)
+            self.handle_model_combo_box_change
+        )
         self.set_default_config_parameters()
         self.get_config_parameters_from_gui()
         self.uav_toolButton.clicked.connect(self.file_dialog_uav)
@@ -108,10 +108,16 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
     def handle_model_combo_box_change(self):
         selected_text = self.model_comboBox.currentText()
         widgets_to_enable = [
-            self.tileside_label, self.image_spinBox, self.model_lineEdit,
-            self.model_toolButton, self.segm_label, self.tileside_doubleSpinBox,
-            self.tileside_unit_label, self.image_label, self.image_spinBox,
-            self.image_unit_label
+            self.tileside_label,
+            self.image_spinBox,
+            self.model_lineEdit,
+            self.model_toolButton,
+            self.segm_label,
+            self.tileside_doubleSpinBox,
+            self.tileside_unit_label,
+            self.image_label,
+            self.image_spinBox,
+            self.image_unit_label,
         ]
 
         for widget in widgets_to_enable:
@@ -124,7 +130,13 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
     def model_file_dialog(self):
         options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Model File", "", "Model File (*.hdf5);;All Files (*)", options=options)
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Model File",
+            "",
+            "Model File (*.hdf5);;All Files (*)",
+            options=options,
+        )
         if file_path:
             self.model_lineEdit.setText(file_path)
         self.model_path = self.model_lineEdit.text()
@@ -181,11 +193,17 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
                 # hide warning label
                 self.uav_warning_label.hide()
         else:
-            print('Invalid raster layer. Check the path and format.')
+            print("Invalid raster layer. Check the path and format.")
 
     def file_dialog_uav(self):
         options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select TIFF File", "", "TIFF Files (*.tiff *.tif);;All Files (*)", options=options)
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select TIFF File",
+            "",
+            "TIFF Files (*.tiff *.tif);;All Files (*)",
+            options=options,
+        )
         if file_path:
             self.uav_lineEdit.setText(file_path)
         # check if pixel size is too large
@@ -194,7 +212,13 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
     def file_dialog_stem(self):
         options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Stem Map", "", "All Files (*)", options=options)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select Location And Name For Stem Map",
+            "",
+            "All Files (*)",
+            options=options,
+        )
         if file_path:
             # Check if the file is already loaded in QGIS
             self.check_uav_input_exists(file_path)
@@ -211,21 +235,35 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # Check if the file is already loaded in QGIS
         loaded_layers = QgsProject.instance().mapLayers().values()
         if any(layer.source() == file_path for layer in loaded_layers):
-            matching_layers = [layer for layer in loaded_layers if layer.source() == file_path]
+            matching_layers = [
+                layer for layer in loaded_layers if layer.source() == file_path
+            ]
             # Remove the matching layers
             for layer in matching_layers:
                 QgsProject.instance().removeMapLayer(layer.id())
 
     def file_dialog_trees(self):
         options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Semantic Stem Map", "", "All Files (*)", options=options)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select Location And Name For Semantic Stem Map",
+            "",
+            "All Files (*)",
+            options=options,
+        )
         if file_path:
             self.output_lineEdit_trees.setText(file_path)
             self.trees_path = self.output_lineEdit_trees.text()
 
     def file_dialog_nodes(self):
         options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getSaveFileName(self, "Select Location And Name For Measuring Nodes", "", "All Files (*)", options=options)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select Location And Name For Measuring Nodes",
+            "",
+            "All Files (*)",
+            options=options,
+        )
         if file_path:
             self.output_lineEdit_nodes.setText(file_path)
             self.nodes_path = self.output_lineEdit_nodes.text()
@@ -253,11 +291,11 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
     def set_selected_model(self):
         selected_text = self.model_comboBox.currentText()
         if selected_text == "Beech":
-            self.model_path = os.path.join(self.models_dir, 'Beech.hdf5')
+            self.model_path = os.path.join(self.models_dir, "Beech.hdf5")
         elif selected_text == "Spruce":
-            self.model_path = os.path.join(self.models_dir, 'Spruce.hdf5')
+            self.model_path = os.path.join(self.models_dir, "Spruce.hdf5")
         elif selected_text == "General":
-            self.model_path = os.path.join(self.models_dir, 'General.hdf5')
+            self.model_path = os.path.join(self.models_dir, "General.hdf5")
         elif selected_text == "Custom":
             self.model_path = self.model_lineEdit.text()
 
@@ -267,13 +305,13 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         nodes_checked = self.output_checkBox_nodes.isChecked()
 
         if nodes_checked:
-            self.process_type = 'Nodes'
+            self.process_type = "Nodes"
         elif trees_checked:
-            self.process_type = 'Trees'
+            self.process_type = "Trees"
         elif stem_checked:
-            self.process_type = 'Stems'
+            self.process_type = "Stems"
         else:
-            self.process_type = 'Stems'
+            self.process_type = "Stems"
 
     def save_temp_layer(self, layer, layer_name):
         layer = self.uav_layer_path
@@ -290,7 +328,9 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         if not is_checked:
             line_edit.setStyleSheet("")
         else:
-            line_edit.setStyleSheet("QLineEdit { background-color: rgb(255, 255, 255) }")
+            line_edit.setStyleSheet(
+                "QLineEdit { background-color: rgb(255, 255, 255) }"
+            )
 
     def cancel_process(self):
         # If the process is running, cancel it
@@ -318,14 +358,14 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # use python of venv (!)
         command = [
             get_venv_python_path(self.venv_path),
-            '-u',
+            "-u",
             script_path,
             self.model_path,
             self.uav_path,
             self.stem_path,
             self.trees_path,
             self.nodes_path,
-            self.process_type
+            self.process_type,
         ]
 
         # Switch to the log tab in the QTabWidget
@@ -349,17 +389,28 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # self.update_output_log(process.stderr)
 
         # Run this part for responsive GUI
-        self.thread = QThread()
-        self.worker = Worker(command)
-        self.worker.moveToThread(self.thread)
-        self.worker.progress_signal.connect(self.update_progress)
-        self.thread.started.connect(self.worker.run_process)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.finished.connect(self.load_layers_to_session)
-        self.worker.update_signal.connect(self.update_output_log)
-        self.thread.start()
+        print("Starting the process...")
+        try:
+            self.thread = QThread()
+            self.worker = Worker(command)
+            self.worker.moveToThread(self.thread)
+            self.worker.progress_signal.connect(self.update_progress)
+            self.thread.started.connect(self.worker.run_process)
+            self.worker.finished.connect(self.thread.quit)
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.thread.finished.connect(self.thread.deleteLater)
+            self.thread.finished.connect(self.load_layers_to_session)
+            self.worker.update_signal.connect(self.update_output_log)
+            self.thread.start()
+        # catch out of memory error
+        except MemoryError:
+            self.worker.update_signal.disconnect(self.update_output_log)
+            self.update_output_log(
+                "The operation ran out of memory. "
+                "Please free up some memory and "
+                "try again."
+            )
+            self.check_swap_memory()
 
     def update_output_log(self, text):
         # Update your QPlainTextEdit with the output
@@ -368,10 +419,10 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
     def load_layers_to_session(self):
         self.load_raster(self.stem_path)
         if self.trees_path:
-            self.load_geojson(self.trees_path + '_stems.geojson')
+            self.load_geojson(self.trees_path + "_stems.geojson")
         if self.nodes_path:
-            self.load_geojson(self.nodes_path + '_vectors.geojson')
-            self.load_geojson(self.nodes_path + '_nodes.geojson')
+            self.load_geojson(self.nodes_path + "_vectors.geojson")
+            self.load_geojson(self.nodes_path + "_nodes.geojson")
 
     def load_raster(self, path):
         # Check if the path ends with ".tiff" (case-insensitive)
@@ -403,3 +454,17 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
     def update_progress(self, value):
         self.progress_bar.setValue(value)
+
+    def check_swap_memory(self):
+        swap = psutil.swap_memory()
+        ram = psutil.virtual_memory()
+
+        # Convert bytes to GB
+        swap_in_gb = swap.total / (1024**3)
+        ram_in_gb = ram.total / (1024**3)
+
+        if swap_in_gb < ram_in_gb:
+            self.update_output_log(
+                f"Warning: Your swap memory ({swap_in_gb} GB) is less than your physical memory ({ram_in_gb} GB). "
+                "It is recommended to increase your swap memory to at least be equal to your physical memory."
+            )
