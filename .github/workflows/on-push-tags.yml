@@ -9,13 +9,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@master
-      - name: Archive Release
-        uses: thedoctor0/zip-release@0.7.5
+      - uses: actions/checkout@v4
         with:
-          type: 'zip'
-          filename: 'WINMOL_Analyser_QGIS_Plugin.zip'
-          exclusions: '*.git* documentation/* documentation/assets/* winmol_venv/* Dockerfile startDocker.sh .github/* standalone/input/* standalone/output/* standalone/model/* standalone/pred/*'
+          path: WINMOL_Analyzer
+      - name: Archive Release
+        uses: montudor/action-zip@v1
+        with:
+          args: zip -r WINMOL_Analyzer_QGIS_Plugin.zip WINMOL_Analyzer -x "*.git*" -x "*documentation/*" -x "*winmol_venv/*" -x "*Dockerfile" -x "*startDocker.sh" -x "*.github/*" -x "*standalone/input/*" -x "*standalone/output/*" -x "*standalone/model/*" -x "*standalone/pred/*" -x "*__pycache*" -x "*pylintrc"
       - name: Upload Release
         uses: ncipollo/release-action@v1.12.0
         with:
