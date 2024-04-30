@@ -19,6 +19,6 @@ jobs:
       - name: Upload Release
         uses: ncipollo/release-action@v1.12.0
         with:
-          artifacts: "WINMOL_Analyser_QGIS_Plugin.zip"
+          artifacts: "WINMOL_Analyzer_QGIS_Plugin.zip"
           allowUpdates: true
           token: ${{ secrets.GITHUB_TOKEN }}
