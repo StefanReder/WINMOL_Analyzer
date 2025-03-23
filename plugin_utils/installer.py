@@ -53,7 +53,7 @@ def get_tf_requirements_path() -> Path:
     return path
 
 
-def _dependencies_installed(requirements: str, path: str, is_tf: bool) -> bool:
+def dependencies_installed(requirements: str, path: str, is_tf: bool) -> bool:
     if is_tf:
         contains_tf = False
         for d in find_distributions(path):
@@ -109,15 +109,78 @@ def ensure_venv(p, exit_on_miss: bool = False):
 
 
 def ensure_pip(venv_path) -> None:
-    print("Installing pip... ")
+    """Ensures pip and psutil are installed in the virtual environment."""
+    print("Ensuring pip installation...")
+
+    venv_python_path = get_venv_python_path(venv_path)
+
     try:
-        process_cmp = subprocess.run(
-            [get_venv_python_path(venv_path), "-m", "ensurepip"]
+        # Check if ensurepip is available
+        process_check = subprocess.run(
+            [venv_python_path, "-c", "import ensurepip"],
+            capture_output=True,
         )
+
+        if process_check.returncode != 0:
+            print("ensurepip module is missing. Installing ensurepip...")
+
+            if sys.platform.startswith("linux"):
+                subprocess.run(["sudo", "apt", "install", "-y",
+                               "python3-ensurepip"])
+            elif sys.platform == "darwin":  # macOS
+                subprocess.run(["brew", "install", "python3"])
+            elif sys.platform == "win32":
+                print("Windows should include ensurepip by default.")
+
+        # Try installing pip using ensurepip
+        process_cmp = subprocess.run(
+            [venv_python_path, "-m", "ensurepip"],
+            capture_output=True
+        )
+
         if process_cmp.returncode == 0:
-            print("Successfully installed pip")
+            print("Successfully installed pip using ensurepip.")
+        else:
+            print("Pip installation via ensurepip failed. Trying get-pip.py...")
+
+            # Try to install pip using get-pip.py
+            get_pip_path = Path(Path(__file__).parent.parent, "plugin_utils",
+                                "get-pip.py")
+            if not get_pip_path.exists():
+                print("Downloading get-pip.py...")
+                urllib.request.urlretrieve(
+                    "https://bootstrap.pypa.io/get-pip.py",
+                    str(get_pip_path))
+
+            process_cmp = subprocess.run([venv_python_path, str(get_pip_path)],
+                                         capture_output=True)
+
+            if process_cmp.returncode == 0:
+                print("Successfully installed pip using get-pip.py.")
+            else:
+                raise Exception(
+                    f"Failed to install pip. Error: \
+                    {process_cmp.stderr.decode()}")
+
+        # Upgrade pip
+        subprocess.run([venv_python_path, "-m", "pip", "install",
+                       "--upgrade", "pip"], check=True)
+
+        # Ensure psutil is installed
+        try:
+            subprocess.run([venv_python_path, "-c", "import psutil"],
+                           check=True, capture_output=True)
+            print("psutil is already installed.")
+        except subprocess.CalledProcessError:
+            print("psutil is not installed. Installing...")
+            subprocess.run([venv_python_path, "-m", "pip", "install", "psutil"],
+                           check=True)
+            print("psutil successfully installed.")
+
+        print("pip and psutil are installed successfully!")
+
     except subprocess.CalledProcessError as e:
-        raise Exception(f"error: {e.stderr}")
+        raise Exception(f"Error ensuring pip or psutil: {e.stderr.decode()}")
 
 
 def install_requirements(venv_path: str, requirements_path: Path) -> None:
@@ -161,6 +224,13 @@ def install_dependencies(venv_path: str) -> None:
     install_requirements(venv_path, get_requirements_path())
     print("Check / install base tensorflow requirement now")
     install_requirements(venv_path, get_tf_requirements_path())
+    try:
+        subprocess.run([get_venv_python_path(venv_path),
+                       "-c", "import tensorflow"],
+                       check=True, capture_output=True)
+        print("Tensorflow was installed successfully.")
+    except subprocess.CalledProcessError:
+        print("Installation of Tensorflow failed.")
 
 
 def ensure_dependencies(venv_path: str) -> None:

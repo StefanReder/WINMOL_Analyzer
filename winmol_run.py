@@ -1,8 +1,11 @@
 #!/usr/bin/env python
 import os
 import sys
+import subprocess
+import tensorflow as tf
 from tensorflow import keras
-
+from tensorflow.keras import layers
+from tensorflow.keras.utils import get_custom_objects
 
 from classes.Config import Config
 from classes.Timer import Timer
@@ -23,6 +26,7 @@ class ImageProcessing:
             nodes_path,
             process_type
     ):
+        print("Initialization")
         self.model_path = model_path
         self.uav_path = uav_path
         self.stem_path = stem_path
@@ -31,8 +35,41 @@ class ImageProcessing:
         self.process_type = process_type
         self.config = Config()
 
+    # Function to open the model with a fallback mechanism
+    def load_model_from_path(self, model_path):
+        def custom_dropout(**kwargs):
+            if 'seed' in kwargs and isinstance(kwargs['seed'], float):
+                kwargs['seed'] = int(kwargs['seed'])  # Convert seed to int
+            return layers.Dropout(**kwargs)
+
+        class CustomConv2DTranspose(layers.Conv2DTranspose):
+            # Remove 'groups' parameter if present
+            def __init__(self, *args, **kwargs):
+                kwargs.pop("groups", None)
+                super().__init__(*args, **kwargs)
+
+            def call(self, inputs, **kwargs):
+                return super().call(inputs, **kwargs)
+
+        try:
+            print("Trying to load model using open_model()")
+            return keras.models.load_model(model_path, compile=False)
+        except Exception as e:
+            print("open_model() failed:", e)
+
+        try:
+            print("Retrying with custom layers (Dropout, Conv2DTranspose)")
+            get_custom_objects()["Dropout"] = custom_dropout
+            get_custom_objects()["Conv2DTranspose"] = CustomConv2DTranspose
+            return keras.models.load_model(model_path, compile=False)
+        except Exception as e:
+            print("Loading with custom layers also failed:", e)
+
+        raise RuntimeError("Failed to load model with all methods.")
+
     def stem_processing(self):
-        model = keras.models.load_model(self.model_path, compile=False)
+        print("\nLoading Model...")
+        model = self.load_model_from_path(self.model_path)
 
         # Loading Orthomosaic Image:
         print("\nLoading Orthomosaic Image...")
@@ -64,14 +101,49 @@ class ImageProcessing:
         print("\nQuantifying Stems...")
         stems = Quant.quantify_stems(stems, pred, profile)
         # exporting as geojson
-        IO.stems_to_geojson(stems, self.trees_path)
+        IO.stems_to_geojson(stems, profile, self.trees_path)
         return stems
 
-    def nodes_processing(self, stems):
-        IO.vector_to_geojson(stems, self.nodes_path)
-        IO.nodes_to_geojson(stems, self.nodes_path)
+    def nodes_processing(self, stems, profile):
+        IO.vector_to_geojson(stems, profile, self.nodes_path)
+        IO.nodes_to_geojson(stems, profile, self.nodes_path)
+
+    def check_DL_env(self):
+        # Check if NVIDIA GPU is available and available for processing
+        def get_nvidia_driver_version():
+            try:
+                result = subprocess.run(["nvidia-smi",
+                                         "--query-gpu=driver_version",
+                                         "--format=csv,noheader"],
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True)
+                if result.returncode == 0:
+                    print(f"NVIDIA GPU Driver Version: {result.stdout.strip()}")
+                else:
+                    print("Failed to retrieve NVIDIA driver version.")
+            except FileNotFoundError:
+                print("No NVIDIA GPU available or drivers not installed.")
+
+        get_nvidia_driver_version()
+        try:
+            physical_devices = tf.config.list_physical_devices('GPU')
+            cuda_version = tf.sysconfig.get_build_info().get(
+                'cuda_version', 'Unknown')
+            cudnn_version = tf.sysconfig.get_build_info().get(
+                'cudnn_version', 'Unknown')
+            print(f"CUDA is available: {cuda_version}")
+            print(f"cuDNN version: {cudnn_version}")
+            print("Num GPUs for CUDA processing:", len(physical_devices))
+            print("Tensorflow version:", tf.__version__)
+            print("Keras version:", tf.keras.__version__)
+
+        except Exception as e:
+            print("Tensorflow error: ", e)
 
     def display_starting_text(self):
+        print("Check CUDA environment")
+        self.check_DL_env()
         print("Command-line arguments:")
         print("Model Path:", self.model_path)
         print("Image Path:", self.uav_path)
@@ -93,13 +165,14 @@ class ImageProcessing:
         elif self.process_type == "Nodes":  # 125 lines
             pred, profile = self.stem_processing()
             stems = self.trees_processing(pred, profile)
-            self.nodes_processing(stems)
+            self.nodes_processing(stems, profile)
 
 
 if __name__ == '__main__':
     # Create a timer to measure the execution time of the script
     tt = Timer()
     tt.start()
+    print("Start timer")
     # Extract command-line arguments
     model_path = str(sys.argv[1])
     uav_path = str(sys.argv[2])
@@ -121,4 +194,5 @@ if __name__ == '__main__':
     image_processor.main()
 
     # Stop the timer and display the elapsed time
+    print("Stop timer")
     tt.stop()

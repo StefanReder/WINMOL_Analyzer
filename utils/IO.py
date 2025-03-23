@@ -89,13 +89,18 @@ def get_bounds_from_profile(profile):
     return rasterio.coords.BoundingBox(left, bot, right, top)
 
 
-def stems_to_geojson_(stems):
+def stems_to_geojson_(stems, profile):
+    # Ensure crs_epsg is a string in the correct format
+    crs_epsg = profile['crs']
+    if isinstance(crs_epsg, int):
+        crs_epsg = f"EPSG:{crs_epsg}"
+
     return {
         'type': 'FeatureCollection',
         'crs': {
             'type': 'name',
             'properties': {
-                'name': 'urn:ogc:def:crs:EPSG::25833'
+                'name': f'urn:ogc:def:crs:{crs_epsg}'
             }
         },
         'features': [
@@ -123,13 +128,18 @@ def stems_to_geojson_(stems):
     }
 
 
-def nodes_to_geojson_(stems):
+def nodes_to_geojson_(stems, profile):
+    # Ensure crs_epsg is a string in the correct format
+    crs_epsg = profile['crs']
+    if isinstance(crs_epsg, int):
+        crs_epsg = f"EPSG:{crs_epsg}"
+
     return {
         'type': 'FeatureCollection',
         'crs': {
             'type': 'name',
             'properties': {
-                'name': 'urn:ogc:def:crs:EPSG::25833'
+                'name': f'urn:ogc:def:crs:{crs_epsg}'
             }
         },
         'features': [
@@ -151,13 +161,18 @@ def nodes_to_geojson_(stems):
     }
 
 
-def vectors_to_geojson_(stems):
+def vectors_to_geojson_(stems, profile):
+    # Ensure crs_epsg is a string in the correct format
+    crs_epsg = profile['crs']
+    if isinstance(crs_epsg, int):
+        crs_epsg = f"EPSG:{crs_epsg}"
+
     return {
         'type': 'FeatureCollection',
         'crs': {
             'type': 'name',
             'properties': {
-                'name': 'urn:ogc:def:crs:EPSG::25833'
+                'name': f'urn:ogc:def:crs:{crs_epsg}'
             }
         },
         'features': [
@@ -179,11 +194,11 @@ def vectors_to_geojson_(stems):
     }
 
 
-def stems_to_geojson(stems, path):
+def stems_to_geojson(stems, profile, path):
     # second checkbox
     print("Export Stems to GeoJSON")
 
-    fc_stems = stems_to_geojson_(stems)
+    fc_stems = stems_to_geojson_(stems, profile)
     s_path = path + "_stems.geojson"
 
     with open(s_path, 'w') as out:
@@ -192,11 +207,11 @@ def stems_to_geojson(stems, path):
     print(f'\nWrote {s_path}')
 
 
-def vector_to_geojson(stems, path):
+def vector_to_geojson(stems, profile, path):
     # third checkbox
     print("Export Vectors to GeoJSON")
 
-    fc_vectors = vectors_to_geojson_(stems)
+    fc_vectors = vectors_to_geojson_(stems, profile)
 
     v_path = path + "_vectors.geojson"
 
@@ -205,12 +220,12 @@ def vector_to_geojson(stems, path):
     print("")
 
 
-def nodes_to_geojson(stems, path):
+def nodes_to_geojson(stems, profile, path):
     # third checkbox
     print("#######################################################")
     print("Export Nodes to GeoJSON")
 
-    fc_nodes = nodes_to_geojson_(stems)
+    fc_nodes = nodes_to_geojson_(stems, profile)
 
     n_path = path + "_nodes.geojson"
 

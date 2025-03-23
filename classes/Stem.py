@@ -1,6 +1,6 @@
 # DataClass representing stem objects
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from shapely import LineString, Point
 
@@ -17,16 +17,18 @@ class Stem:
     segment_diameter_list: List[float]
     segment_length_list: List[float]
     segment_volume_list: List[float]
+    crs: Optional[str] = None  # Default to undefined
 
     def __eq__(self, other):
         return (self.start == other.start and self.stop == other.stop
-                and self.path == other.path)
+                and self.path == other.path and self.crs == other.crs)
 
     def __hash__(self):
         return hash(
             ('start', tuple(list(self.start.coords)),
              'stop', tuple(list(self.stop.coords)),
-             'path', tuple(list(self.path.coords)))
+             'path', tuple(list(self.path.coords)),
+             'crs', self.crs)
         )
 
     @property
