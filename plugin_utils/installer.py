@@ -168,7 +168,7 @@ def ensure_pip(venv_path) -> None:
 
         # Ensure psutil is installed
         try:
-            subprocess.run([venv_python_path, "-c", "import psutil"], 
+            subprocess.run([venv_python_path, "-c", "import psutil"],
                            check=True, capture_output=True)
             print("psutil is already installed.")
         except subprocess.CalledProcessError:
