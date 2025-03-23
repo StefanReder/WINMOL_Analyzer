@@ -28,8 +28,9 @@ class Stem:
             ('start', tuple(list(self.start.coords)),
              'stop', tuple(list(self.stop.coords)),
              'path', tuple(list(self.path.coords)),
-             'crs', self.crs)
+             'crs', self.crs
             )
+        )
 
     @property
     def length(self):

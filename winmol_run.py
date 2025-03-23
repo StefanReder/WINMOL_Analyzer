@@ -33,44 +33,23 @@ class ImageProcessing:
         self.nodes_path = nodes_path
         self.process_type = process_type
         self.config = Config()
-    """
-    def load_model_from_path(self,model_path):
-        def custom_dropout(**kwargs):
-            if 'seed' in kwargs and isinstance(kwargs['seed'], float):
-                kwargs['seed']=int(kwargs['seed']) #Convert to int
-                return layers.Dropout(**kwargs)
-        try:
-            # TensorFlow 2.x or TensorFlow with tf.keras
-            if hasattr(tf, 'keras') and hasattr(tf.keras.models, 'load_model'):
-                print("Loading model using tf.keras.models.load_model")
-                get_custom_objects()['Dropout']=custom_dropout
-                model = tf.keras.models.load_model(model_path,compile=False)
-            else:
-                # TensorFlow 1.x with standalone Keras
-                print("Loading model using keras.models.load_model")
-                model = keras.models.load_model(model_path,compile=False)
-        
-            return model
-        except Exception as e:
-            print("Error loading model:", e)
-            return None
-    """
-
     
     # Function to open the model with a fallback mechanism
-    def load_model_from_path(self,model_path):
+    def load_model_from_path(self, model_path):
         def custom_dropout(**kwargs):
             if 'seed' in kwargs and isinstance(kwargs['seed'], float):
                 kwargs['seed'] = int(kwargs['seed'])  # Convert seed to int
             return layers.Dropout(**kwargs)
 
         class CustomConv2DTranspose(layers.Conv2DTranspose):
+            # Remove 'groups' parameter if present
             def __init__(self, *args, **kwargs):
-                kwargs.pop("groups", None)  # Remove 'groups' parameter if present
+                kwargs.pop("groups", None)  
                 super().__init__(*args, **kwargs)
 
             def call(self, inputs, **kwargs):
                 return super().call(inputs, **kwargs)
+
         try:
             print("Trying to load model using open_model()")
             return tf.keras.models.load_model(model_path, compile=False)
@@ -125,29 +104,37 @@ class ImageProcessing:
         return stems
 
     def nodes_processing(self, stems, profile):
-        IO.vector_to_geojson(stems,profile , self.nodes_path)
-        IO.nodes_to_geojson(stems,profile, self.nodes_path)
+        IO.vector_to_geojson(stems, profile, self.nodes_path)
+        IO.nodes_to_geojson(stems, profile, self.nodes_path)
 
     def check_DL_env(self):
+        # Check if NVIDIA GPU is available and available for processing
+        def get_nvidia_driver_version():
+            try:
+                result = subprocess.run(["nvidia-smi", "--query-gpu=driver_version",
+                                        "--format=csv,noheader"],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       text=True)
+                if result.returncode == 0:
+                    print(f"NVIDIA GPU Driver Version: {result.stdout.strip()}")
+                else:
+                    print("Failed to retrieve NVIDIA driver version.")
+            except FileNotFoundError:
+                print("No NVIDIA GPU available or drivers not installed properly.")
+
+        get_nvidia_driver_version()
         try:
             physical_devices = tf.config.list_physical_devices('GPU')
-            print("Tensorflow version:", tf.__version__)
+            cuda_version = tf.sysconfig.get_build_info().get('cuda_version', 'Unknown')
+            cudnn_version = tf.sysconfig.get_build_info().get('cudnn_version', 'Unknown')
+            print(f"CUDA is available: {cuda_version}")
+            print(f"cuDNN version: {cudnn_version}")
             print("Num GPUs for CUDA processing:", len(physical_devices))
-            # Check if standalone Keras is installed or if Keras is part of TensorFlow
+            print("Tensorflow version:", tf.__version__)   
+            print("Keras version:", tf.keras.__version__)
+           
         except Exception as e:
-            print("Tensorflow error")
-
-        try:
-            print("Standalone Keras version:", keras.__version__)
-        except Exception as e:
-            print("Standalone Keras not found, using tf.keras.")
-
-        # Check if Keras is part of TensorFlow (tf.keras)
-        try:
-            if hasattr(tf, 'keras'):
-                print("Keras version via tf.keras:", tf.keras.__version__)
-        except Exception as e:
-            print("TensorFlow does not have tf.keras, likely using standalone Keras.")
+            print("Tensorflow error: ", e)
 
     def display_starting_text(self):
         print("Check CUDA environment")

@@ -423,7 +423,7 @@ def restore_geoinformation(stems: List[Stem], config, profile):
                 bounds.left + (stems[j].path[k][1] - padding) * px_size,
                 bounds.top - (stems[j].path[k][0] - padding) * px_size
             )
-        
+
     t.stop()
     print("#######################################################")
     print("")

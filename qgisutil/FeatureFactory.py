@@ -24,7 +24,7 @@ class FeatureFactory:
         self._stem_fields.append(QgsField('volume', QVariant.Double))
         self._stem_fields.append(QgsField('start', QVariant.Point))
         self._stem_fields.append(QgsField('stop', QVariant.Point))
-        self._stem_fields.append(QgsField('crs', QVariant.String))  # Store CRS as an attribute
+        self._stem_fields.append(QgsField('crs', QVariant.String))
 
     def _create_node_vector_fields(self):
         self._node_vector_fields.append(QgsField('stem_id', QVariant.Int))
@@ -32,15 +32,14 @@ class FeatureFactory:
         self._node_vector_fields.append(QgsField('vector', QVariant.List))
         self._node_vector_fields.append(QgsField('diameter', QVariant.Double))
 
-    
     def _extract_crs_code(self, crs: Optional[str]) -> int:
-        #Extract the numerical EPSG code from the CRS string (e.g., 'EPSG:25833' -> 25833).
+        # Extract the numerical EPSG code from the CRS string (e.g., 'EPSG:25833' -> 25833).
         if crs and crs.startswith("EPSG:"):
             return int(crs.split(":")[1])
         return None  # Default to WGS 84 if CRS is undefined
-    
 
     # We define that the main geometry of a stem is its linestring
+
     def create_stem_feature(self, stem: Stem) -> QgsFeature:
         crs_code = self._extract_crs_code(stem.crs)  # Get EPSG code dynamically
         feat = QgsFeature(self._stem_fields)

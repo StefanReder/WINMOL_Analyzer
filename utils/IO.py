@@ -90,9 +90,8 @@ def get_bounds_from_profile(profile):
 
 
 def stems_to_geojson_(stems, profile):
-    #crs_epsg = getattr(stems[0], 'crs', None)
-        # Ensure crs_epsg is a string in the correct format
-    crs_epsg =profile['crs']
+    # Ensure crs_epsg is a string in the correct format
+    crs_epsg = profile['crs']
     if isinstance(crs_epsg, int):
         crs_epsg = f"EPSG:{crs_epsg}"
         
@@ -130,8 +129,7 @@ def stems_to_geojson_(stems, profile):
 
 
 def nodes_to_geojson_(stems, profile):
-    #crs_epsg = getattr(stems[0], 'crs', None)
-        # Ensure crs_epsg is a string in the correct format
+    # Ensure crs_epsg is a string in the correct format
     crs_epsg =profile['crs']
     if isinstance(crs_epsg, int):
         crs_epsg = f"EPSG:{crs_epsg}"
@@ -164,12 +162,11 @@ def nodes_to_geojson_(stems, profile):
 
 
 def vectors_to_geojson_(stems, profile):
-    #crs_epsg = getattr(stems[0], 'crs', None)
-        # Ensure crs_epsg is a string in the correct format
-    crs_epsg =profile['crs']
+    # Ensure crs_epsg is a string in the correct format
+    crs_epsg = profile['crs']
     if isinstance(crs_epsg, int):
         crs_epsg = f"EPSG:{crs_epsg}"
-        
+
     return {
         'type': 'FeatureCollection',
         'crs': {
@@ -197,11 +194,11 @@ def vectors_to_geojson_(stems, profile):
     }
 
 
-def stems_to_geojson(stems,profile, path):
+def stems_to_geojson(stems, profile, path):
     # second checkbox
     print("Export Stems to GeoJSON")
 
-    fc_stems = stems_to_geojson_(stems,profile)
+    fc_stems = stems_to_geojson_(stems, profile)
     s_path = path + "_stems.geojson"
 
     with open(s_path, 'w') as out:
@@ -210,11 +207,11 @@ def stems_to_geojson(stems,profile, path):
     print(f'\nWrote {s_path}')
 
 
-def vector_to_geojson(stems,profile, path):
+def vector_to_geojson(stems, profile, path):
     # third checkbox
     print("Export Vectors to GeoJSON")
 
-    fc_vectors = vectors_to_geojson_(stems,profile)
+    fc_vectors = vectors_to_geojson_(stems, profile)
 
     v_path = path + "_vectors.geojson"
 
@@ -223,7 +220,7 @@ def vector_to_geojson(stems,profile, path):
     print("")
 
 
-def nodes_to_geojson(stems,profile, path):
+def nodes_to_geojson(stems, profile, path):
     # third checkbox
     print("#######################################################")
     print("Export Nodes to GeoJSON")
