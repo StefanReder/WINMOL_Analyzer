@@ -159,7 +159,7 @@ def ensure_pip(venv_path) -> None:
                 print("Successfully installed pip using get-pip.py.")
             else:
                 raise Exception(
-                    f"Failed to install pip. Error: 
+                    f"Failed to install pip. Error: \
                     {process_cmp.stderr.decode()}")
 
         # Upgrade pip

@@ -33,7 +33,7 @@ class FeatureFactory:
         self._node_vector_fields.append(QgsField('diameter', QVariant.Double))
 
     def _extract_crs_code(self, crs: Optional[str]) -> int:
-        # Extract numerical EPSG code from the CRS string (e.g., 'EPSG:25833' -> 25833).
+        # Extract the numerical EPSG code from the CRS string
         if crs and crs.startswith("EPSG:"):
             return int(crs.split(":")[1])
         return None  # Return undefined if no EPSG code is available
