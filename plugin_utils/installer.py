@@ -145,20 +145,22 @@ def ensure_pip(venv_path) -> None:
 
             # Try to install pip using get-pip.py
             get_pip_path = Path(Path(__file__).parent.parent, "plugin_utils",
-                               "get-pip.py")
+                                "get-pip.py")
             if not get_pip_path.exists():
                 print("Downloading get-pip.py...")
-                urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py",
-                                          str(get_pip_path))
+                urllib.request.urlretrieve(
+                    "https://bootstrap.pypa.io/get-pip.py",
+                    str(get_pip_path))
 
-            process_cmp = subprocess.run([venv_python_path, str(get_pip_path)], 
+            process_cmp = subprocess.run([venv_python_path, str(get_pip_path)],
                                          capture_output=True)
 
             if process_cmp.returncode == 0:
                 print("Successfully installed pip using get-pip.py.")
             else:
                 raise Exception(
-                    f"Failed to install pip. Error: {process_cmp.stderr.decode()}")
+                    f"Failed to install pip. Error: 
+                    {process_cmp.stderr.decode()}")
 
         # Upgrade pip
         subprocess.run([venv_python_path, "-m", "pip", "install",
@@ -166,13 +168,13 @@ def ensure_pip(venv_path) -> None:
 
         # Ensure psutil is installed
         try:
-            subprocess.run([venv_python_path, "-c", "import psutil"], check=True, 
+            subprocess.run([venv_python_path, "-c", "import psutil"], check=True,
                            capture_output=True)
             print("psutil is already installed.")
         except subprocess.CalledProcessError:
             print("psutil is not installed. Installing...")
             subprocess.run([venv_python_path, "-m", "pip", "install", "psutil"],
-                          check=True)
+                           check=True)
             print("psutil successfully installed.")
 
         print("pip and psutil are installed successfully!")
@@ -223,8 +225,9 @@ def install_dependencies(venv_path: str) -> None:
     print("Check / install base tensorflow requirement now")
     install_requirements(venv_path, get_tf_requirements_path())
     try:
-        subprocess.run([get_venv_python_path(venv_path), "-c", "import tensorflow"],
-                      check=True, capture_output=True)
+        subprocess.run([get_venv_python_path(venv_path),
+                       "-c", "import tensorflow"],
+                       check=True, capture_output=True)
         print("Tensorflow was installed successfully.")
     except subprocess.CalledProcessError:
         print("Installation of Tensorflow failed.")

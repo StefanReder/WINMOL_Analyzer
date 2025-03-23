@@ -33,10 +33,10 @@ class FeatureFactory:
         self._node_vector_fields.append(QgsField('diameter', QVariant.Double))
 
     def _extract_crs_code(self, crs: Optional[str]) -> int:
-        # Extract the numerical EPSG code from the CRS string (e.g., 'EPSG:25833' -> 25833).
+        # Extract numerical EPSG code from the CRS string (e.g., 'EPSG:25833' -> 25833).
         if crs and crs.startswith("EPSG:"):
             return int(crs.split(":")[1])
-        return None  # Default to WGS 84 if CRS is undefined
+        return None  # Return undefined if no EPSG code is available
 
     # We define that the main geometry of a stem is its linestring
 

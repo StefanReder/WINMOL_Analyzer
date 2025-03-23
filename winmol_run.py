@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import os
 import sys
+import subprocess
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -33,7 +34,7 @@ class ImageProcessing:
         self.nodes_path = nodes_path
         self.process_type = process_type
         self.config = Config()
-    
+
     # Function to open the model with a fallback mechanism
     def load_model_from_path(self, model_path):
         def custom_dropout(**kwargs):
@@ -44,7 +45,7 @@ class ImageProcessing:
         class CustomConv2DTranspose(layers.Conv2DTranspose):
             # Remove 'groups' parameter if present
             def __init__(self, *args, **kwargs):
-                kwargs.pop("groups", None)  
+                kwargs.pop("groups", None)
                 super().__init__(*args, **kwargs)
 
             def call(self, inputs, **kwargs):
@@ -52,7 +53,7 @@ class ImageProcessing:
 
         try:
             print("Trying to load model using open_model()")
-            return tf.keras.models.load_model(model_path, compile=False)
+            return keras.models.load_model(model_path, compile=False)
         except Exception as e:
             print("open_model() failed:", e)
 
@@ -60,7 +61,7 @@ class ImageProcessing:
             print("Retrying with custom layers (Dropout, Conv2DTranspose)")
             get_custom_objects()["Dropout"] = custom_dropout
             get_custom_objects()["Conv2DTranspose"] = CustomConv2DTranspose
-            return tf.keras.models.load_model(model_path, compile=False)
+            return keras.models.load_model(model_path, compile=False)
         except Exception as e:
             print("Loading with custom layers also failed:", e)
 
@@ -111,28 +112,32 @@ class ImageProcessing:
         # Check if NVIDIA GPU is available and available for processing
         def get_nvidia_driver_version():
             try:
-                result = subprocess.run(["nvidia-smi", "--query-gpu=driver_version",
-                                        "--format=csv,noheader"],
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                       text=True)
+                result = subprocess.run(["nvidia-smi",
+                                         "--query-gpu=driver_version",
+                                         "--format=csv,noheader"],
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True)
                 if result.returncode == 0:
                     print(f"NVIDIA GPU Driver Version: {result.stdout.strip()}")
                 else:
                     print("Failed to retrieve NVIDIA driver version.")
             except FileNotFoundError:
-                print("No NVIDIA GPU available or drivers not installed properly.")
+                print("No NVIDIA GPU available or drivers not installed.")
 
         get_nvidia_driver_version()
         try:
             physical_devices = tf.config.list_physical_devices('GPU')
-            cuda_version = tf.sysconfig.get_build_info().get('cuda_version', 'Unknown')
-            cudnn_version = tf.sysconfig.get_build_info().get('cudnn_version', 'Unknown')
+            cuda_version = tf.sysconfig.get_build_info().get(
+                'cuda_version', 'Unknown')
+            cudnn_version = tf.sysconfig.get_build_info().get(
+                'cudnn_version', 'Unknown')
             print(f"CUDA is available: {cuda_version}")
             print(f"cuDNN version: {cudnn_version}")
             print("Num GPUs for CUDA processing:", len(physical_devices))
-            print("Tensorflow version:", tf.__version__)   
+            print("Tensorflow version:", tf.__version__)
             print("Keras version:", tf.keras.__version__)
-           
+
         except Exception as e:
             print("Tensorflow error: ", e)
 

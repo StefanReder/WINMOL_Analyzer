@@ -94,7 +94,7 @@ def stems_to_geojson_(stems, profile):
     crs_epsg = profile['crs']
     if isinstance(crs_epsg, int):
         crs_epsg = f"EPSG:{crs_epsg}"
-        
+
     return {
         'type': 'FeatureCollection',
         'crs': {
@@ -130,10 +130,10 @@ def stems_to_geojson_(stems, profile):
 
 def nodes_to_geojson_(stems, profile):
     # Ensure crs_epsg is a string in the correct format
-    crs_epsg =profile['crs']
+    crs_epsg = profile['crs']
     if isinstance(crs_epsg, int):
         crs_epsg = f"EPSG:{crs_epsg}"
-    
+
     return {
         'type': 'FeatureCollection',
         'crs': {
