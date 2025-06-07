@@ -183,8 +183,8 @@ def find_skeleton_segments(
     skeleton_parts = []
 
     def return_callback(result):
-        nonlocal skeleton_parts
-        nonlocal out_skel
+        nonlocal skeleton_parts  # noqa: F824
+        nonlocal out_skel  # noqa: F824
         if result is not None:
             (
                 skel_part_inner, sub_skel_inner,
@@ -332,7 +332,7 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
         refined_part, s, o = result
         nonlocal split
         nonlocal out
-        nonlocal refined_parts
+        nonlocal refined_parts  # noqa: F824
         split = split + s
         out = out + o
         if refined_part is not None:
