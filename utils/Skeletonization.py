@@ -266,10 +266,10 @@ def get_segment(end_node, end_nodes, skel, low_bounds, up_bounds, min_length):
         if frontier:
             length = length + 1
             # if len(frontier) > 1:
-                # print("dow where are all the neighbours from")
-                # print(end_node)
-                # print(x, y)
-                # print(frontier)
+            #   print("dow where are all the neighbours from")
+            #   print(end_node)
+            #   print(x, y)
+            #   print(frontier)
             x, y = frontier[0]
             if x < l_bound_x:
                 l_bound_x = x
@@ -408,17 +408,17 @@ def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
         x_last, x_last = w
         while w != z:
             x, y = w
-            w_ = w
+            # w_ = w
             skel[(x, y)] = False
             temp[(x, y)] = True
             ww = get_neighbors(x, y, skel)
             if ww:
                 # if len(ww) > 1:
-                    # print("ww>1, should never happen", flush=True)
-                    # print("w_: ", w_, flush=True)
-                    # for w_2 in ww:
-                        # print(w_2, flush=True)
-                        # print("!!!", flush=True)
+                #    print("ww>1, should never happen", flush=True)
+                #    print("w_: ", w_, flush=True)
+                #    for w_2 in ww:
+                #       print(w_2, flush=True)
+                #       print("!!!", flush=True)
 
                 # Step forward
                 w = ww[0]
