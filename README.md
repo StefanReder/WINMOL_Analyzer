@@ -2,7 +2,7 @@
 
 **WINMOL Analyzer** is an open-source QGIS plugin for the **detection and quantification of windthrown tree stems** on UAV-derived orthomosaics. It leverages deep learning and heuristics to identify, reconstruct, and quantify individual fallen trees, supporting salvage operations and sustainable forest management following storm events.
 
-![WINMOL Analyzer Screenshot](documentation/assets/imagesdji-9-2216x1662.jpeg) <!-- Replace with actual image -->
+![WINMOL Analyzer Screenshot](/documentation/assets/imagesdji-9-2216x1662.jpeg) <!-- Replace with actual image -->
 
 ## 🌪️ Purpose
 
