@@ -190,7 +190,7 @@ def find_skeleton_segments(
                 skel_part_inner, sub_skel_inner,
                 low_bounds_inner, up_bounds_inner
             ) = result
-            skeleton_parts.append(skel_part_inner)
+            skeleton_parts.append(skel_part_inner) # noqa: F824
             out_skel[
                 low_bounds_inner[0]:up_bounds_inner[0] + 1,
                 low_bounds_inner[1]:up_bounds_inner[1] + 1
@@ -200,7 +200,7 @@ def find_skeleton_segments(
                     low_bounds_inner[1]:
                     up_bounds_inner[1] + 1
                 ]
-            )
+            ) # noqa: F824
 
     def error_callback(error):
         print(error, flush=True)
@@ -337,7 +337,7 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
         out = out + o
         if refined_part is not None:
             for refined in refined_part:
-                refined_parts.append(refined)
+                refined_parts.append(refined) # noqa: F824
 
     def error_callback(error):
         print(error, flush=True)
