@@ -162,7 +162,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         # set crs to config
         self.crs = crs
 
-    def check_uav_pixel_size(self):
+    def check_input_file(self):
         # get file name of uav image
         file_name = os.path.splitext(os.path.basename(self.uav_path))[0]
         # Load the raster layer
@@ -174,24 +174,35 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             # set crs
             self.set_crs(layer)
 
-            # Get the raster's pixel size in map units
-            x_pixel_size = layer.rasterUnitsPerPixelX()
-            y_pixel_size = layer.rasterUnitsPerPixelY()
+            if not self.crs.isGeographic():  # isGeographic() returns True for unprojected systems like EPSG:4326
+                # Enable processing button
+                self.run_button.setEnabled(True)
+                self.uav_warning_label.hide()  # Hide CRS error if shown before
 
-            # Convert pixel size to centimeters
-            x_pixel_size_cm = x_pixel_size * 100
-            y_pixel_size_cm = y_pixel_size * 100
+                # Get the raster's pixel size in map units
+                x_pixel_size = layer.rasterUnitsPerPixelX()
+                y_pixel_size = layer.rasterUnitsPerPixelY()
 
-            # Set the threshold for showing the warning label (5 cm)
-            threshold_cm = 5
+                # Convert pixel size to centimeters
+                x_pixel_size_cm = x_pixel_size * 100
+                y_pixel_size_cm = y_pixel_size * 100
 
-            # Check if either the x or y pixel size exceeds the threshold
-            if x_pixel_size_cm > threshold_cm or y_pixel_size_cm > threshold_cm:
-                # show warning label
-                self.uav_warning_label.show()
+                # Set the threshold for showing the warning label (5 cm)
+                threshold_cm = 5
+
+                # Check if either the x or y pixel size exceeds the threshold
+                if x_pixel_size_cm > threshold_cm or y_pixel_size_cm > threshold_cm:
+                    # show warning label
+                    self.uav_warning_label.setText("Warning: Pixel size > 5cm.")
+                    self.uav_warning_label.show()
+                else:
+                    # hide warning label
+                    self.uav_warning_label.hide()
             else:
-                # hide warning label
-                self.uav_warning_label.hide()
+                # Show CRS error and disable processing button
+                self.uav_warning_label.setText("Error: Coordinate system is not projected. Please reproject the raster.")
+                self.uav_warning_label.show()
+                self.run_button.setEnabled(False)
         else:
             print("Invalid raster layer. Check the path and format.")
 
@@ -207,7 +218,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         if file_path:
             self.uav_lineEdit.setText(file_path)
         # check if pixel size is too large
-        self.check_uav_pixel_size()
+        self.check_input_file()
         self.uav_path = self.uav_lineEdit.text()
 
     def file_dialog_stem(self):
