@@ -32,38 +32,6 @@ class ImageProcessing:
         self.process_type = process_type
         self.config = Config()
 
-    # # Function to open the model with a fallback mechanism
-    # def load_model_from_path(self, model_path):
-    #     def custom_dropout(**kwargs):
-    #         if 'seed' in kwargs and isinstance(kwargs['seed'], float):
-    #             kwargs['seed'] = int(kwargs['seed'])  # Convert seed to int
-    #         return layers.Dropout(**kwargs)
-
-    #     class CustomConv2DTranspose(layers.Conv2DTranspose):
-    #         # Remove 'groups' parameter if present
-    #         def __init__(self, *args, **kwargs):
-    #             kwargs.pop("groups", None)
-    #             super().__init__(*args, **kwargs)
-
-    #         def call(self, inputs, **kwargs):
-    #             return super().call(inputs, **kwargs)
-
-    #     try:
-    #         print("Trying to load model using open_model()")
-    #         return keras.models.load_model(model_path, compile=False)
-    #     except Exception as e:
-    #         print("open_model() failed:", e)
-
-    #     try:
-    #         print("Retrying with custom layers (Dropout, Conv2DTranspose)")
-    #         get_custom_objects()["Dropout"] = custom_dropout
-    #         get_custom_objects()["Conv2DTranspose"] = CustomConv2DTranspose
-    #         return keras.models.load_model(model_path, compile=False)
-    #     except Exception as e:
-    #         print("Loading with custom layers also failed:", e)
-
-    #     raise RuntimeError("Failed to load model with all methods.")
-
     def stem_processing(self):
         print("\nLoading Model...")
         model = IO.load_model_from_path(self.model_path)

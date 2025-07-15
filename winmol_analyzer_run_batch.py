@@ -29,9 +29,9 @@ def process_orthomosaics(file_list_path, output_folder):
             # Check if the model name is valid
             if model_name not in MODEL_PATHS:
                 print(
-                    f"Invalid model '{model_name}' " 
+                    f"Invalid model '{model_name}' "
                     f"for image {input_image}. Skipping..."
-                    )
+                )
                 continue
             model_path = MODEL_PATHS[model_name]
             process_image(input_image, model_path, output_folder)
@@ -65,7 +65,7 @@ def process_image(input_image, model_path, output_folder):
         print(
             f"Processing completed for {input_image}. "
             f"Outputs saved in {output_folder}"
-            )
+        )
     except subprocess.CalledProcessError as e:
         print(f"Error processing {input_image}: {e}")
 
