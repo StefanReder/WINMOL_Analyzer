@@ -20,7 +20,7 @@ from rasterio.enums import Resampling
 
 
 def load_model_from_path(model_path):
-# Function to open the model with a fallback mechanism
+    # Function to open the model with a fallback mechanism
     def custom_dropout(**kwargs):
         if 'seed' in kwargs and isinstance(kwargs['seed'], float):
             kwargs['seed'] = int(kwargs['seed'])  # Convert seed to int
