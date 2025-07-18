@@ -12,7 +12,6 @@ from PyQt5.QtWidgets import QMessageBox
 WINMOL_VENV_NAME = "winmol_venv"
 MODELS_PATH = "models"
 
-
 def get_python_command():
     python_command = "python3" if shutil.which("python3") else "python"
     return python_command

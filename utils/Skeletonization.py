@@ -16,6 +16,17 @@ from classes.Part import Part
 from classes.Timer import Timer
 from utils.Geometry import ang
 
+
+# Try to import CuPy. If it fails, fall back to NumPy
+# try:
+#     import cupy as cp
+#     USE_CUPY = True
+#     print("Use CuPy arrays on GPU")
+# except ImportError:
+#     import numpy as cp  # Treat NumPy as CuPy (fallback)
+#     USE_CUPY = False
+#     print("Use Numpy arrays on CPU")
+
 # System epsilon
 epsilon = np.finfo(float).eps
 
@@ -71,7 +82,8 @@ def get_nodes(skel: np.ndarray) -> Tuple[List[Tuple[int, int]], Any]:
     skel, dn_count = remove_dense_skeleton_nodes(skel)
 
     print("Dense nodes removed: ", dn_count)
-
+    t.stop()
+    t.start()
     end_nodes, branch_points = find_skeleton_nodes(skel)
     bp_count = len(branch_points)
     while len(branch_points) > 0:
@@ -104,73 +116,177 @@ def remove_dense_skeleton_nodes(skel: np.ndarray) -> Tuple[ndarray, int]:
     return skel, count
 
 
-# Find nodes in a skeletonized bitmap.
-def find_skeleton_nodes(skel: np.ndarray) -> Tuple[
-    List[Tuple[int, int]], List[Tuple[int, int]]
-]:
-    skel = np.pad(skel, 1)
-    item = skel.item
-    end_nodes = []
-    branch_points = []
-    width, height = skel.shape
-    for x in range(1, width - 1):
-        for y in range(1, height - 1):
-            branch_or_end = is_endpoint_or_branchpoint(x, y, skel)
-            if item(x, y) != 0 and branch_or_end == "branchpoint":
-                # (-1, -1) removes the padding
-                branch_points.append((x - 1, y - 1))
-            if item(x, y) != 0 and branch_or_end == "endpoint":
-                # (-1, -1) removes the padding
-                end_nodes.append((x - 1, y - 1))
-    return end_nodes, branch_points
+def find_skeleton_nodes(skel: np.ndarray) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    print("Find skeletion nodes")
+    print("# Convert the numpy array to a CuPy (GPU) array or keep it as NumPy (CPU)")
+    skel_arr = np.asarray(skel)
+
+    print("# Pad the skeleton array (same as in the numpy version)")
+    skel_arr = np.pad(skel_arr, 1, mode='constant', constant_values=0)
+
+    print("# Extract 8-neighbors using slicing")
+    p2 = skel[:-2, 1:-1]
+    p3 = skel[:-2, 2:]
+    p4 = skel[1:-1, 2:]
+    p5 = skel[2:, 2:]
+    p6 = skel[2:, 1:-1]
+    p7 = skel[2:, :-2]
+    p8 = skel[1:-1, :-2]
+    p9 = skel[:-2, :-2]
+    p1 = skel[1:-1, 1:-1]  # center pixel
+
+    print("# Binary skeleton mask")
+    mask = p1 == 1
+
+    print("# A(p1) calculation (transition count)")
+    transitions = ((p2 == 0) & (p3 == 1)).astype(np.uint8) + \
+                  ((p3 == 0) & (p4 == 1)) + \
+                  ((p4 == 0) & (p5 == 1)) + \
+                  ((p5 == 0) & (p6 == 1)) + \
+                  ((p6 == 0) & (p7 == 1)) + \
+                  ((p7 == 0) & (p8 == 1)) + \
+                  ((p8 == 0) & (p9 == 1)) + \
+                  ((p9 == 0) & (p2 == 1))
+
+    print("# Endpoint: A(p1) == 1, Branchpoint: A(p1) >= 3")
+    endpoint_mask = (transitions == 1) & mask
+    branchpoint_mask = (transitions >= 3) & mask
+
+    print("# Get coordinates (remove padding offset)")
+    endpoints = np.argwhere(endpoint_mask)  # shape (N, 2)
+    branchpoints = np.argwhere(branchpoint_mask)
+
+    print("# Convert to CPU tuples")
+    endpoints = [tuple(map(int, p)) for p in endpoints]
+    branchpoints = [tuple(map(int, p)) for p in branchpoints]
+
+    return endpoints, branchpoints
 
 
-# Checks the number of neighbours belonging to the skeleton around a pixel.
-# If a point has 1 neighbour, it is considered as an endnode, if a point has 3
-# or more neighbours, it is considered as branchpoint.
-def is_endpoint_or_branchpoint(x, y, skel):
-    item = skel.item
-    p2 = item(x - 1, y)
-    p3 = item(x - 1, y + 1)
-    p4 = item(x, y + 1)
-    p5 = item(x + 1, y + 1)
-    p6 = item(x + 1, y)
-    p7 = item(x + 1, y - 1)
-    p8 = item(x, y - 1)
-    p9 = item(x - 1, y - 1)
-
-    # The function A(p1),
-    # where p1 is the pixel whose neighborhood is beeing checked
-    components = (
-        (p2 == 0 and p3 == 1)
-        + (p3 == 0 and p4 == 1)
-        + (p4 == 0 and p5 == 1)
-        + (p5 == 0 and p6 == 1)
-        + (p6 == 0 and p7 == 1)
-        + (p7 == 0 and p8 == 1)
-        + (p8 == 0 and p9 == 1)
-        + (p9 == 0 and p2 == 1)
-    )
-    if components >= 3:
-        return "branchpoint"
-    if components == 1:
-        return "endpoint"
-    return False
+# def find_skeleton_nodes(skel: np.ndarray) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+#     print("Find skeletion nodes")
+#     print("# Convert the numpy array to a CuPy (GPU) array or keep it as NumPy (CPU)")
+#     skel_arr = cp.asarray(skel)
+    
+#     print("# Pad the skeleton array (same as in the numpy version)")
+#     skel_arr = cp.pad(skel_arr, 1, mode='constant', constant_values=0)
+    
+#     print("# Initialize components array (on either GPU or CPU)")
+#     components = cp.zeros_like(skel_arr, dtype=int)
+    
+#     print("# Directions for 8 neighboring pixels")
+#     directions = cp.array([
+#         [-1,  0], [-1,  1], [ 0,  1], [ 1,  1],
+#         [ 1,  0], [ 1, -1], [ 0, -1], [-1, -1]
+#     ])
+    
+#     print("# Loop over 8 directions and calculate transitions from 0 to 1")
+#     for dx, dy in directions:
+#         # Perform the pixel comparison using either CuPy or NumPy
+#         components += (skel_arr[1:-1, 1:-1] == 0) & (cp.roll(skel_arr, (dx, dy), axis=(0, 1))[1:-1, 1:-1] == 1)
+    
+#     print("# Branch points: pixels with at least 3 transitions from 0 to 1")
+#     branch_points = cp.where(components >= 3)
+    
+#     print("# End points: pixels with exactly 1 transition from 0 to 1")
+#     end_nodes = cp.where(components == 1)
+    
+#     print("# Convert the indices back to a list of tuples (remove padding)")
+#     end_nodes = list(zip(end_nodes[0] - 1, end_nodes[1] - 1))
+#     branch_points = list(zip(branch_points[0] - 1, branch_points[1] - 1))
+    
+#     return end_nodes, branch_points
 
 
 def remove_branchpoints_from_skel(skel, branchpoints):
-    for b in branchpoints:
-        x, y = b
-        for i in [-1, 0, 1]:
-            for j in [-1, 0, 1]:
-                skel[x + i, y + j] = False
-    return skel
+    print("Remove branch points")
+    skel_arr = np.asarray(skel, dtype=bool)
+    branchpoints_arr = np.asarray(branchpoints)
+
+    mask = np.zeros_like(skel_arr, dtype=bool)
+
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            xs = branchpoints_arr[:, 0] + dx
+            ys = branchpoints_arr[:, 1] + dy
+
+            # Clip to valid range to avoid index errors
+            xs = np.clip(xs, 0, skel_arr.shape[0] - 1)
+            ys = np.clip(ys, 0, skel_arr.shape[1] - 1)
+
+            mask[xs, ys] = True
+
+    skel_arr[mask] = False
+    return skel_arr
+
+# # Find nodes in a skeletonized bitmap.
+# def find_skeleton_nodes(skel: np.ndarray) -> Tuple[
+#     List[Tuple[int, int]], List[Tuple[int, int]]
+# ]:
+#     skel = np.pad(skel, 1)
+#     item = skel.item
+#     end_nodes = []
+#     branch_points = []
+#     width, height = skel.shape
+#     for x in range(1, width - 1):
+#         for y in range(1, height - 1):
+#             branch_or_end = is_endpoint_or_branchpoint(x, y, skel)
+#             if item(x, y) != 0 and branch_or_end == "branchpoint":
+#                 # (-1, -1) removes the padding
+#                 branch_points.append((x - 1, y - 1))
+#             if item(x, y) != 0 and branch_or_end == "endpoint":
+#                 # (-1, -1) removes the padding
+#                 end_nodes.append((x - 1, y - 1))
+#     return end_nodes, branch_points
+
+
+# # Checks the number of neighbours belonging to the skeleton around a pixel.
+# # If a point has 1 neighbour, it is considered as an endnode, if a point has 3
+# # or more neighbours, it is considered as branchpoint.
+# def is_endpoint_or_branchpoint(x, y, skel):
+#     item = skel.item
+#     p2 = item(x - 1, y)
+#     p3 = item(x - 1, y + 1)
+#     p4 = item(x, y + 1)
+#     p5 = item(x + 1, y + 1)
+#     p6 = item(x + 1, y)
+#     p7 = item(x + 1, y - 1)
+#     p8 = item(x, y - 1)
+#     p9 = item(x - 1, y - 1)
+
+#     # The function A(p1),
+#     # where p1 is the pixel whose neighborhood is beeing checked
+#     components = (
+#         (p2 == 0 and p3 == 1)
+#         + (p3 == 0 and p4 == 1)
+#         + (p4 == 0 and p5 == 1)
+#         + (p5 == 0 and p6 == 1)
+#         + (p6 == 0 and p7 == 1)
+#         + (p7 == 0 and p8 == 1)
+#         + (p8 == 0 and p9 == 1)
+#         + (p9 == 0 and p2 == 1)
+#     )
+#     if components >= 3:
+#         return "branchpoint"
+#     if components == 1:
+#         return "endpoint"
+#     return False
+
+
+# def remove_branchpoints_from_skel(skel, branchpoints):
+#     for b in branchpoints:
+#         x, y = b
+#         for i in [-1, 0, 1]:
+#             for j in [-1, 0, 1]:
+#                 skel[x + i, y + j] = False
+#     return skel
 
 
 # Parallel version of find_segments
 # Find stem parts between nodes using the connectivity in the skeleton.
 # Returns a list of parts (pairs of nodes) with a minimum distance and a cleaned
 # skeleton.
+
 def find_skeleton_segments(
         skel: np.ndarray,
         end_nodes: List[Tuple[int]],
@@ -518,15 +634,42 @@ def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
 
 # Returns the neighbours of a point(x,y) in the skeleton as list of coordinate
 # tuples
-def get_neighbors(x, y, skel) -> List[Tuple[int, int]]:
-    width, height = skel.shape
-    nb = []
-    for dy in (-1, 0, 1):
-        cy = y + dy
-        if cy < 0 or cy >= height:
-            continue
-        for dx in (-1, 0, 1):
-            cx = x + dx
-            if (dx != 0 or dy != 0) and 0 <= cx < width and skel[cx, cy]:
-                nb.append((cx, cy))
-    return nb
+# def get_neighbors(x, y, skel) -> List[Tuple[int, int]]:
+#     width, height = skel.shape
+#     nb = []
+#     for dy in (-1, 0, 1):
+#         cy = y + dy
+#         if cy < 0 or cy >= height:
+#             continue
+#         for dx in (-1, 0, 1):
+#             cx = x + dx
+#             if (dx != 0 or dy != 0) and 0 <= cx < width and skel[cx, cy]:
+#                 nb.append((cx, cy))
+#     return nb
+
+
+def get_neighbors(x: int, y: int, skel: np.ndarray) -> List[Tuple[int, int]]:
+    # Define the 8 neighbor coordinate offsets (excluding the center (0, 0))
+    offsets = np.array([
+        [-1, -1], [-1, 0], [-1, 1],
+        [ 0, -1],          [ 0, 1],
+        [ 1, -1], [ 1, 0], [ 1, 1],
+    ])
+
+    # Calculate absolute coordinates of neighbors
+    coords = offsets + [x, y]
+
+    # Filter out-of-bounds coordinates
+    h, w = skel.shape
+    mask = (
+        (coords[:, 0] >= 0) & (coords[:, 0] < h) &
+        (coords[:, 1] >= 0) & (coords[:, 1] < w)
+    )
+    valid_coords = coords[mask]
+
+    # Select only coordinates where skeleton is non-zero
+    is_skeleton = skel[valid_coords[:, 0], valid_coords[:, 1]]
+    result = valid_coords[is_skeleton != 0]
+
+    # Convert to list of tuples
+    return [tuple(pt) for pt in result]

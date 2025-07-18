@@ -5,6 +5,9 @@
 
 import json
 import os
+import sys
+import subprocess
+
 import numpy as np
 import rasterio
 from tensorflow import keras
@@ -14,13 +17,9 @@ from matplotlib import pyplot as plt
 from rasterio.enums import Resampling
 
 ###############################################################################
-
-
 """File operations"""
-
-
+# Function to open the model with a fallback mechanism
 def load_model_from_path(model_path):
-    # Function to open the model with a fallback mechanism
     def custom_dropout(**kwargs):
         if 'seed' in kwargs and isinstance(kwargs['seed'], float):
             kwargs['seed'] = int(kwargs['seed'])  # Convert seed to int

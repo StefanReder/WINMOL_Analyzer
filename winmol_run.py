@@ -11,6 +11,7 @@ from utils import Prediction as Pred
 from utils import Skeletonization as Skel
 from utils import Vectorization as Vec
 from utils import Quantification as Quant
+print("imports finished")
 
 
 class ImageProcessing:
