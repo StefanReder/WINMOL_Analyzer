@@ -86,5 +86,4 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    process_all_orthomosaics(args.model)
-    
+    process_all_orthomosaics(args.model)    
