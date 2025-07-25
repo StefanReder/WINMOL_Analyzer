@@ -63,14 +63,14 @@ def process_image(input_image, model_path):
     ]
 
 try:
-        print(
-            f"Processing {input_image} with model "
-            f"{os.path.basename(model_path)}..."
-        )
-        subprocess.run(command, check=True)
-        print(f" ^|^s Done: {base_name}")
-    except subprocess.CalledProcessError as e:
-        print(f" ^|^w Failed: {input_image}. Reason: {e}")
+    print(
+        f"Processing {input_image} with model "
+        f"{os.path.basename(model_path)}..."
+    )
+    subprocess.run(command, check=True)
+    print(f" ^|^s Done: {base_name}")
+except subprocess.CalledProcessError as e:
+    print(f" ^|^w Failed: {input_image}. Reason: {e}")
 
 
 if __name__ == "__main__":
