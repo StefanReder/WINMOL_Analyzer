@@ -3,6 +3,8 @@ import subprocess
 import argparse
 
 # Fixed paths
+INPUT_FOLDER = "./standalone/input"
+OUTPUT_FOLDER = "./standalone/output"
 MODEL_PATHS = {
     "spruce": (
         "./standalone/model/"
