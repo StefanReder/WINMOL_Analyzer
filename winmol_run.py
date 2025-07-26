@@ -1,8 +1,21 @@
 #!/usr/bin/env python
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,5,6,7"
+
 import sys
 import subprocess
 import tensorflow as tf
+
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"Enabled memory growth for {len(gpus)} GPU(s).")
+    except RuntimeError as e:
+        print(f"Memory growth setup failed: {e}")
+else:
+    print("No GPUs found. Running on CPU.")
 
 from classes.Config import Config
 from classes.Timer import Timer
@@ -11,6 +24,7 @@ from utils import Prediction as Pred
 from utils import Skeletonization as Skel
 from utils import Vectorization as Vec
 from utils import Quantification as Quant
+print("imports finished")
 
 
 class ImageProcessing:
