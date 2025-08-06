@@ -107,7 +107,7 @@ def remove_dense_skeleton_nodes(skel: np.ndarray) -> Tuple[ndarray, int]:
 
 
 def find_skeleton_nodes(skel: np.ndarray) -> Tuple[List[Tuple[int, int]],
-                                                  List[Tuple[int, int]]]:
+                                                   List[Tuple[int, int]]]:
     print("Find skeletion nodes")
 
     print("# Pad the skeleton array (same as in the numpy version)")

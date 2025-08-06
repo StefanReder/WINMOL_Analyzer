@@ -15,7 +15,7 @@ print("imports finished")
 
 # Set the environment variable for CUDA devices
 # Uncomment the following line to specify which GPUs to use
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,5,6,7" 
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,5,6,7"
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
