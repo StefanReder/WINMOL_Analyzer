@@ -7,7 +7,7 @@ name=WINMOL Analyzer
 
 qgisMinimumVersion=3.0
 description=Plugin to detect stems from UAV
-version=0.2.1
+version=0.0.0
 author=Hochschule für nachhaltige Entwicklung Eberswalde | mundialis GmbH & Co. KG | terrestris GmbH & Co. KG
 email=Stefan.Reder@hnee.de
 
