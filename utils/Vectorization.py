@@ -27,6 +27,7 @@ epsilon = np.finfo(float).eps
 # Parallel version of connect_stems
 def connect_stems(stems: List[Stem], config) -> List[Stem]:
     max_distance = config.max_distance
+    max_tree_height = config.max_tree_height
     tolerance_angle = config.tolerance_angle
 
     # Aggregate aligned stem segments to stems. Reconstructs occluded stems
@@ -68,7 +69,7 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
         while stems:
             # loop while there are stems to extend
 
-            # create a line of max 3 segments at both ends of the stem which
+            # create a line of max 6 segments at both ends of the stem which
             # represents the direction of the stem end
             if len(stems[0].path.coords) < 4:
                 line_start = LineString(
@@ -116,6 +117,7 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                             start_buffer,
                             end_buffer,
                             max_distance,
+                            max_tree_height,
                             tolerance_angle,
                             stem
                         ), callback=return_callback,
@@ -188,16 +190,14 @@ def calc_connectivity_votes(
         start_buffer,
         end_buffer,
         max_distance,
+        max_tree_height,
         tolerance_angle,
         stem: Stem
 ) -> (bool, List[float], List[Stem], List[Stem]):
     # Calculate votes for the aggregation of stem parts to stems
     if stem == stems0:
-        if stem.start == stems0.start:
-            if stem.stop == stems0.stop:
-                print("Alerta!!!!", flush=True)
-                print("stem0: ", list(stems0.path.coords), flush=True)
-                print("stem: ", list(stem.path.coords), flush=True)
+        # if the stems are identical return no change and infinite vote
+        return False, math.inf, None, None
     change = False
     votes = []
     candidates = []
@@ -220,7 +220,6 @@ def calc_connectivity_votes(
 
     has_length_2 = len(stem.path.coords) == 2
     if end_buffer.contains(stem.start) and ang_l_sp_el_st < tolerance_angle:
-        # missing_part = LineString([stems0.stop, stem.start])
         missing_part_ = LineString(
             [stems0.path.coords[-2],
              stem.path.coords[1]]
@@ -235,7 +234,7 @@ def calc_connectivity_votes(
         if (ang_l_sp_el_st < (tolerance_angle * dist_f) and ang_l_sp_mp < (
                 tolerance_angle * dist_f) and ang_mp_el_st < (
                 tolerance_angle * dist_f) and stems0.start.distance(
-                stem.stop) < 35):
+                stem.stop) < max_tree_height):
 
             if len(stems0.path.coords) > 2 and len(stem.path.coords) > 2:
                 start = LineString(stems0.path.coords[:-1])
@@ -266,7 +265,6 @@ def calc_connectivity_votes(
             slaves.append(slave)
 
     if start_buffer.contains(stem.stop) and ang_el_sp_l_st < tolerance_angle:
-        # missing_part = LineString([stem.stop, stems0.start])
         missing_part_ = LineString(
             [stem.path.coords[-2], stems0.path.coords[1]])
         dist_f = 1 - (
@@ -280,7 +278,7 @@ def calc_connectivity_votes(
                 tolerance_angle * dist_f) and abs(
                 ang(missing_part_.coords, line_start.coords)) < (
                 tolerance_angle * dist_f) and stem.start.distance(
-                stems0.stop) < 35):
+                stems0.stop) < max_tree_height):
             if len(stem.path.coords) > 2 and len(stems0.path.coords) > 2:
                 start = LineString(stem.path.coords[:-1])
                 end = LineString(stems0.path.coords[1:])
