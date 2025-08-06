@@ -14,8 +14,7 @@ content = metadata_file.read_text()
 
 # Replace version in metadata.txt
 new_content = re.sub(r"^version=.*", f"version={version}",
-                    content, flags=re.MULTILINE)
+                     content, flags=re.MULTILINE)
 metadata_file.write_text(new_content)
 
 print(f"Updated metadata.txt version to {version}")
-
