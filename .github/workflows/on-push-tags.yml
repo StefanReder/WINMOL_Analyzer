@@ -12,6 +12,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: WINMOL_Analyzer
+
+      - name: Update metadata.txt version inline
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd WINMOL_Analyzer
+          if grep -q '^version=' metadata.txt; then
+            sed -i "s/^version=.*/version=$VERSION/" metadata.txt
+          else
+            echo "version=$VERSION" >> metadata.txt
+          fi
+
       - name: Archive Release
         uses: montudor/action-zip@v1
         with:
