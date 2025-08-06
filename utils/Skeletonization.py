@@ -106,7 +106,8 @@ def remove_dense_skeleton_nodes(skel: np.ndarray) -> Tuple[ndarray, int]:
     return skel, count
 
 
-def find_skeleton_nodes(skel: np.ndarray) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+def find_skeleton_nodes(skel: np.ndarray) -> Tuple[List[Tuple[int, int]],
+                                                  List[Tuple[int, int]]]:
     print("Find skeletion nodes")
 
     print("# Pad the skeleton array (same as in the numpy version)")
@@ -120,7 +121,7 @@ def find_skeleton_nodes(skel: np.ndarray) -> Tuple[List[Tuple[int, int]], List[T
     p6 = skel[2:, 1:-1]
     p7 = skel[2:, :-2]
     p8 = skel[1:-1, :-2]
-    p9 = skel[:-2, :-2] 
+    p9 = skel[:-2, :-2]
     p1 = skel[1:-1, 1:-1]  # This is the center pixel (without padding)
 
     print("# Binary skeleton mask")
@@ -502,8 +503,8 @@ def get_neighbors(x: int, y: int, skel: np.ndarray) -> List[Tuple[int, int]]:
     # Define the 8 neighbor coordinate offsets (excluding the center (0, 0))
     offsets = np.array([
         [-1, -1], [-1, 0], [-1, 1],
-        [ 0, -1],          [ 0, 1],
-        [ 1, -1], [ 1, 0], [ 1, 1],
+        [0, -1], [0, 1],
+        [1, -1], [1, 0], [1, 1],
     ])
 
     # Calculate absolute coordinates of neighbors
