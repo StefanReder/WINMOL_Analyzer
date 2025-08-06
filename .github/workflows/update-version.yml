@@ -1,16 +1,21 @@
-name: Update metadata version on release
+name: Update metadata version before release
 
 on:
   release:
-    types: [published]  # Runs when a new release is published
+    types: [created] # Trigger when a draft release is created
 
 jobs:
   update-version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to push changes
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed to push changes
+          ref: main       # Ensure we are on a branch, not detached HEAD
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -20,12 +25,12 @@ jobs:
       - name: Update metadata.txt with release version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/^version *= *.*/version = ${VERSION}/i" metadata.txt
+          python .github/scripts/update_metadata_version.py "$VERSION"
 
-      - name: Commit updated metadata.txt
+      - name: Commit and push updated metadata.txt
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add metadata.txt
           git commit -m "Update version in metadata.txt to ${GITHUB_REF_NAME}" || echo "No changes to commit"
-          git push
+          git push origin HEAD:main
