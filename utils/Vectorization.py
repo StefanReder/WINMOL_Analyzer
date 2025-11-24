@@ -409,13 +409,15 @@ def restore_geoinformation(stems: List[Stem], config, profile):
     px_size_x = profile['transform'][0]
     px_size_y = profile['transform'][1]
     bounds = get_bounds_from_profile(profile)
-    padding = int(config.max_tree_height / max(px_size_x,px_size_y)) + 1
+    padding = int(config.max_tree_height / max(px_size_x, px_size_y)) + 1
 
     for j in range(len(stems)):
-        stems[j].start = (bounds.left + (stems[j].start[1] - padding) * px_size_x,
-                          bounds.top - (stems[j].start[0] - padding) * px_size_y)
-        stems[j].stop = (bounds.left + (stems[j].stop[1] - padding) * px_size_x,
-                         bounds.top - (stems[j].stop[0] - padding) * px_size_y)
+        stems[j].start = (
+            bounds.left + (stems[j].start[1] - padding) * px_size_x,
+            bounds.top - (stems[j].start[0] - padding) * px_size_y)
+        stems[j].stop = (
+            bounds.left + (stems[j].stop[1] - padding) * px_size_x,
+            bounds.top - (stems[j].stop[0] - padding) * px_size_y)
 
         for k in range(len(stems[j].path)):
             stems[j].path[k] = (
