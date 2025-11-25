@@ -406,8 +406,8 @@ def restore_geoinformation(stems: List[Stem], config, profile):
     print("#######################################################")
     print("Restoring geoinformation")
 
-    px_size_x = profile['transform'][0]
-    px_size_y = profile['transform'][4]
+    px_size_x = abs(profile['transform'][0])
+    px_size_y = abs(profile['transform'][4])
     bounds = get_bounds_from_profile(profile)
     padding = int(config.max_tree_height / max(px_size_x, px_size_y)) + 1
 
