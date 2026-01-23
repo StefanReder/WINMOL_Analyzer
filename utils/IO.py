@@ -7,6 +7,8 @@ import json
 import os
 import numpy as np
 import rasterio
+import geopandas as gpd
+import pandas as pd
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.utils import get_custom_objects
@@ -284,14 +286,10 @@ def save_image(data, output_name, size=(15, 15), dpi=300):
     plt.savefig(output_name, dpi=dpi)
 
 
-def merge_and_filter_tiled_results(output_dir):
-    # Input directories
-    raster_dir = output_dir
-    vector_dir = output_dir
+def merge_and_filter_tiled_results(work_dir):
     
     # Output GeoPackage
-    output_gpkg  = os.path.join(output_dir, f"{prefix}_merged_data.gpkg")
-
+    output_gpkg  = os.path.join(work_dir, f"{prefix}_merged_data.gpkg")
 
     # Initialize empty GeoDataFrames
     merged_stems = gpd.GeoDataFrame()
@@ -305,7 +303,7 @@ def merge_and_filter_tiled_results(output_dir):
     total_vectors = 0
 
     # List all raster files that contain _roi_stem_map and end with .tif or .tiff
-    raster_files = [f for f in os.listdir(raster_dir)
+    raster_files = [f for f in os.listdir(work_dir)
                     if f.endswith((".tif", ".tiff")) and "_roi_stem_map" in f]
 
     for raster_file in raster_files:
@@ -319,11 +317,12 @@ def merge_and_filter_tiled_results(output_dir):
         # Extract raster number (tile ID)
         match = re.match(r"raster_(.+)", prefix)
         if not match:
-            print(f"Could not extract tile number from '{prefix}', skipping...")
+            print(
+                f"Could not extract tile number from '{prefix}', skipping...")
             continue
         raster_number = match.group(1)
 
-        raster_path = os.path.join(raster_dir, raster_file)
+        raster_path = os.path.join(work_dir, raster_file)
         print(f"\nProcessing tile: {prefix}")
 
         # Load raster extent
@@ -339,11 +338,12 @@ def merge_and_filter_tiled_results(output_dir):
         neg_buffer_geom = extent_geom.buffer(-1)
 
         # Load GeoJSON vector files
-        stems_path   = os.path.join(vector_dir, f"{prefix}_roi_stems.geojson")
-        nodes_path   = os.path.join(vector_dir, f"{prefix}_roi_nodes.geojson")
-        vectors_path = os.path.join(vector_dir, f"{prefix}_roi_vectors.geojson")
+        stems_path   = os.path.join(work_dir, f"{prefix}_roi_stems.geojson")
+        nodes_path   = os.path.join(work_dir, f"{prefix}_roi_nodes.geojson")
+        vectors_path = os.path.join(work_dir, f"{prefix}_roi_vectors.geojson")
 
-        if not (os.path.exists(stems_path) and os.path.exists(nodes_path) and os.path.exists(vectors_path)):
+        if not (os.path.exists(stems_path) and os.path.exists(nodes_path) \
+                and os.path.exists(vectors_path)):
             print(f"Missing one or more vector files for {prefix}, skipping...")
             continue
 
@@ -362,7 +362,7 @@ def merge_and_filter_tiled_results(output_dir):
         # Generate globally unique stem_id
         stems['stem_id'] = stems['id'].apply(lambda x: f"{raster_number}_{x}")
 
-        # Filter stems that intersect or are inside the negatively buffered raster extent
+        # Filter out false detections origin from edge effects
         stems_filtered = stems[stems.intersects(neg_buffer_geom)]
 
         if stems_filtered.empty:
@@ -372,7 +372,8 @@ def merge_and_filter_tiled_results(output_dir):
         tile_count += 1
         n_stems = len(stems_filtered)
         total_stems += n_stems
-        merged_stems = pd.concat([merged_stems, stems_filtered], ignore_index=True)
+        merged_stems = pd.concat([merged_stems, stems_filtered], \
+            ignore_index=True)
 
         # Link nodes and vectors by stem_id
         if 'stem_id' in nodes.columns and 'stem_id' in vectors.columns:
@@ -385,12 +386,16 @@ def merge_and_filter_tiled_results(output_dir):
             total_nodes += n_nodes
             total_vectors += n_vectors
 
-            merged_nodes = pd.concat([merged_nodes, selected_nodes], ignore_index=True)
-            merged_vectors = pd.concat([merged_vectors, selected_vectors], ignore_index=True)
+            merged_nodes = pd.concat([merged_nodes, selected_nodes], \
+                ignore_index=True)
+            merged_vectors = pd.concat([merged_vectors, selected_vectors], \
+                ignore_index=True)
 
-            print(f"Added {n_stems} stems, {n_nodes} nodes, {n_vectors} vectors.")
+            print(
+                f"Added {n_stems} stems, {n_nodes} nodes, {n_vectors} vectors.")
         else:
-            print(f"'stem_id' missing in nodes or vectors for {prefix}, skipping related data.")
+            print(
+                f"'stem_id' missing in nodes or vectors for {prefix}, skipping related data.")
 
     # Save output to GeoPackage
     if not merged_stems.empty:
