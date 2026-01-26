@@ -155,6 +155,16 @@ def _jsonify_list(x):
         return json.dumps(x, ensure_ascii=False)
 
 
+def _fiona_safe(gdf):
+    for col in gdf.columns:
+        if col == gdf.geometry.name:
+            continue
+        if isinstance(gdf[col].dtype, pd.StringDtype):
+            gdf[col] = gdf[col].astype(object)
+            gdf.loc[gdf[col].isna(), col] = None
+    return gdf
+
+
 def stems_to_gdf(stems, profile):
     crs = _crs_from_profile(profile)
 
@@ -258,6 +268,7 @@ def stems_to_gpkg(stems, profile, path_prefix):
         os.remove(gpkg_path)
 
     gdf = stems_to_gdf(stems, profile)
+    gdf = _fiona_safe(gdf)
     if not gdf.empty:
         gdf.to_file(gpkg_path, layer="stems", driver="GPKG")
     print(f"Wrote {gpkg_path} (layer=stems)")
@@ -268,6 +279,7 @@ def nodes_to_gpkg(stems, profile, path_prefix):
     """Append layer 'nodes' to <path_prefix>.gpkg."""
     gpkg_path = path_prefix + ".gpkg"
     gdf = nodes_to_gdf(stems, profile)
+    gdf = _fiona_safe(gdf)
     if not gdf.empty:
         try:
             gdf.to_file(gpkg_path, layer="nodes", driver="GPKG", mode="a")
@@ -282,6 +294,7 @@ def vectors_to_gpkg(stems, profile, path_prefix):
     """Append layer 'vectors' to <path_prefix>.gpkg."""
     gpkg_path = path_prefix + ".gpkg"
     gdf = vectors_to_gdf(stems, profile)
+    gdf = _fiona_safe(gdf)
     if not gdf.empty:
         try:
             gdf.to_file(gpkg_path, layer="vectors", driver="GPKG", mode="a")
