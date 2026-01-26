@@ -139,7 +139,6 @@ def _crs_from_profile(profile):
         return None
     try:
         # best: pyproj CRS
-        from pyproj import CRS
         return CRS.from_user_input(crs)
     except Exception:
         # fallback: WKT if available, else string
@@ -183,7 +182,7 @@ def stems_to_gdf(stems, profile):
         rows.append({
             "stem_id": i,
             "start_x": sx, "start_y": sy,
-            "stop_x": ex,  "stop_y": ey,
+            "stop_x": ex, "stop_y": ey,
             "length": float(getattr(s, "length", 0.0)),
             "volume": float(getattr(s, "volume", 0.0)),
             "d_json": _jsonify_list(getattr(s, "segment_diameter_list", [])),
@@ -293,7 +292,6 @@ def vectors_to_gpkg(stems, profile, path_prefix):
     return gpkg_path
 
 
-
 def save_image(data, output_name, size=(15, 15), dpi=300):
     fig = plt.figure()
     fig.set_size_inches(size)
@@ -309,7 +307,7 @@ def merge_and_filter_tiled_results(
     work_dir: str,
     output_gpkg: str | None = None,
     edge_buffer_m: float = 1.0,
-):
+): # noqa: C901
     """Merge tiled WINMOL results into one GeoPackage.
 
     Supported per-tile outputs in work_dir:
@@ -351,6 +349,7 @@ def merge_and_filter_tiled_results(
         if not candidates:
             return None
         gpkg = candidates[0]
+
         def _try(layer_names):
             for ln in layer_names:
                 try:
@@ -358,14 +357,15 @@ def merge_and_filter_tiled_results(
                 except Exception:
                     continue
             return gpd.GeoDataFrame()
+
         stems = _try(["stems", "stem", "trees", "tree"])
         nodes = _try(["nodes", "node"])
         vectors = _try(["vectors", "vector", "segments", "segment"])
         return gpkg, stems, nodes, vectors
 
     def _read_tile_geojson(prefix):
-        stems_path   = os.path.join(work_dir, f"{prefix}_roi_stems.geojson")
-        nodes_path   = os.path.join(work_dir, f"{prefix}_roi_nodes.geojson")
+        stems_path = os.path.join(work_dir, f"{prefix}_roi_stems.geojson")
+        nodes_path = os.path.join(work_dir, f"{prefix}_roi_nodes.geojson")
         vectors_path = os.path.join(work_dir, f"{prefix}_roi_vectors.geojson")
         if not (
             os.path.exists(stems_path)

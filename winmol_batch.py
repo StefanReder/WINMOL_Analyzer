@@ -50,7 +50,7 @@ def load_model_paths(
 
     if not model_paths:
         raise ValueError(
-            "No usable model entries found in config.json. Expected {name: url}."
+            "No model entries found in config.json. Expected {name: url}."
         )
 
     return model_paths
@@ -85,7 +85,7 @@ def run_winmol(input_image: str, model_path: str, output_folder: str) -> None:
         "Nodes",
     ]
 
-    print(f"Processing {input_image} with model {os.path.basename(model_path)}...")
+    print(f"Processing {input_image} with model {os.path.basename(model_path)}")
     subprocess.run(command, check=True)
     print(f" ^|^s Done: {base_name}")
 
@@ -134,8 +134,8 @@ def main(argv: List[str]) -> int:
         "--merge",
         action="store_true",
         help=(
-            "After processing, run utils.IO.merge_and_filter_tiled_results on the "
-            "output folder (useful for tiled processing workflows)."
+            "After processing, run utils.IO.merge_and_filter_tiled_results "
+            "on the output folder (useful for tiled processing workflows)."
         ),
     )
     parser.add_argument(
@@ -150,7 +150,7 @@ def main(argv: List[str]) -> int:
         "--edge-buffer-m",
         type=float,
         default=1.0,
-        help="Edge buffer in meters used for tile-edge filtering (default: 1.0)",
+        help="Edge buffer in meters used for tile-edge filtering (default: 1)",
     )
 
     args = parser.parse_args(argv)
@@ -160,7 +160,7 @@ def main(argv: List[str]) -> int:
         print(
             "ERROR: Model file not found: "
             f"{model_path}. Did you download models into standalone/model?\n"
-            "If you build the Docker image, the Dockerfile should download them."
+            "Models should be downloaded automatically during build."
         )
         return 2
 
