@@ -304,7 +304,9 @@ def save_image(data, output_name, size=(15, 15), dpi=300):
 
 #############################################################################
 
+
 """Merge and filter tiled results"""
+
 
 def _pick_id_col(gdf):
     for c in ("stem_id", "id", "ID", "StemID", "stemID"):
@@ -543,4 +545,3 @@ def merge_and_filter_tiled_results(
     print(f"Total vectors written: {total_vectors}")
     print(f"Output saved to: {output_gpkg}")
     return output_gpkg
-
