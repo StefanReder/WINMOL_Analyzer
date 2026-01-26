@@ -5,6 +5,8 @@
 
 import json
 import os
+import glob
+import re
 import numpy as np
 import rasterio
 import geopandas as gpd
@@ -14,6 +16,8 @@ from tensorflow.keras import layers
 from tensorflow.keras.utils import get_custom_objects
 from matplotlib import pyplot as plt
 from rasterio.enums import Resampling
+from shapely.geometry import LineString, Point, box
+from pyproj import CRS
 
 ###############################################################################
 
@@ -128,151 +132,166 @@ def get_bounds_from_profile(profile):
     return rasterio.coords.BoundingBox(left, bot, right, top)
 
 
-def stems_to_geojson_(stems, profile):
-    # Ensure crs_epsg is a string in the correct format
-    crs_epsg = profile['crs']
-    if isinstance(crs_epsg, int):
-        crs_epsg = f"EPSG:{crs_epsg}"
-
-    return {
-        'type': 'FeatureCollection',
-        'crs': {
-            'type': 'name',
-            'properties': {
-                'name': f'urn:ogc:def:crs:{crs_epsg}'
-            }
-        },
-        'features': [
-            {
-                'type': "Feature",
-                'geometry': {
-                    'type': 'LineString',
-                    'coordinates': stems[i].path.coords[:]
-                },
-                'properties': {
-                    'id': i,
-                    'start': stems[i].start.coords[:],
-                    'stop': stems[i].stop.coords[:],
-                    'path': stems[i].path.coords[:],
-                    #                'Vector':stems[i].vector,
-                    'd': stems[i].segment_diameter_list,
-                    'l': stems[i].segment_length_list,
-                    'v': stems[i].segment_volume_list,
-                    'Length': stems[i].length,
-                    'Volume': stems[i].volume
-                },
-            }
-            for i in range(len(stems))
-        ],
-    }
+def _crs_from_profile(profile):
+    """Return a CRS object that GeoPandas can write reliably."""
+    crs = profile.get("crs") if isinstance(profile, dict) else None
+    if crs is None:
+        return None
+    try:
+        # best: pyproj CRS
+        from pyproj import CRS
+        return CRS.from_user_input(crs)
+    except Exception:
+        # fallback: WKT if available, else string
+        try:
+            return crs.to_wkt() if hasattr(crs, "to_wkt") else str(crs)
+        except Exception:
+            return None
 
 
-def nodes_to_geojson_(stems, profile):
-    # Ensure crs_epsg is a string in the correct format
-    crs_epsg = profile['crs']
-    if isinstance(crs_epsg, int):
-        crs_epsg = f"EPSG:{crs_epsg}"
-
-    return {
-        'type': 'FeatureCollection',
-        'crs': {
-            'type': 'name',
-            'properties': {
-                'name': f'urn:ogc:def:crs:{crs_epsg}'
-            }
-        },
-        'features': [
-            {
-                'type': "Feature",
-                'geometry': {
-                    'type': 'Point',
-                    'coordinates': stems[i].path.coords[j]
-                },
-                'properties': {
-                    'stem_id': i,
-                    'node': j,
-                    'Vector': stems[i].vector[j].coords[:],
-                    'd': stems[i].segment_diameter_list[j],
-                },
-            } for i in range(len(stems))
-            for j in range(len(stems[i].path.coords))
-        ],
-    }
+def _jsonify_list(x):
+    # GeoPackage attributes must be scalar; store lists as JSON text
+    try:
+        return json.dumps([float(v) for v in x], ensure_ascii=False)
+    except Exception:
+        return json.dumps(x, ensure_ascii=False)
 
 
-def vectors_to_geojson_(stems, profile):
-    # Ensure crs_epsg is a string in the correct format
-    crs_epsg = profile['crs']
-    if isinstance(crs_epsg, int):
-        crs_epsg = f"EPSG:{crs_epsg}"
+def stems_to_gdf(stems, profile):
+    crs = _crs_from_profile(profile)
 
-    return {
-        'type': 'FeatureCollection',
-        'crs': {
-            'type': 'name',
-            'properties': {
-                'name': f'urn:ogc:def:crs:{crs_epsg}'
-            }
-        },
-        'features': [
-            {
-                'type': "Feature",
-                'geometry': {
-                    'type': 'LineString',
-                    'coordinates': stems[i].vector[j].coords[:]
-                },
-                'properties': {
-                    'stem_id': i,
-                    'node': j,
-                    'Vector': stems[i].vector[j].coords[:],
-                    'd': stems[i].segment_diameter_list[j],
-                },
-            } for i in range(len(stems))
-            for j in range(len(stems[i].path.coords))
-        ],
-    }
+    rows = []
+    geoms = []
+    for i, s in enumerate(stems):
+        # start/stop are Points -> coords like [(x,y)]
+        try:
+            sx, sy = list(s.start.coords)[0]
+        except Exception:
+            sx, sy = (None, None)
+        try:
+            ex, ey = list(s.stop.coords)[0]
+        except Exception:
+            ex, ey = (None, None)
 
+        # geometry: LineString
+        if hasattr(s.path, "geom_type"):
+            geom = s.path
+        else:
+            geom = LineString(list(s.path.coords))
+        geoms.append(geom)
 
-def stems_to_geojson(stems, profile, path):
-    # second checkbox
-    print("Export Stems to GeoJSON")
+        rows.append({
+            "stem_id": i,
+            "start_x": sx, "start_y": sy,
+            "stop_x": ex,  "stop_y": ey,
+            "length": float(getattr(s, "length", 0.0)),
+            "volume": float(getattr(s, "volume", 0.0)),
+            "d_json": _jsonify_list(getattr(s, "segment_diameter_list", [])),
+            "l_json": _jsonify_list(getattr(s, "segment_length_list", [])),
+            "v_json": _jsonify_list(getattr(s, "segment_volume_list", [])),
+        })
 
-    fc_stems = stems_to_geojson_(stems, profile)
-    s_path = path + "_stems.geojson"
-
-    with open(s_path, 'w') as out:
-        json.dump(fc_stems, out)
-
-    print(f'\nWrote {s_path}')
+    return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs)
 
 
-def vector_to_geojson(stems, profile, path):
-    # third checkbox
-    print("Export Vectors to GeoJSON")
+def nodes_to_gdf(stems, profile):
+    crs = _crs_from_profile(profile)
 
-    fc_vectors = vectors_to_geojson_(stems, profile)
+    rows = []
+    geoms = []
+    for i, s in enumerate(stems):
+        coords = list(s.path.coords)
+        for j, xy in enumerate(coords):
+            geoms.append(Point(xy))
+            # diameter at node j if available
+            d = None
+            try:
+                d = float(s.segment_diameter_list[j])
+            except Exception:
+                pass
+            rows.append({
+                "stem_id": i,
+                "node": j,
+                "d": d,
+            })
 
-    v_path = path + "_vectors.geojson"
-
-    with open(v_path, 'w') as out:
-        json.dump(fc_vectors, out)
-    print("")
+    return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs)
 
 
-def nodes_to_geojson(stems, profile, path):
-    # third checkbox
-    print("#######################################################")
-    print("Export Nodes to GeoJSON")
+def vectors_to_gdf(stems, profile):
+    crs = _crs_from_profile(profile)
 
-    fc_nodes = nodes_to_geojson_(stems, profile)
+    rows = []
+    geoms = []
+    for i, s in enumerate(stems):
+        for j in range(len(s.path.coords)):
+            try:
+                seg = s.vector[j]
+                if hasattr(seg, "geom_type"):
+                    geom = seg
+                else:
+                    geom = LineString(list(seg.coords))
+            except Exception:
+                continue
+            geoms.append(geom)
 
-    n_path = path + "_nodes.geojson"
+            d = None
+            try:
+                d = float(s.segment_diameter_list[j])
+            except Exception:
+                pass
 
-    with open(n_path, 'w') as out:
-        json.dump(fc_nodes, out)
+            rows.append({
+                "stem_id": i,
+                "node": j,
+                "d": d,
+            })
 
-    print('#######################################################')
-    print("")
+    return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs)
+
+
+def stems_to_gpkg(stems, profile, path_prefix):
+    """Create/overwrite a GeoPackage at <path_prefix>.gpkg.
+
+    Writes layer 'stems'.
+    """
+    gpkg_path = path_prefix + ".gpkg"
+    if os.path.exists(gpkg_path):
+        os.remove(gpkg_path)
+
+    gdf = stems_to_gdf(stems, profile)
+    if not gdf.empty:
+        gdf.to_file(gpkg_path, layer="stems", driver="GPKG")
+    print(f"Wrote {gpkg_path} (layer=stems)")
+    return gpkg_path
+
+
+def nodes_to_gpkg(stems, profile, path_prefix):
+    """Append layer 'nodes' to <path_prefix>.gpkg."""
+    gpkg_path = path_prefix + ".gpkg"
+    gdf = nodes_to_gdf(stems, profile)
+    if not gdf.empty:
+        try:
+            gdf.to_file(gpkg_path, layer="nodes", driver="GPKG", mode="a")
+        except TypeError:
+            # fallback if mode isn't supported in an environment
+            gdf.to_file(gpkg_path, layer="nodes", driver="GPKG")
+    print(f"Wrote {gpkg_path} (layer=nodes)")
+    return gpkg_path
+
+
+def vectors_to_gpkg(stems, profile, path_prefix):
+    """Append layer 'vectors' to <path_prefix>.gpkg."""
+    gpkg_path = path_prefix + ".gpkg"
+    gdf = vectors_to_gdf(stems, profile)
+    if not gdf.empty:
+        try:
+            gdf.to_file(gpkg_path, layer="vectors", driver="GPKG", mode="a")
+        except TypeError:
+            gdf.to_file(gpkg_path, layer="vectors", driver="GPKG")
+    print(f"Wrote {gpkg_path} (layer=vectors)")
+    return gpkg_path
+
 
 
 def save_image(data, output_name, size=(15, 15), dpi=300):
@@ -286,118 +305,305 @@ def save_image(data, output_name, size=(15, 15), dpi=300):
     plt.savefig(output_name, dpi=dpi)
 
 
-def merge_and_filter_tiled_results(work_dir):
-    
-    # Output GeoPackage
-    output_gpkg  = os.path.join(work_dir, f"{prefix}_merged_data.gpkg")
+def merge_and_filter_tiled_results(
+    work_dir: str,
+    output_gpkg: str | None = None,
+    edge_buffer_m: float = 1.0,
+):
+    """Merge tiled WINMOL results into one GeoPackage.
 
-    # Initialize empty GeoDataFrames
+    Supported per-tile outputs in work_dir:
+      1) GeoPackage (preferred): <prefix>*.gpkg with layers stems/nodes/
+         vectors
+      2) Legacy GeoJSON: <prefix>_roi_{stems,nodes,vectors}.geojson
+
+    Optional per-tile raster for edge filtering:
+      - <prefix>_roi_stem_map.tif or .tiff
+
+    If a raster exists for a tile, stems are kept only if they intersect
+    the inner tile extent (tile extent buffered inward by edge_buffer_m).
+    This helps remove edge effects.
+
+    Stem IDs are rewritten to be globally unique:
+        stem_id = "<tile_id>_<local_stem_id>"
+
+    Output:
+      - output_gpkg (default: <work_dir>/<foldername>_merged_data.gpkg)
+        Layers: stems, nodes, vectors
+    """
+    work_dir = os.path.abspath(work_dir)
+
+    if output_gpkg is None:
+        folder = os.path.basename(os.path.normpath(work_dir))
+        output_gpkg = os.path.join(work_dir, f"{folder}_merged_data.gpkg")
+
+    # Helper to find ID column
+    def _pick_id_col(gdf):
+        for c in ("stem_id", "id", "ID", "StemID", "stemID"):
+            if c in gdf.columns:
+                return c
+        return None
+
+    def _read_tile_gpkg(prefix):
+        # accept {prefix}.gpkg or {prefix}_roi*.gpkg, etc.
+        pattern = os.path.join(work_dir, f"{prefix}*.gpkg")
+        candidates = sorted(glob.glob(pattern))
+        if not candidates:
+            return None
+        gpkg = candidates[0]
+        def _try(layer_names):
+            for ln in layer_names:
+                try:
+                    return gpd.read_file(gpkg, layer=ln)
+                except Exception:
+                    continue
+            return gpd.GeoDataFrame()
+        stems = _try(["stems", "stem", "trees", "tree"])
+        nodes = _try(["nodes", "node"])
+        vectors = _try(["vectors", "vector", "segments", "segment"])
+        return gpkg, stems, nodes, vectors
+
+    def _read_tile_geojson(prefix):
+        stems_path   = os.path.join(work_dir, f"{prefix}_roi_stems.geojson")
+        nodes_path   = os.path.join(work_dir, f"{prefix}_roi_nodes.geojson")
+        vectors_path = os.path.join(work_dir, f"{prefix}_roi_vectors.geojson")
+        if not (
+            os.path.exists(stems_path)
+            and os.path.exists(nodes_path)
+            and os.path.exists(vectors_path)
+        ):
+            return None
+        stems = gpd.read_file(stems_path)
+        nodes = gpd.read_file(nodes_path)
+        vectors = gpd.read_file(vectors_path)
+        return "geojson", stems, nodes, vectors
+
     merged_stems = gpd.GeoDataFrame()
     merged_nodes = gpd.GeoDataFrame()
     merged_vectors = gpd.GeoDataFrame()
 
-    # Counters
-    tile_count = 0
-    total_stems = 0
-    total_nodes = 0
-    total_vectors = 0
+    tile_count = total_stems = total_nodes = total_vectors = 0
 
-    # List all raster files that contain _roi_stem_map and end with .tif or .tiff
-    raster_files = [f for f in os.listdir(work_dir)
-                    if f.endswith((".tif", ".tiff")) and "_roi_stem_map" in f]
+    # Prefer raster-guided tile detection (best filtering)
+    raster_files = [
+        f
+        for f in os.listdir(work_dir)
+        if f.lower().endswith((".tif", ".tiff")) and "_roi_stem_map" in f
+    ]
 
-    for raster_file in raster_files:
-        # Strip suffix to get prefix (e.g. raster_100)
-        prefix = raster_file
-        for ext in ["_roi_stem_map.tif", "_roi_stem_map.tiff"]:
-            if raster_file.endswith(ext):
-                prefix = raster_file.replace(ext, "")
-                break
+    # Fallback: if no rasters exist, treat each GPKG as a "tile" and merge
+    # without edge filtering.
+    if not raster_files:
+        gpkg_files = sorted(
+            [
+                f
+                for f in os.listdir(work_dir)
+                if f.lower().endswith(".gpkg")
+                and not f.lower().endswith("_merged_data.gpkg")
+            ]
+        )
+        if not gpkg_files:
+            raise FileNotFoundError(
+                "No '*_roi_stem_map.tif(f)', no .gpkg, and no legacy GeoJSON "
+                f"found in: {work_dir}"
+            )
+        print(
+            "No '*_roi_stem_map.tif(f)' found -> merging without edge "
+            "filtering."
+        )
+        for gpkg_file in gpkg_files:
+            prefix = os.path.splitext(gpkg_file)[0]
+            # tile id from 'raster_<id>' if possible
+            m = re.match(r"raster_(.+)", prefix)
+            tile_id = m.group(1) if m else prefix
 
-        # Extract raster number (tile ID)
-        match = re.match(r"raster_(.+)", prefix)
-        if not match:
-            print(
-                f"Could not extract tile number from '{prefix}', skipping...")
-            continue
-        raster_number = match.group(1)
+            read = _read_tile_gpkg(prefix)
+            if not read:
+                continue
+            _, stems, nodes, vectors = read
 
-        raster_path = os.path.join(work_dir, raster_file)
-        print(f"\nProcessing tile: {prefix}")
+            if stems.empty:
+                continue
 
-        # Load raster extent
-        try:
-            with rasterio.open(raster_path) as src:
-                bounds = src.bounds
-                raster_crs = src.crs
-                extent_geom = box(*bounds)
-        except Exception as e:
-            print(f"Error reading raster {raster_file}: {e}")
-            continue
+            id_col = _pick_id_col(stems)
+            if not id_col:
+                print(f"Missing id column in {gpkg_file}, skipping.")
+                continue
 
-        neg_buffer_geom = extent_geom.buffer(-1)
+            stems = stems.copy()
+            stems["_stem_id_local"] = stems[id_col].astype(str)
+            stems["stem_id"] = tile_id + "_" + stems["_stem_id_local"]
+            stems["tile_id"] = tile_id
 
-        # Load GeoJSON vector files
-        stems_path   = os.path.join(work_dir, f"{prefix}_roi_stems.geojson")
-        nodes_path   = os.path.join(work_dir, f"{prefix}_roi_nodes.geojson")
-        vectors_path = os.path.join(work_dir, f"{prefix}_roi_vectors.geojson")
+            kept_local = set(stems["_stem_id_local"].tolist())
 
-        if not (os.path.exists(stems_path) and os.path.exists(nodes_path) \
-                and os.path.exists(vectors_path)):
-            print(f"Missing one or more vector files for {prefix}, skipping...")
-            continue
+            def _prep_child(gdf):
+                if gdf is None or gdf.empty:
+                    return gpd.GeoDataFrame()
+                c = _pick_id_col(gdf)
+                if not c:
+                    return gpd.GeoDataFrame()
+                out = gdf[gdf[c].astype(str).isin(kept_local)].copy()
+                out["_stem_id_local"] = out[c].astype(str)
+                out["stem_id"] = tile_id + "_" + out["_stem_id_local"]
+                out["tile_id"] = tile_id
+                return out
 
-        stems = gpd.read_file(stems_path)
-        nodes = gpd.read_file(nodes_path)
-        vectors = gpd.read_file(vectors_path)
+            nodes = _prep_child(nodes)
+            vectors = _prep_child(vectors)
 
-        for gdf in [stems, nodes, vectors]:
-            if gdf.crs != raster_crs:
-                gdf.to_crs(raster_crs, inplace=True)
+            merged_stems = pd.concat(
+                [merged_stems, stems],
+                ignore_index=True,
+            )
+            if not nodes.empty:
+                merged_nodes = pd.concat(
+                    [merged_nodes, nodes],
+                    ignore_index=True,
+                )
+            if not vectors.empty:
+                merged_vectors = pd.concat(
+                    [merged_vectors, vectors],
+                    ignore_index=True,
+                )
 
-        if 'id' not in stems.columns:
-            print(f"Missing 'id' column in stems for {prefix}, skipping...")
-            continue
+            tile_count += 1
+            total_stems += len(stems)
+            total_nodes += len(nodes)
+            total_vectors += len(vectors)
 
-        # Generate globally unique stem_id
-        stems['stem_id'] = stems['id'].apply(lambda x: f"{raster_number}_{x}")
+    else:
+        for raster_file in raster_files:
+            # prefix from raster name (strip suffix)
+            prefix = raster_file
+            for ext in ["_roi_stem_map.tif", "_roi_stem_map.tiff"]:
+                if raster_file.endswith(ext):
+                    prefix = raster_file.replace(ext, "")
+                    break
 
-        # Filter out false detections origin from edge effects
-        stems_filtered = stems[stems.intersects(neg_buffer_geom)]
+            m = re.match(r"raster_(.+)", prefix)
+            if not m:
+                print(f"Could not extract tile id from '{prefix}', skipping.")
+                continue
+            tile_id = m.group(1)
 
-        if stems_filtered.empty:
-            print(f"No valid stems after filtering for {prefix}, skipping...")
-            continue
+            raster_path = os.path.join(work_dir, raster_file)
+            print("")
+            print(f"Processing tile: {prefix}")
 
-        tile_count += 1
-        n_stems = len(stems_filtered)
-        total_stems += n_stems
-        merged_stems = pd.concat([merged_stems, stems_filtered], \
-            ignore_index=True)
+            # Read raster extent (for edge filtering)
+            try:
+                with rasterio.open(raster_path) as src:
+                    bounds = src.bounds
+                    raster_crs = src.crs
+                    extent_geom = box(*bounds)
+            except Exception as e:
+                print(f"Error reading raster {raster_file}: {e}")
+                continue
 
-        # Link nodes and vectors by stem_id
-        if 'stem_id' in nodes.columns and 'stem_id' in vectors.columns:
-            selected_ids = stems_filtered['id'].unique()
-            selected_nodes = nodes[nodes['stem_id'].isin(selected_ids)]
-            selected_vectors = vectors[vectors['stem_id'].isin(selected_ids)]
+            neg_buffer_geom = extent_geom.buffer(-abs(edge_buffer_m))
 
-            n_nodes = len(selected_nodes)
-            n_vectors = len(selected_vectors)
-            total_nodes += n_nodes
-            total_vectors += n_vectors
+            # Read vectors (prefer gpkg)
+            read = _read_tile_gpkg(prefix)
+            if read:
+                _, stems, nodes, vectors = read
+            else:
+                read = _read_tile_geojson(prefix)
+                if not read:
+                    print(f"Missing vector data for {prefix}, skipping.")
+                    continue
+                _, stems, nodes, vectors = read
 
-            merged_nodes = pd.concat([merged_nodes, selected_nodes], \
-                ignore_index=True)
-            merged_vectors = pd.concat([merged_vectors, selected_vectors], \
-                ignore_index=True)
+            # Ensure CRS matches raster CRS
+            for gdf_name, gdf in (
+                ("stems", stems),
+                ("nodes", nodes),
+                ("vectors", vectors),
+            ):
+                if gdf is None or gdf.empty:
+                    continue
+                if raster_crs is not None:
+                    if gdf.crs is None:
+                        gdf.set_crs(raster_crs, inplace=True)
+                    elif gdf.crs != raster_crs:
+                        try:
+                            gdf.to_crs(raster_crs, inplace=True)
+                        except Exception as e:
+                            print(
+                                f"CRS reprojection failed for {prefix} "
+                                f"{gdf_name}: {e}"
+                            )
 
-            print(
-                f"Added {n_stems} stems, {n_nodes} nodes, {n_vectors} vectors.")
-        else:
-            print(
-                f"'stem_id' missing in nodes or vectors for {prefix}, skipping related data.")
+            if stems.empty:
+                print(f"No stems in {prefix}, skipping.")
+                continue
 
-    # Save output to GeoPackage
+            id_col = _pick_id_col(stems)
+            if not id_col:
+                print(f"Missing id column in stems for {prefix}, skipping.")
+                continue
+
+            # Create globally unique stem_id
+            stems = stems.copy()
+            stems["_stem_id_local"] = stems[id_col].astype(str)
+            stems["stem_id"] = tile_id + "_" + stems["_stem_id_local"]
+            stems["tile_id"] = tile_id
+
+            # Edge filter
+            stems_filtered = stems[stems.intersects(neg_buffer_geom)].copy()
+            if stems_filtered.empty:
+                print(f"No valid stems after filtering for {prefix}, skipping.")
+                continue
+
+            kept_local = set(stems_filtered["_stem_id_local"].tolist())
+
+            def _prep_child(gdf):
+                if gdf is None or gdf.empty:
+                    return gpd.GeoDataFrame()
+                c = _pick_id_col(gdf)
+                if not c:
+                    return gpd.GeoDataFrame()
+                out = gdf[gdf[c].astype(str).isin(kept_local)].copy()
+                out["_stem_id_local"] = out[c].astype(str)
+                out["stem_id"] = tile_id + "_" + out["_stem_id_local"]
+                out["tile_id"] = tile_id
+                return out
+
+            nodes_sel = _prep_child(nodes)
+            vectors_sel = _prep_child(vectors)
+            merged_stems = pd.concat(
+                [merged_stems, stems_filtered],
+                ignore_index=True,
+            )
+            if not nodes_sel.empty:
+                merged_nodes = pd.concat(
+                    [merged_nodes, nodes_sel],
+                    ignore_index=True,
+                )
+            if not vectors_sel.empty:
+                merged_vectors = pd.concat(
+                    [merged_vectors, vectors_sel],
+                    ignore_index=True,
+                )
+
+            tile_count += 1
+            total_stems += len(stems_filtered)
+            total_nodes += len(nodes_sel)
+            total_vectors += len(vectors_sel)
+
+    # Set CRS of merged outputs to whatever is present in stems/nodes/vectors
+    # (they should all match when rasters exist)
+    if not merged_stems.empty and merged_stems.crs is None:
+        # attempt to inherit from any child
+        if not merged_nodes.empty and merged_nodes.crs is not None:
+            merged_stems.set_crs(merged_nodes.crs, inplace=True)
+        elif not merged_vectors.empty and merged_vectors.crs is not None:
+            merged_stems.set_crs(merged_vectors.crs, inplace=True)
+
+    # Write output
+    if os.path.exists(output_gpkg):
+        os.remove(output_gpkg)
+
     if not merged_stems.empty:
         merged_stems.to_file(output_gpkg, layer="stems", driver="GPKG")
     if not merged_nodes.empty:
@@ -405,10 +611,11 @@ def merge_and_filter_tiled_results(work_dir):
     if not merged_vectors.empty:
         merged_vectors.to_file(output_gpkg, layer="vectors", driver="GPKG")
 
-    # Report summary
-    print("\nMERGE SUMMARY")
-    print(f"Tiles processed:     {tile_count}")
-    print(f"Total stems added:   {total_stems}")
-    print(f"Total nodes linked:  {total_nodes}")
-    print(f"Total vectors linked:{total_vectors}")
+    print("")
+    print("MERGE SUMMARY")
+    print(f"Tiles processed:       {tile_count}")
+    print(f"Total stems written:   {total_stems}")
+    print(f"Total nodes written:   {total_nodes}")
+    print(f"Total vectors written: {total_vectors}")
     print(f"Output saved to: {output_gpkg}")
+    return output_gpkg

@@ -81,12 +81,15 @@ class ImageProcessing:
         print("\nQuantifying Stems...")
         stems = Quant.quantify_stems(stems, pred, profile)
         # exporting as geojson
-        IO.stems_to_geojson(stems, profile, self.trees_path)
+        # IO.stems_to_geojson(stems, profile, self.trees_path)
+        IO.stems_to_gpkg(stems, profile, self.trees_path)
         return stems
 
     def nodes_processing(self, stems, profile):
-        IO.vector_to_geojson(stems, profile, self.nodes_path)
-        IO.nodes_to_geojson(stems, profile, self.nodes_path)
+        # IO.vector_to_geojson(stems, profile, self.nodes_path)
+        # IO.nodes_to_geojson(stems, profile, self.nodes_path)
+        IO.vectors_to_gpkg(stems, profile, self.nodes_path)
+        IO.nodes_to_gpkg(stems, profile, self.nodes_path)
 
     def check_DL_env(self):
         # Check if NVIDIA GPU is available and available for processing
