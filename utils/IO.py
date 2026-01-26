@@ -6,7 +6,6 @@
 import json
 import os
 import glob
-import re
 import numpy as np
 import rasterio
 import geopandas as gpd
@@ -303,314 +302,238 @@ def save_image(data, output_name, size=(15, 15), dpi=300):
     plt.savefig(output_name, dpi=dpi)
 
 
-def merge_and_filter_tiled_results(
-    work_dir: str,
-    output_gpkg: str | None = None,
-    edge_buffer_m: float = 1.0,
-):  # noqa: C901
+#############################################################################
 
-    """Merge tiled WINMOL results into one GeoPackage.
+"""Merge and filter tiled results"""
 
-    Supported per-tile outputs in work_dir:
-      1) GeoPackage (preferred): <prefix>*.gpkg with layers stems/nodes/
-         vectors
-      2) Legacy GeoJSON: <prefix>_roi_{stems,nodes,vectors}.geojson
+def _pick_id_col(gdf):
+    for c in ("stem_id", "id", "ID", "StemID", "stemID"):
+        if c in gdf.columns:
+            return c
+    return None
 
-    Optional per-tile raster for edge filtering:
-      - <prefix>_roi_stem_map.tif or .tiff
 
-    If a raster exists for a tile, stems are kept only if they intersect
-    the inner tile extent (tile extent buffered inward by edge_buffer_m).
-    This helps remove edge effects.
+def _tile_id_from_prefix(prefix):
+    if prefix.startswith("raster_"):
+        return prefix[len("raster_"):]
+    return prefix
 
-    Stem IDs are rewritten to be globally unique:
-        stem_id = "<tile_id>_<local_stem_id>"
 
-    Output:
-      - output_gpkg (default: <work_dir>/<foldername>_merged_data.gpkg)
-        Layers: stems, nodes, vectors
-    """
-    work_dir = os.path.abspath(work_dir)
+def _read_gpkg_layer(gpkg_path, layer_names):
+    for ln in layer_names:
+        try:
+            return gpd.read_file(gpkg_path, layer=ln)
+        except Exception:
+            continue
+    return gpd.GeoDataFrame(geometry=[])
 
-    if output_gpkg is None:
-        folder = os.path.basename(os.path.normpath(work_dir))
-        output_gpkg = os.path.join(work_dir, f"{folder}_merged_data.gpkg")
 
-    # Helper to find ID column
-    def _pick_id_col(gdf):
-        for c in ("stem_id", "id", "ID", "StemID", "stemID"):
-            if c in gdf.columns:
-                return c
-        return None
+def _read_tile_gpkg(gpkg_path):
+    stems = _read_gpkg_layer(gpkg_path, ["stems", "stem", "trees", "tree"])
+    nodes = _read_gpkg_layer(gpkg_path, ["nodes", "node"])
+    vectors = _read_gpkg_layer(
+        gpkg_path,
+        ["vectors", "vector", "segments", "segment"],
+    )
+    return stems, nodes, vectors
 
-    def _read_tile_gpkg(prefix):
-        # accept {prefix}.gpkg or {prefix}_roi*.gpkg, etc.
-        pattern = os.path.join(work_dir, f"{prefix}*.gpkg")
-        candidates = sorted(glob.glob(pattern))
-        if not candidates:
-            return None
-        gpkg = candidates[0]
 
-        def _try(layer_names):
-            for ln in layer_names:
-                try:
-                    return gpd.read_file(gpkg, layer=ln)
-                except Exception:
-                    continue
-            return gpd.GeoDataFrame()
+def _ensure_crs(gdf, target_crs):
+    if gdf is None or gdf.empty:
+        return gpd.GeoDataFrame()
+    if target_crs is None:
+        return gdf
+    if gdf.crs is None:
+        gdf = gdf.copy()
+        gdf.set_crs(target_crs, inplace=True)
+        return gdf
+    if gdf.crs != target_crs:
+        return gdf.to_crs(target_crs)
+    return gdf
 
-        stems = _try(["stems", "stem", "trees", "tree"])
-        nodes = _try(["nodes", "node"])
-        vectors = _try(["vectors", "vector", "segments", "segment"])
-        return gpkg, stems, nodes, vectors
 
-    def _read_tile_geojson(prefix):
-        stems_path = os.path.join(work_dir, f"{prefix}_roi_stems.geojson")
-        nodes_path = os.path.join(work_dir, f"{prefix}_roi_nodes.geojson")
-        vectors_path = os.path.join(work_dir, f"{prefix}_roi_vectors.geojson")
-        if not (
-            os.path.exists(stems_path)
-            and os.path.exists(nodes_path)
-            and os.path.exists(vectors_path)
-        ):
-            return None
-        stems = gpd.read_file(stems_path)
-        nodes = gpd.read_file(nodes_path)
-        vectors = gpd.read_file(vectors_path)
-        return "geojson", stems, nodes, vectors
+def _raster_filter_geom(raster_path, edge_buffer_m):
+    if not raster_path:
+        return None, None
+    try:
+        with rasterio.open(raster_path) as src:
+            geom = box(*src.bounds)
+            return geom.buffer(-abs(edge_buffer_m)), src.crs
+    except Exception:
+        return None, None
 
-    merged_stems = gpd.GeoDataFrame()
-    merged_nodes = gpd.GeoDataFrame()
-    merged_vectors = gpd.GeoDataFrame()
 
-    tile_count = total_stems = total_nodes = total_vectors = 0
-
-    # Prefer raster-guided tile detection (best filtering)
-    raster_files = [
+def _detect_tiles(work_dir, output_gpkg):
+    rasters = [
         f
         for f in os.listdir(work_dir)
         if f.lower().endswith((".tif", ".tiff")) and "_roi_stem_map" in f
     ]
 
-    # Fallback: if no rasters exist, treat each GPKG as a "tile" and merge
-    # without edge filtering.
-    if not raster_files:
-        gpkg_files = sorted(
-            [
-                f
-                for f in os.listdir(work_dir)
-                if f.lower().endswith(".gpkg")
-                and not f.lower().endswith("_merged_data.gpkg")
-            ]
-        )
-        if not gpkg_files:
-            raise FileNotFoundError(
-                "No '*_roi_stem_map.tif(f)', no .gpkg, and no legacy GeoJSON "
-                f"found in: {work_dir}"
-            )
-        print(
-            "No '*_roi_stem_map.tif(f)' found -> merging without edge "
-            "filtering."
-        )
-        for gpkg_file in gpkg_files:
-            prefix = os.path.splitext(gpkg_file)[0]
-            # tile id from 'raster_<id>' if possible
-            m = re.match(r"raster_(.+)", prefix)
-            tile_id = m.group(1) if m else prefix
+    tiles = []
 
-            read = _read_tile_gpkg(prefix)
-            if not read:
-                continue
-            _, stems, nodes, vectors = read
-
-            if stems.empty:
-                continue
-
-            id_col = _pick_id_col(stems)
-            if not id_col:
-                print(f"Missing id column in {gpkg_file}, skipping.")
-                continue
-
-            stems = stems.copy()
-            stems["_stem_id_local"] = stems[id_col].astype(str)
-            stems["stem_id"] = tile_id + "_" + stems["_stem_id_local"]
-            stems["tile_id"] = tile_id
-
-            kept_local = set(stems["_stem_id_local"].tolist())
-
-            def _prep_child(gdf):
-                if gdf is None or gdf.empty:
-                    return gpd.GeoDataFrame()
-                c = _pick_id_col(gdf)
-                if not c:
-                    return gpd.GeoDataFrame()
-                out = gdf[gdf[c].astype(str).isin(kept_local)].copy()
-                out["_stem_id_local"] = out[c].astype(str)
-                out["stem_id"] = tile_id + "_" + out["_stem_id_local"]
-                out["tile_id"] = tile_id
-                return out
-
-            nodes = _prep_child(nodes)
-            vectors = _prep_child(vectors)
-
-            merged_stems = pd.concat(
-                [merged_stems, stems],
-                ignore_index=True,
-            )
-            if not nodes.empty:
-                merged_nodes = pd.concat(
-                    [merged_nodes, nodes],
-                    ignore_index=True,
-                )
-            if not vectors.empty:
-                merged_vectors = pd.concat(
-                    [merged_vectors, vectors],
-                    ignore_index=True,
-                )
-
-            tile_count += 1
-            total_stems += len(stems)
-            total_nodes += len(nodes)
-            total_vectors += len(vectors)
-
-    else:
-        for raster_file in raster_files:
-            # prefix from raster name (strip suffix)
-            prefix = raster_file
-            for ext in ["_roi_stem_map.tif", "_roi_stem_map.tiff"]:
-                if raster_file.endswith(ext):
-                    prefix = raster_file.replace(ext, "")
+    if rasters:
+        for rf in sorted(rasters):
+            prefix = rf
+            for ext in ("_roi_stem_map.tif", "_roi_stem_map.tiff"):
+                if rf.endswith(ext):
+                    prefix = rf.replace(ext, "")
                     break
 
-            m = re.match(r"raster_(.+)", prefix)
-            if not m:
-                print(f"Could not extract tile id from '{prefix}', skipping.")
-                continue
-            tile_id = m.group(1)
-
-            raster_path = os.path.join(work_dir, raster_file)
-            print("")
-            print(f"Processing tile: {prefix}")
-
-            # Read raster extent (for edge filtering)
-            try:
-                with rasterio.open(raster_path) as src:
-                    bounds = src.bounds
-                    raster_crs = src.crs
-                    extent_geom = box(*bounds)
-            except Exception as e:
-                print(f"Error reading raster {raster_file}: {e}")
+            gpkg = sorted(glob.glob(os.path.join(work_dir, f"{prefix}*.gpkg")))
+            if not gpkg:
                 continue
 
-            neg_buffer_geom = extent_geom.buffer(-abs(edge_buffer_m))
+            tiles.append((prefix, gpkg[0], os.path.join(work_dir, rf)))
 
-            # Read vectors (prefer gpkg)
-            read = _read_tile_gpkg(prefix)
-            if read:
-                _, stems, nodes, vectors = read
-            else:
-                read = _read_tile_geojson(prefix)
-                if not read:
-                    print(f"Missing vector data for {prefix}, skipping.")
-                    continue
-                _, stems, nodes, vectors = read
+        return tiles
 
-            # Ensure CRS matches raster CRS
-            for gdf_name, gdf in (
-                ("stems", stems),
-                ("nodes", nodes),
-                ("vectors", vectors),
-            ):
-                if gdf is None or gdf.empty:
-                    continue
-                if raster_crs is not None:
-                    if gdf.crs is None:
-                        gdf.set_crs(raster_crs, inplace=True)
-                    elif gdf.crs != raster_crs:
-                        try:
-                            gdf.to_crs(raster_crs, inplace=True)
-                        except Exception as e:
-                            print(
-                                f"CRS reprojection failed for {prefix} "
-                                f"{gdf_name}: {e}"
-                            )
-
-            if stems.empty:
-                print(f"No stems in {prefix}, skipping.")
+    for gpkg in sorted(glob.glob(os.path.join(work_dir, "*.gpkg"))):
+        if output_gpkg:
+            if os.path.abspath(gpkg) == os.path.abspath(output_gpkg):
                 continue
+        prefix = os.path.splitext(os.path.basename(gpkg))[0]
+        tiles.append((prefix, gpkg, None))
 
-            id_col = _pick_id_col(stems)
-            if not id_col:
-                print(f"Missing id column in stems for {prefix}, skipping.")
-                continue
+    return tiles
 
-            # Create globally unique stem_id
-            stems = stems.copy()
-            stems["_stem_id_local"] = stems[id_col].astype(str)
-            stems["stem_id"] = tile_id + "_" + stems["_stem_id_local"]
-            stems["tile_id"] = tile_id
 
-            # Edge filter
-            stems_filtered = stems[stems.intersects(neg_buffer_geom)].copy()
-            if stems_filtered.empty:
-                print(f"No valid stems after filtering for {prefix}, skipping.")
-                continue
+def _default_output_gpkg(work_dir, output_gpkg):
+    if output_gpkg is not None:
+        return output_gpkg
+    folder = os.path.basename(os.path.normpath(work_dir))
+    return os.path.join(work_dir, f"{folder}_merged_data.gpkg")
 
-            kept_local = set(stems_filtered["_stem_id_local"].tolist())
 
-            def _prep_child(gdf):
-                if gdf is None or gdf.empty:
-                    return gpd.GeoDataFrame()
-                c = _pick_id_col(gdf)
-                if not c:
-                    return gpd.GeoDataFrame()
-                out = gdf[gdf[c].astype(str).isin(kept_local)].copy()
-                out["_stem_id_local"] = out[c].astype(str)
-                out["stem_id"] = tile_id + "_" + out["_stem_id_local"]
-                out["tile_id"] = tile_id
-                return out
+def _globalize_stems(stems, tile_id, filter_geom):
+    id_col = _pick_id_col(stems)
+    if not id_col:
+        return gpd.GeoDataFrame(), set()
 
-            nodes_sel = _prep_child(nodes)
-            vectors_sel = _prep_child(vectors)
-            merged_stems = pd.concat(
-                [merged_stems, stems_filtered],
-                ignore_index=True,
-            )
-            if not nodes_sel.empty:
-                merged_nodes = pd.concat(
-                    [merged_nodes, nodes_sel],
-                    ignore_index=True,
-                )
-            if not vectors_sel.empty:
-                merged_vectors = pd.concat(
-                    [merged_vectors, vectors_sel],
-                    ignore_index=True,
-                )
+    stems = stems.copy()
+    stems["_stem_id_local"] = stems[id_col].astype(str)
+    stems["stem_id"] = tile_id + "_" + stems["_stem_id_local"]
+    stems["tile_id"] = tile_id
 
-            tile_count += 1
-            total_stems += len(stems_filtered)
-            total_nodes += len(nodes_sel)
-            total_vectors += len(vectors_sel)
+    if filter_geom is not None:
+        stems = stems[stems.intersects(filter_geom)].copy()
 
-    # Set CRS of merged outputs to whatever is present in stems/nodes/vectors
-    # (they should all match when rasters exist)
-    if not merged_stems.empty and merged_stems.crs is None:
-        # attempt to inherit from any child
-        if not merged_nodes.empty and merged_nodes.crs is not None:
-            merged_stems.set_crs(merged_nodes.crs, inplace=True)
-        elif not merged_vectors.empty and merged_vectors.crs is not None:
-            merged_stems.set_crs(merged_vectors.crs, inplace=True)
+    kept_local = set(stems["_stem_id_local"].tolist())
+    return stems, kept_local
 
-    # Write output
+
+def _select_child(gdf, tile_id, kept_local):
+    if gdf is None or gdf.empty:
+        return gpd.GeoDataFrame()
+
+    id_col = _pick_id_col(gdf)
+    if not id_col:
+        return gpd.GeoDataFrame()
+
+    out = gdf[gdf[id_col].astype(str).isin(kept_local)].copy()
+    if out.empty:
+        return gpd.GeoDataFrame()
+
+    out["_stem_id_local"] = out[id_col].astype(str)
+    out["stem_id"] = tile_id + "_" + out["_stem_id_local"]
+    out["tile_id"] = tile_id
+    return out
+
+
+def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
+    tile_id = _tile_id_from_prefix(prefix)
+
+    filter_geom, raster_crs = _raster_filter_geom(raster_path, edge_buffer_m)
+
+    stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
+    if stems is None or stems.empty:
+        return None, target_crs
+
+    if target_crs is None:
+        target_crs = stems.crs or raster_crs
+
+    stems = _ensure_crs(stems, target_crs)
+    nodes = _ensure_crs(nodes, target_crs)
+    vectors = _ensure_crs(vectors, target_crs)
+
+    stems, kept_local = _globalize_stems(stems, tile_id, filter_geom)
+    if stems.empty:
+        return None, target_crs
+
+    nodes_sel = _select_child(nodes, tile_id, kept_local)
+    vectors_sel = _select_child(vectors, tile_id, kept_local)
+
+    counts = (len(stems), len(nodes_sel), len(vectors_sel))
+    return (stems, nodes_sel, vectors_sel, counts), target_crs
+
+
+def _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors):
+    if merged_stems:
+        gpd.GeoDataFrame(
+            pd.concat(merged_stems, ignore_index=True),
+        ).to_file(output_gpkg, layer="stems", driver="GPKG")
+
+    if merged_nodes:
+        gpd.GeoDataFrame(
+            pd.concat(merged_nodes, ignore_index=True),
+        ).to_file(output_gpkg, layer="nodes", driver="GPKG")
+
+    if merged_vectors:
+        gpd.GeoDataFrame(
+            pd.concat(merged_vectors, ignore_index=True),
+        ).to_file(output_gpkg, layer="vectors", driver="GPKG")
+
+
+def merge_and_filter_tiled_results(
+    work_dir: str,
+    output_gpkg: str | None = None,
+    edge_buffer_m: float = 1.0,
+):
+    """Merge tiled WINMOL results into one GeoPackage (GPKG only)."""
+    work_dir = os.path.abspath(work_dir)
+    output_gpkg = _default_output_gpkg(work_dir, output_gpkg)
+
     if os.path.exists(output_gpkg):
         os.remove(output_gpkg)
 
-    if not merged_stems.empty:
-        merged_stems.to_file(output_gpkg, layer="stems", driver="GPKG")
-    if not merged_nodes.empty:
-        merged_nodes.to_file(output_gpkg, layer="nodes", driver="GPKG")
-    if not merged_vectors.empty:
-        merged_vectors.to_file(output_gpkg, layer="vectors", driver="GPKG")
+    tiles = _detect_tiles(work_dir, output_gpkg)
+    if not tiles:
+        raise FileNotFoundError(f"No .gpkg files found in: {work_dir}")
+
+    merged_stems = []
+    merged_nodes = []
+    merged_vectors = []
+
+    target_crs = None
+    tile_count = 0
+    total_stems = 0
+    total_nodes = 0
+    total_vectors = 0
+
+    for prefix, gpkg_path, raster_path in tiles:
+        out, target_crs = _process_tile(
+            prefix,
+            gpkg_path,
+            raster_path,
+            edge_buffer_m,
+            target_crs,
+        )
+        if out is None:
+            continue
+
+        stems, nodes, vectors, (n_s, n_n, n_v) = out
+        merged_stems.append(stems)
+        if not nodes.empty:
+            merged_nodes.append(nodes)
+        if not vectors.empty:
+            merged_vectors.append(vectors)
+
+        tile_count += 1
+        total_stems += n_s
+        total_nodes += n_n
+        total_vectors += n_v
+
+    _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
 
     print("")
     print("MERGE SUMMARY")
@@ -620,3 +543,4 @@ def merge_and_filter_tiled_results(
     print(f"Total vectors written: {total_vectors}")
     print(f"Output saved to: {output_gpkg}")
     return output_gpkg
+
