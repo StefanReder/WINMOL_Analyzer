@@ -307,7 +307,8 @@ def merge_and_filter_tiled_results(
     work_dir: str,
     output_gpkg: str | None = None,
     edge_buffer_m: float = 1.0,
-): # noqa: C901
+):  # noqa: C901
+
     """Merge tiled WINMOL results into one GeoPackage.
 
     Supported per-tile outputs in work_dir:
