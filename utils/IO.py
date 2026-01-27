@@ -4,6 +4,7 @@
 """Imports"""
 
 import json
+import re
 import os
 import glob
 import tempfile
@@ -12,6 +13,12 @@ import numpy as np
 import rasterio
 import geopandas as gpd
 import pandas as pd
+try:
+    import pyogrio
+    _HAVE_PYOGRIO = True
+except Exception:
+    pyogrio = None
+    _HAVE_PYOGRIO = False
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.utils import get_custom_objects
@@ -148,6 +155,10 @@ def get_bounds_from_profile(profile):
 #             return crs.to_wkt() if hasattr(crs, "to_wkt") else str(crs)
 #         except Exception:
 #             return None
+
+
+_EPSG_AUTH_RE = re.compile(r'AUTHORITY\["EPSG","(\d+)"\]')
+_EPSG_ID_RE = re.compile(r'ID\["EPSG",(\d+)\]')
 
 
 def _crs_from_profile(profile):
