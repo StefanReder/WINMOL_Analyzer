@@ -134,20 +134,86 @@ def get_bounds_from_profile(profile):
     return rasterio.coords.BoundingBox(left, bot, right, top)
 
 
+# def _crs_from_profile(profile):
+#     """Return a CRS object that GeoPandas can write reliably."""
+#     crs = profile.get("crs") if isinstance(profile, dict) else None
+#     if crs is None:
+#         return None
+#     try:
+#         # best: pyproj CRS
+#         return CRS.from_user_input(crs)
+#     except Exception:
+#         # fallback: WKT if available, else string
+#         try:
+#             return crs.to_wkt() if hasattr(crs, "to_wkt") else str(crs)
+#         except Exception:
+#             return None
+
+
 def _crs_from_profile(profile):
-    """Return a CRS object that GeoPandas can write reliably."""
-    crs = profile.get("crs") if isinstance(profile, dict) else None
-    if crs is None:
+    """Return a pyproj CRS, normalized to an EPSG authority when possible.
+    Strategy:
+    1) Build a pyproj CRS from the input.
+    2) Try ``to_epsg()``.
+    3) If that fails, parse EPSG from WKT (AUTHORITY[...] or ID[...]).
+    4) If found, return ``CRS.from_epsg(code)``; else return the CRS as-is.
+    """
+    crs_in = profile.get("crs") if isinstance(profile, dict) else None
+    if crs_in is None:
         return None
+
     try:
-        # best: pyproj CRS
-        return CRS.from_user_input(crs)
+        crs = CRS.from_user_input(crs_in)
     except Exception:
-        # fallback: WKT if available, else string
         try:
-            return crs.to_wkt() if hasattr(crs, "to_wkt") else str(crs)
+            return crs_in.to_wkt() if hasattr(crs_in, "to_wkt") else str(crs_in)
         except Exception:
             return None
+
+    epsg = None
+    try:
+        epsg = crs.to_epsg()
+    except Exception:
+        epsg = None
+
+    if epsg is None:
+        wkt_candidates = []
+
+        # rasterio CRS often keeps the original WKT1 (with AUTHORITY tags)
+        try:
+            if hasattr(crs_in, "to_wkt"):
+                wkt_candidates.append(crs_in.to_wkt())
+        except Exception:
+            pass
+
+        # pyproj CRS: try WKT1 flavour to preserve AUTHORITY tags
+        try:
+            wkt_candidates.append(crs.to_wkt(version="WKT1_GDAL"))
+        except Exception:
+            pass
+
+        # fallback
+        wkt_candidates.append(str(crs_in))
+
+        for wkt in wkt_candidates:
+            if not wkt:
+                continue
+            m = _EPSG_AUTH_RE.findall(wkt)
+            if m:
+                epsg = int(m[-1])
+                break
+            m = _EPSG_ID_RE.findall(wkt)
+            if m:
+                epsg = int(m[-1])
+                break
+
+    if epsg is not None:
+        try:
+            return CRS.from_epsg(epsg)
+        except Exception:
+            pass
+
+    return crs
 
 
 def _jsonify_list(x):
