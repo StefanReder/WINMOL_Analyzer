@@ -25,6 +25,7 @@ from tensorflow.keras.utils import get_custom_objects
 from matplotlib import pyplot as plt
 from rasterio.enums import Resampling
 from shapely.geometry import LineString, Point, box
+from collections.abc import Mapping
 from pyproj import CRS
 from pathlib import Path
 
@@ -157,94 +158,53 @@ def get_bounds_from_profile(profile):
 #             return None
 
 
-_EPSG_AUTH_RE = re.compile(r'AUTHORITY\["EPSG","(\d+)"\]')
-_EPSG_ID_RE = re.compile(r'ID\["EPSG",(\d+)\]')
-
-
-def _profile_crs_value(profile):
-    if isinstance(profile, dict):
-        return profile.get("crs")
-    return None
-
-
-def _safe_to_wkt(obj):
-    try:
-        if hasattr(obj, "to_wkt"):
-            return obj.to_wkt()
-    except Exception:
-        return None
-    return None
-
-
-def _safe_crs_from_user_input(crs_in):
-    try:
-        return CRS.from_user_input(crs_in)
-    except Exception:
-        return None
-
-
-def _safe_to_epsg(crs):
-    try:
-        return crs.to_epsg()
-    except Exception:
-        return None
-
-
-def _epsg_from_wkt(wkt):
-    if not wkt:
-        return None
-    m = _EPSG_AUTH_RE.findall(wkt)
-    if m:
-        return int(m[-1])
-    m = _EPSG_ID_RE.findall(wkt)
-    if m:
-        return int(m[-1])
-    return None
-
-
-def _iter_wkt_candidates(crs_in, crs):
-    wkt = _safe_to_wkt(crs_in)
-    if wkt:
-        yield wkt
-
-    try:
-        yield crs.to_wkt(version="WKT1_GDAL")
-    except Exception:
-        pass
-
-    yield str(crs_in)
-
-
-def _epsg_from_crs_inputs(crs_in, crs):
-    for wkt in _iter_wkt_candidates(crs_in, crs):
-        epsg = _epsg_from_wkt(wkt)
-        if epsg is not None:
-            return epsg
-    return None
-
+def _profile_get(profile, key, default=None):
+    if profile is None:
+        return default
+    if hasattr(profile, "get"):              # works for dict and rasterio Profile
+        return profile.get(key, default)
+    if isinstance(profile, Mapping):
+        return profile.get(key, default)
+    return getattr(profile, key, default)
 
 def _crs_from_profile(profile):
-    """Return a pyproj CRS; prefer EPSG authority if detectable."""
-    crs_in = _profile_crs_value(profile)
+    crs_in = _profile_get(profile, "crs")
     if crs_in is None:
         return None
 
-    crs = _safe_crs_from_user_input(crs_in)
-    if crs is None:
-        wkt = _safe_to_wkt(crs_in)
-        return wkt if wkt else str(crs_in)
-
-    epsg = _safe_to_epsg(crs)
-    if epsg is None:
-        epsg = _epsg_from_crs_inputs(crs_in, crs)
-
-    if epsg is None:
-        return crs
-
+    # Normalize to pyproj.CRS as reliably as possible
     try:
-        return CRS.from_epsg(epsg)
+        crs = CRS.from_user_input(crs_in)
     except Exception:
-        return crs
+        # common case: rasterio.crs.CRS -> convert via WKT
+        try:
+            if hasattr(crs_in, "to_wkt"):
+                crs = CRS.from_wkt(crs_in.to_wkt())
+            else:
+                return str(crs_in)  # last resort (often "EPSG:25833")
+        except Exception:
+            return str(crs_in)
+
+    # Optional: prefer EPSG if available (keeps things clean & portable)
+    epsg = None
+    try:
+        epsg = crs.to_epsg()
+    except Exception:
+        pass
+    return CRS.from_epsg(epsg) if epsg else crs
+
+
+# def _profile_crs_value(profile):
+#     if isinstance(profile, dict):
+#         return profile.get("crs")
+#     return None
+
+
+# def _safe_crs_from_user_input(crs_in):
+#     try:
+#         return CRS.from_user_input(crs_in)
+#     except Exception:
+#         return None
 
 
 def _jsonify_list(x):
@@ -255,14 +215,14 @@ def _jsonify_list(x):
         return json.dumps(x, ensure_ascii=False)
 
 
-def _fiona_safe(gdf):
-    for col in gdf.columns:
-        if col == gdf.geometry.name:
-            continue
-        if isinstance(gdf[col].dtype, pd.StringDtype):
-            gdf[col] = gdf[col].astype(object)
-            gdf.loc[gdf[col].isna(), col] = None
-    return gdf
+# def _fiona_safe(gdf):
+#     for col in gdf.columns:
+#         if col == gdf.geometry.name:
+#             continue
+#         if isinstance(gdf[col].dtype, pd.StringDtype):
+#             gdf[col] = gdf[col].astype(object)
+#             gdf.loc[gdf[col].isna(), col] = None
+#     return gdf
 
 
 def stems_to_gdf(stems, profile):
@@ -483,56 +443,82 @@ def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
     """
     layers: list of (layer_name, gdf) pairs
     Writes to a temp gpkg and returns the temp file path.
+
+    Robustness goals:
+      - Works with rasterio Profile/dict-like profiles upstream
+      - Enforces CRS consistently across layers (prevents "unknown CRS" in QGIS)
+      - Uses pyogrio if available, falls back to geopandas/fiona
+      - Handles empty layers safely
     """
     tmp_dir = tempfile.mkdtemp(prefix="winmol_gpkg_")
     tmp_path = str(Path(tmp_dir) / (Path(final_path).stem + ".gpkg"))
 
-    # prefer pyogrio if installed
-    try:
-        import pyogrio  # type: ignore
+    def _prep(name, gdf):
+        """Normalize + drop bad geoms + enforce CRS."""
+        if gdf is None:
+            return None
+        gdf = _drop_bad_geoms(_normalize_dtypes(gdf))
+        if gdf is None or gdf.empty:
+            return None
 
-        first = True
-        for name, gdf in layers:
-            gdf = _drop_bad_geoms(_normalize_dtypes(gdf))
-            if gdf is None or gdf.empty:
-                continue
-            if gdf.crs is None and crs is not None:
-                gdf = gdf.set_crs(crs, allow_override=True)
+        # Enforce the CRS we derived from the raster profile.
+        # Even if gdf.crs is set, we prefer the profile CRS
+        if crs is not None:
+            try:
+                if (gdf.crs is None) or (gdf.crs != crs):
+                    gdf = gdf.set_crs(crs, allow_override=True)
+            except Exception:
+                # Last-resort: try setting anyway
+                try:
+                    gdf = gdf.set_crs(crs, allow_override=True)
+                except Exception:
+                    pass
 
-            pyogrio.write_dataframe(
-                gdf,
-                tmp_path,
-                layer=name,
-                driver="GPKG",
-                append=(not first),
-            )
-            first = False
+        return gdf
 
+    # Collect prepared non-empty layers first
+    prepared = []
+    for name, gdf in layers:
+        pgdf = _prep(name, gdf)
+        if pgdf is not None:
+            prepared.append((name, pgdf))
+
+    # If *everything* is empty, still create a valid (empty) gpkg
+    if not prepared:
+        layer_name = layers[0][0] if layers else "layer"
+        empty = gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=crs)
+        empty.to_file(tmp_path, layer=layer_name, driver="GPKG", index=False)
         return tmp_path
 
-    except Exception:
-        # fallback to geopandas/fiona
-        first = True
-        for name, gdf in layers:
-            gdf = _drop_bad_geoms(_normalize_dtypes(gdf))
-            if gdf is None or gdf.empty:
-                continue
-            if gdf.crs is None and crs is not None:
-                gdf = gdf.set_crs(crs, allow_override=True)
-
-            if first:
-                gdf.to_file(tmp_path, layer=name, driver="GPKG", index=False)
-                first = False
-            else:
-                gdf.to_file(
+    # Prefer pyogrio if installed/available
+    if _HAVE_PYOGRIO:
+        try:
+            first = True
+            for name, gdf in prepared:
+                pyogrio.write_dataframe(
+                    gdf,
                     tmp_path,
                     layer=name,
                     driver="GPKG",
-                    index=False,
-                    mode="a",
+                    append=(not first),
                 )
+                first = False
+            return tmp_path
+        except Exception:
+            # If pyogrio fails, fall back to geopandas/fiona
+            pass
 
-        return tmp_path
+    # Fallback: geopandas/fiona
+    first = True
+    for name, gdf in prepared:
+        if first:
+            gdf.to_file(tmp_path, layer=name, driver="GPKG", index=False)
+            first = False
+        else:
+            gdf.to_file(tmp_path, layer=name, driver="GPKG", \
+                index=False, mode="a")
+
+    return tmp_path
 
 
 def write_stems_to_gpkg(stems, profile, path_prefix):
