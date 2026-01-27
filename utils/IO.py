@@ -4,7 +4,6 @@
 """Imports"""
 
 import json
-import re
 import os
 import glob
 import tempfile
@@ -161,11 +160,12 @@ def get_bounds_from_profile(profile):
 def _profile_get(profile, key, default=None):
     if profile is None:
         return default
-    if hasattr(profile, "get"):              # works for dict and rasterio Profile
+    if hasattr(profile, "get"):
         return profile.get(key, default)
     if isinstance(profile, Mapping):
         return profile.get(key, default)
     return getattr(profile, key, default)
+
 
 def _crs_from_profile(profile):
     crs_in = _profile_get(profile, "crs")
@@ -515,8 +515,8 @@ def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
             gdf.to_file(tmp_path, layer=name, driver="GPKG", index=False)
             first = False
         else:
-            gdf.to_file(tmp_path, layer=name, driver="GPKG", \
-                index=False, mode="a")
+            gdf.to_file(
+                tmp_path, layer=name, driver="GPKG", index=False, mode="a")
 
     return tmp_path
 
