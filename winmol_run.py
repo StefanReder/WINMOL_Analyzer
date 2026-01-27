@@ -80,13 +80,11 @@ class ImageProcessing:
         Vec.rebuild_endnodes_from_stems(stems)
         print("\nQuantifying Stems...")
         stems = Quant.quantify_stems(stems, pred, profile)
-        # exporting as geojson
-        IO.stems_to_gpkg(stems, profile, self.trees_path)
         return stems
 
-    def nodes_processing(self, stems, profile):
-        IO.vectors_to_gpkg(stems, profile, self.nodes_path)
-        IO.nodes_to_gpkg(stems, profile, self.nodes_path)
+    # def nodes_processing(self, stems, profile):
+    #     IO.vectors_to_gpkg(stems, profile, self.nodes_path)
+    #     IO.nodes_to_gpkg(stems, profile, self.nodes_path)
 
     def check_DL_env(self):
         # Check if NVIDIA GPU is available and available for processing
@@ -136,16 +134,25 @@ class ImageProcessing:
         # print configuration settings
         self.config.display()
 
+    # def main(self):
+    #     if self.process_type == "Stems":  # 34 lines
+    #         self.stem_processing()
+    #     elif self.process_type == "Trees":  # 118 lines
+    #         pred, profile = self.stem_processing()
+    #         self.trees_processing(pred, profile)
+    #     elif self.process_type == "Nodes":  # 125 lines
+    #         pred, profile = self.stem_processing()
+    #         stems = self.trees_processing(pred, profile)
+    #         self.nodes_processing(stems, profile)
+
     def main(self):
-        if self.process_type == "Stems":  # 34 lines
-            self.stem_processing()
-        elif self.process_type == "Trees":  # 118 lines
-            pred, profile = self.stem_processing()
-            self.trees_processing(pred, profile)
-        elif self.process_type == "Nodes":  # 125 lines
-            pred, profile = self.stem_processing()
+        pred, profile = self.stem_processing()
+        if self.process_type != "Stems":  
             stems = self.trees_processing(pred, profile)
-            self.nodes_processing(stems, profile)
+            if self.process_type == "Trees":  
+                IO.write_stems_to_gpkg(stems, profile, self.trees_path)
+            else: # Nodes
+                IO.write_all_layers_to_gpkg(stems, profile, self.nodes_path)
 
 
 if __name__ == '__main__':

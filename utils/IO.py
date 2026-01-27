@@ -6,6 +6,8 @@
 import json
 import os
 import glob
+import tempfile
+import shutil
 import numpy as np
 import rasterio
 import geopandas as gpd
@@ -17,6 +19,7 @@ from matplotlib import pyplot as plt
 from rasterio.enums import Resampling
 from shapely.geometry import LineString, Point, box
 from pyproj import CRS
+from pathlib import Path
 
 ###############################################################################
 
@@ -258,50 +261,213 @@ def vectors_to_gdf(stems, profile):
     return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs)
 
 
-def stems_to_gpkg(stems, profile, path_prefix):
-    """Create/overwrite a GeoPackage at <path_prefix>.gpkg.
+# def stems_to_gpkg(stems, profile, path_prefix):
+#     """Create/overwrite a GeoPackage at <path_prefix>.gpkg.
 
-    Writes layer 'stems'.
+#     Writes layer 'stems'.
+#     """
+#     gpkg_path = path_prefix + ".gpkg"
+#     if os.path.exists(gpkg_path):
+#         os.remove(gpkg_path)
+
+#     gdf = stems_to_gdf(stems, profile)
+#     gdf = _fiona_safe(gdf)
+#     if not gdf.empty:
+#         gdf.to_file(gpkg_path, layer="stems", driver="GPKG")
+#     print(f"Wrote {gpkg_path} (layer=stems)")
+#     return gpkg_path
+
+
+# def nodes_to_gpkg(stems, profile, path_prefix):
+#     """Append layer 'nodes' to <path_prefix>.gpkg."""
+#     gpkg_path = path_prefix + ".gpkg"
+#     gdf = nodes_to_gdf(stems, profile)
+#     gdf = _fiona_safe(gdf)
+#     if not gdf.empty:
+#         try:
+#             gdf.to_file(gpkg_path, layer="nodes", driver="GPKG", mode="a")
+#         except TypeError:
+#             # fallback if mode isn't supported in an environment
+#             gdf.to_file(gpkg_path, layer="nodes", driver="GPKG")
+#     print(f"Wrote {gpkg_path} (layer=nodes)")
+#     return gpkg_path
+
+
+# def vectors_to_gpkg(stems, profile, path_prefix):
+#     """Append layer 'vectors' to <path_prefix>.gpkg."""
+#     gpkg_path = path_prefix + ".gpkg"
+#     gdf = vectors_to_gdf(stems, profile)
+#     gdf = _fiona_safe(gdf)
+#     if not gdf.empty:
+#         try:
+#             gdf.to_file(gpkg_path, layer="vectors", driver="GPKG", mode="a")
+#         except TypeError:
+#             gdf.to_file(gpkg_path, layer="vectors", driver="GPKG")
+#     print(f"Wrote {gpkg_path} (layer=vectors)")
+#     return gpkg_path
+
+
+def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
     """
-    gpkg_path = path_prefix + ".gpkg"
-    if os.path.exists(gpkg_path):
-        os.remove(gpkg_path)
+    Move/replace tmp_path -> final_path.
+    If final_path is locked (on Windows/QGIS), write a *_new.gpkg instead.
+    Returns the final path actually written.
+    """
+    final_path = str(Path(final_path))
+    os.makedirs(str(Path(final_path).parent), exist_ok=True)
 
-    gdf = stems_to_gdf(stems, profile)
-    gdf = _fiona_safe(gdf)
-    if not gdf.empty:
-        gdf.to_file(gpkg_path, layer="stems", driver="GPKG")
-    print(f"Wrote {gpkg_path} (layer=stems)")
-    return gpkg_path
-
-
-def nodes_to_gpkg(stems, profile, path_prefix):
-    """Append layer 'nodes' to <path_prefix>.gpkg."""
-    gpkg_path = path_prefix + ".gpkg"
-    gdf = nodes_to_gdf(stems, profile)
-    gdf = _fiona_safe(gdf)
-    if not gdf.empty:
+    try:
+        # atomic replace if possible
+        os.replace(tmp_path, final_path)
+        shutil.rmtree(Path(tmp_path).parent, ignore_errors=True)
+        return final_path
+    except PermissionError:
+        # likely locked by QGIS/AV/indexer: write alternative file
+        alt = str(Path(final_path).with_name(Path(final_path).stem \
+            + "_new.gpkg"))
+        shutil.copy2(tmp_path, alt)
         try:
-            gdf.to_file(gpkg_path, layer="nodes", driver="GPKG", mode="a")
-        except TypeError:
-            # fallback if mode isn't supported in an environment
-            gdf.to_file(gpkg_path, layer="nodes", driver="GPKG")
-    print(f"Wrote {gpkg_path} (layer=nodes)")
-    return gpkg_path
-
-
-def vectors_to_gpkg(stems, profile, path_prefix):
-    """Append layer 'vectors' to <path_prefix>.gpkg."""
-    gpkg_path = path_prefix + ".gpkg"
-    gdf = vectors_to_gdf(stems, profile)
-    gdf = _fiona_safe(gdf)
-    if not gdf.empty:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return alt
+    except OSError:
+        # cross-device move etc. -> copy fallback
+        shutil.copy2(tmp_path, final_path)
         try:
-            gdf.to_file(gpkg_path, layer="vectors", driver="GPKG", mode="a")
-        except TypeError:
-            gdf.to_file(gpkg_path, layer="vectors", driver="GPKG")
-    print(f"Wrote {gpkg_path} (layer=vectors)")
-    return gpkg_path
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return final_path
+
+
+def _drop_bad_geoms(gdf):
+    if gdf is None or gdf.empty:
+        return gdf
+    gdf = gdf[gdf.geometry.notna()]
+    try:
+        gdf = gdf[~gdf.geometry.is_empty]
+    except Exception:
+        pass
+    return gdf
+
+
+def _normalize_dtypes(gdf):
+    """
+    Fiona can choke on pandas extension dtypes (string, Int64, boolean).
+    Convert them to plain Python/object or numpy types.
+    """
+    if gdf is None or gdf.empty:
+        return gdf
+
+    for col in list(gdf.columns):
+        if col == gdf.geometry.name:
+            continue
+        s = gdf[col]
+        dt = str(s.dtype).lower()
+
+        if "string" in dt:
+            gdf[col] = s.astype(object).where(~s.isna(), None)
+        elif dt in ("int64", "float64", "object"):
+            continue
+        elif "int" in dt:
+            # nullable ints -> object (or float) is safest
+            gdf[col] = s.astype("Int64").astype(object).where(~s.isna(), None)
+        elif "bool" in dt:
+            gdf[col] = s.astype(object).where(~s.isna(), None)
+        else:
+            # fallback: make it object
+            gdf[col] = s.astype(object).where(~s.isna(), None)
+
+    return gdf
+
+def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
+    """
+    layers: list of (layer_name, gdf) pairs
+    Writes to a temp gpkg and returns the temp file path.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="winmol_gpkg_")
+    tmp_path = str(Path(tmp_dir) / (Path(final_path).stem + ".gpkg"))
+
+    # prefer pyogrio if installed
+    try:
+        import pyogrio  # type: ignore
+
+        first = True
+        for name, gdf in layers:
+            gdf = _drop_bad_geoms(_normalize_dtypes(gdf))
+            if gdf is None or gdf.empty:
+                continue
+            if gdf.crs is None and crs is not None:
+                gdf = gdf.set_crs(crs, allow_override=True)
+
+            pyogrio.write_dataframe(
+                gdf,
+                tmp_path,
+                layer=name,
+                driver="GPKG",
+                append=(not first),
+            )
+            first = False
+
+        return tmp_path
+
+    except Exception:
+        # fallback to geopandas/fiona
+        first = True
+        for name, gdf in layers:
+            gdf = _drop_bad_geoms(_normalize_dtypes(gdf))
+            if gdf is None or gdf.empty:
+                continue
+            if gdf.crs is None and crs is not None:
+                gdf = gdf.set_crs(crs, allow_override=True)
+
+            if first:
+                gdf.to_file(tmp_path, layer=name, driver="GPKG", index=False)
+                first = False
+            else:
+                gdf.to_file(
+                    tmp_path,
+                    layer=name,
+                    driver="GPKG",
+                    index=False,
+                    mode="a",
+                )
+
+        return tmp_path
+
+
+def write_stems_to_gpkg(stems, profile, path_prefix):
+    final_path = str(Path(path_prefix).with_suffix(".gpkg"))
+    crs = _crs_from_profile(profile)
+    gdf_stems = stems_to_gdf(stems, profile)
+
+    tmp_path = _write_layers_to_temp_gpkg(
+        layers=[("stems", gdf_stems)],
+        crs=crs,
+        final_path=final_path,
+    )
+    return _safe_finalize_gpkg(tmp_path, final_path)
+
+
+def write_all_layers_to_gpkg(stems, profile, path_prefix):
+    final_path = str(Path(path_prefix).with_suffix(".gpkg"))
+    crs = _crs_from_profile(profile)
+
+    gdf_stems = stems_to_gdf(stems, profile)
+    gdf_vectors = vectors_to_gdf(stems, profile)
+    gdf_nodes = nodes_to_gdf(stems, profile)
+
+    tmp_path = _write_layers_to_temp_gpkg(
+        layers=[
+            ("stems", gdf_stems),
+            ("vectors", gdf_vectors),
+            ("nodes", gdf_nodes),
+        ],
+        crs=crs,
+        final_path=final_path,
+    )
+    return _safe_finalize_gpkg(tmp_path, final_path)
 
 
 def save_image(data, output_name, size=(15, 15), dpi=300):
