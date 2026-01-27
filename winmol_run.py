@@ -151,7 +151,7 @@ class ImageProcessing:
             stems = self.trees_processing(pred, profile)
             if self.process_type == "Trees":
                 IO.write_stems_to_gpkg(stems, profile, self.trees_path)
-            else: 
+            else:
                 IO.write_all_layers_to_gpkg(stems, profile, self.nodes_path)
 
 

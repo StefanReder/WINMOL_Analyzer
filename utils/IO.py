@@ -161,70 +161,90 @@ _EPSG_AUTH_RE = re.compile(r'AUTHORITY\["EPSG","(\d+)"\]')
 _EPSG_ID_RE = re.compile(r'ID\["EPSG",(\d+)\]')
 
 
+def _profile_crs_value(profile):
+    if isinstance(profile, dict):
+        return profile.get("crs")
+    return None
+
+
+def _safe_to_wkt(obj):
+    try:
+        if hasattr(obj, "to_wkt"):
+            return obj.to_wkt()
+    except Exception:
+        return None
+    return None
+
+
+def _safe_crs_from_user_input(crs_in):
+    try:
+        return CRS.from_user_input(crs_in)
+    except Exception:
+        return None
+
+
+def _safe_to_epsg(crs):
+    try:
+        return crs.to_epsg()
+    except Exception:
+        return None
+
+
+def _epsg_from_wkt(wkt):
+    if not wkt:
+        return None
+    m = _EPSG_AUTH_RE.findall(wkt)
+    if m:
+        return int(m[-1])
+    m = _EPSG_ID_RE.findall(wkt)
+    if m:
+        return int(m[-1])
+    return None
+
+
+def _iter_wkt_candidates(crs_in, crs):
+    wkt = _safe_to_wkt(crs_in)
+    if wkt:
+        yield wkt
+
+    try:
+        yield crs.to_wkt(version="WKT1_GDAL")
+    except Exception:
+        pass
+
+    yield str(crs_in)
+
+
+def _epsg_from_crs_inputs(crs_in, crs):
+    for wkt in _iter_wkt_candidates(crs_in, crs):
+        epsg = _epsg_from_wkt(wkt)
+        if epsg is not None:
+            return epsg
+    return None
+
+
 def _crs_from_profile(profile):
-    """Return a pyproj CRS, normalized to an EPSG authority when possible.
-    Strategy:
-    1) Build a pyproj CRS from the input.
-    2) Try ``to_epsg()``.
-    3) If that fails, parse EPSG from WKT (AUTHORITY[...] or ID[...]).
-    4) If found, return ``CRS.from_epsg(code)``; else return the CRS as-is.
-    """
-    crs_in = profile.get("crs") if isinstance(profile, dict) else None
+    """Return a pyproj CRS; prefer EPSG authority if detectable."""
+    crs_in = _profile_crs_value(profile)
     if crs_in is None:
         return None
 
-    try:
-        crs = CRS.from_user_input(crs_in)
-    except Exception:
-        try:
-            return crs_in.to_wkt() if hasattr(crs_in, "to_wkt") else str(crs_in)
-        except Exception:
-            return None
+    crs = _safe_crs_from_user_input(crs_in)
+    if crs is None:
+        wkt = _safe_to_wkt(crs_in)
+        return wkt if wkt else str(crs_in)
 
-    epsg = None
-    try:
-        epsg = crs.to_epsg()
-    except Exception:
-        epsg = None
+    epsg = _safe_to_epsg(crs)
+    if epsg is None:
+        epsg = _epsg_from_crs_inputs(crs_in, crs)
 
     if epsg is None:
-        wkt_candidates = []
+        return crs
 
-        # rasterio CRS often keeps the original WKT1 (with AUTHORITY tags)
-        try:
-            if hasattr(crs_in, "to_wkt"):
-                wkt_candidates.append(crs_in.to_wkt())
-        except Exception:
-            pass
-
-        # pyproj CRS: try WKT1 flavour to preserve AUTHORITY tags
-        try:
-            wkt_candidates.append(crs.to_wkt(version="WKT1_GDAL"))
-        except Exception:
-            pass
-
-        # fallback
-        wkt_candidates.append(str(crs_in))
-
-        for wkt in wkt_candidates:
-            if not wkt:
-                continue
-            m = _EPSG_AUTH_RE.findall(wkt)
-            if m:
-                epsg = int(m[-1])
-                break
-            m = _EPSG_ID_RE.findall(wkt)
-            if m:
-                epsg = int(m[-1])
-                break
-
-    if epsg is not None:
-        try:
-            return CRS.from_epsg(epsg)
-        except Exception:
-            pass
-
-    return crs
+    try:
+        return CRS.from_epsg(epsg)
+    except Exception:
+        return crs
 
 
 def _jsonify_list(x):
