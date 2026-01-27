@@ -323,8 +323,8 @@ def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
         return final_path
     except PermissionError:
         # likely locked by QGIS/AV/indexer: write alternative file
-        alt = str(Path(final_path).with_name(Path(final_path).stem \
-            + "_new.gpkg"))
+        alt = str(Path(
+            final_path).with_name(Path(final_path).stem + "_new.gpkg"))
         shutil.copy2(tmp_path, alt)
         try:
             os.remove(tmp_path)
@@ -380,6 +380,7 @@ def _normalize_dtypes(gdf):
             gdf[col] = s.astype(object).where(~s.isna(), None)
 
     return gdf
+
 
 def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
     """

@@ -147,9 +147,9 @@ class ImageProcessing:
 
     def main(self):
         pred, profile = self.stem_processing()
-        if self.process_type != "Stems":  
+        if self.process_type != "Stems":
             stems = self.trees_processing(pred, profile)
-            if self.process_type == "Trees":  
+            if self.process_type == "Trees":
                 IO.write_stems_to_gpkg(stems, profile, self.trees_path)
             else: # Nodes
                 IO.write_all_layers_to_gpkg(stems, profile, self.nodes_path)
