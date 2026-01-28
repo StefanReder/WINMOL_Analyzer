@@ -293,7 +293,6 @@ def vectors_to_gdf(stems, profile):
     return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs_epsg)
 
 
-
 def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
     """
     Finalize a temporary GeoPackage in a robust, cross-platform way.

@@ -684,7 +684,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             return
 
         # Trees output: stems only
-        if self.output_checkBox_trees.isChecked():      
+        if self.output_checkBox_trees.isChecked():
             self.load_gpkg_layers(gpkg, ["stems"])
 
         # Nodes output: stems + nodes + vectors
