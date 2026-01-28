@@ -81,7 +81,6 @@ class ImageProcessing:
         stems = Quant.quantify_stems(stems, pred, profile)
         return stems
 
-
     def check_DL_env(self):
         # Check if NVIDIA GPU is available and available for processing
         def get_nvidia_driver_version():
@@ -127,7 +126,6 @@ class ImageProcessing:
             print("Detected Wind-thrown Trees Path:", self.trees_path)
         # print configuration settings
         self.config.display()
-
 
     def main(self):
         pred, profile = self.stem_processing()

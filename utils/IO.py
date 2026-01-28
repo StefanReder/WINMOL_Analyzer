@@ -299,8 +299,8 @@ def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
     Finalize a temporary GeoPackage in a robust, cross-platform way.
 
     - Try atomic move (os.replace) when possible.
-    - If cross-device/cross-mount (Windows errno 18 or POSIX EXDEV), copy instead.
-    - If destination is locked, copy to *_new.gpkg (and if needed, *_new_<pid>.gpkg).
+    - If cross-device/cross-mount (Win errno 18 or POSIX EXDEV), copy instead.
+    - If target is locked, copy to *_new.gpkg (and if needed, *_new_<pid>.gpkg).
     - Always removes the temporary directory on success.
     Returns the path that was actually written.
     """

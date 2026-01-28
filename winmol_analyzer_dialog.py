@@ -102,7 +102,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
                 _w.hide()
                 _w.setEnabled(False)
 
-
         # hide warning label
         self.uav_warning_label.hide()
 
@@ -181,8 +180,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             pass
 
         self.handle_model_combo_box_change()
-
-
 
     def handle_model_combo_box_change(self):
         selected_text = self.model_comboBox.currentText()
@@ -342,7 +339,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
         # Keep UI in sync (read-only display)
         try:
-            self.output_lineEdit_trees.setText(gpkg_path if self.output_checkBox_trees.isChecked() or self.output_checkBox_nodes.isChecked()  else "")
+            self.output_lineEdit_trees.setText(gpkg_path if self.output_checkBox_trees.isChecked() or self.output_checkBox_nodes.isChecked() else "")
         except Exception:
             pass
 
@@ -472,7 +469,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         _ = state  # kept for signal signature compatibility
         self._update_derived_output_fields()
 
-
     def set_selected_model(self):
         selected_text = self.model_comboBox.currentText().strip()
         if selected_text == "Custom":
@@ -483,7 +479,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.model_path = os.path.join(self.models_dir, f"{selected_text}.hdf5")
         else:
             self.model_path = ""
-
 
     def set_selected_process_type(self):
         stem_checked = self.output_checkBox_stem.isChecked()
@@ -665,11 +660,9 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             )
             self.check_swap_memory()
 
-
     def update_output_log(self, text):
         # Update your QPlainTextEdit with the output
         self.output_log.appendPlainText(text)
-
 
     def load_layers_to_session(self):
         """Load outputs after processing finishes.
@@ -691,14 +684,12 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             return
 
         # Trees output: stems only
-        if self.output_checkBox_trees.isChecked():          
+        if self.output_checkBox_trees.isChecked():      
             self.load_gpkg_layers(gpkg, ["stems"])
 
         # Nodes output: stems + nodes + vectors
         if self.output_checkBox_nodes.isChecked():
             self.load_gpkg_layers(gpkg, ["stems", "vectors", "nodes"])
-
-
 
     def _resolve_output_gpkg(self, path_prefix: str):
         """Return an existing output GeoPackage path for a given prefix.
@@ -726,12 +717,10 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         candidates = sorted(glob.glob(str(p.parent / (p.stem + "*.gpkg"))))
         return candidates[0] if candidates else None
 
-
     def load_gpkg_layers(self, gpkg_path: str, layer_names):
         """Load multiple layers from a GeoPackage into the QGIS project."""
         for ln in layer_names:
             self.load_gpkg_layer(gpkg_path, ln)
-
 
     def load_gpkg_layer(self, gpkg_path: str, layer_name: str):
         name = f"{Path(gpkg_path).stem}_{layer_name}"
@@ -741,7 +730,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             print(f"Error loading GeoPackage layer '{layer_name}' from {gpkg_path}")
             return
         QgsProject.instance().addMapLayer(vector_layer)
-
 
     def load_raster(self, path):
         # Check if the path ends with ".tiff" (case-insensitive)
