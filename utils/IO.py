@@ -8,6 +8,7 @@ import os
 import glob
 import tempfile
 import shutil
+import errno
 import numpy as np
 import rasterio
 import geopandas as gpd
@@ -108,15 +109,9 @@ def load_stem_map(path):
         print(path)
         print("")
         with rasterio.open(path) as src:
-            # crs=src.crs
             pred = src.read()
             pred = pred[0, :, :]
             profile = src.profile
-        # px_size=(pred.bounds.right-pred.bounds.left)/pred.width
-        # px_size=abs(src.profile['transform'][0])
-        # bounds=src.bounds
-        # pred=np.pad(pred,((padding,padding),(padding,padding)),
-        # 'constant', constant_values=False)
         return pred, profile
 
 
@@ -139,22 +134,6 @@ def get_bounds_from_profile(profile):
     bot = profile['transform'][5] + profile['transform'][4] * profile['height']
     top = profile['transform'][5]
     return rasterio.coords.BoundingBox(left, bot, right, top)
-
-
-# def _crs_from_profile(profile):
-#     """Return a CRS object that GeoPandas can write reliably."""
-#     crs = profile.get("crs") if isinstance(profile, dict) else None
-#     if crs is None:
-#         return None
-#     try:
-#         # best: pyproj CRS
-#         return CRS.from_user_input(crs)
-#     except Exception:
-#         # fallback: WKT if available, else string
-#         try:
-#             return crs.to_wkt() if hasattr(crs, "to_wkt") else str(crs)
-#         except Exception:
-#             return None
 
 
 def _profile_get(profile, key, default=None):
@@ -194,35 +173,12 @@ def _crs_from_profile(profile):
     return CRS.from_epsg(epsg) if epsg else crs
 
 
-# def _profile_crs_value(profile):
-#     if isinstance(profile, dict):
-#         return profile.get("crs")
-#     return None
-
-
-# def _safe_crs_from_user_input(crs_in):
-#     try:
-#         return CRS.from_user_input(crs_in)
-#     except Exception:
-#         return None
-
-
 def _jsonify_list(x):
     # GeoPackage attributes must be scalar; store lists as JSON text
     try:
         return json.dumps([float(v) for v in x], ensure_ascii=False)
     except Exception:
         return json.dumps(x, ensure_ascii=False)
-
-
-# def _fiona_safe(gdf):
-#     for col in gdf.columns:
-#         if col == gdf.geometry.name:
-#             continue
-#         if isinstance(gdf[col].dtype, pd.StringDtype):
-#             gdf[col] = gdf[col].astype(object)
-#             gdf.loc[gdf[col].isna(), col] = None
-#     return gdf
 
 
 def stems_to_gdf(stems, profile):
@@ -287,115 +243,117 @@ def nodes_to_gdf(stems, profile):
 
 
 def vectors_to_gdf(stems, profile):
-    crs = _crs_from_profile(profile)
+    # Match vectors_to_geojson_ CRS behavior
+    crs_epsg = profile.get("crs", None)
+    if isinstance(crs_epsg, int):
+        crs_epsg = f"EPSG:{crs_epsg}"
 
     rows = []
     geoms = []
-    for i, s in enumerate(stems):
-        for j in range(len(s.path.coords)):
+
+    for i in range(len(stems)):
+        # Same iteration intent as your geojson function:
+        # for j in range(len(stems[i].path.coords))
+        # but be safe if vector/diameter lists are shorter.
+        n_path = len(getattr(stems[i].path, "coords", []))
+        vecs = getattr(stems[i], "vector", []) or []
+        diams = getattr(stems[i], "segment_diameter_list", []) or []
+
+        for j in range(n_path):
+            # Ensure we don't crash if vector list is shorter than path coords
+            if j >= len(vecs):
+                continue
+
+            v = vecs[j]
+
+            # Expect v to be a shapely LineString-like with .coords[:]
             try:
-                seg = s.vector[j]
-                if hasattr(seg, "geom_type"):
-                    geom = seg
-                else:
-                    geom = LineString(list(seg.coords))
+                coords = list(v.coords[:])
             except Exception:
                 continue
-            geoms.append(geom)
 
-            d = None
+            # Build geometry
             try:
-                d = float(s.segment_diameter_list[j])
+                geom = LineString(coords)
             except Exception:
-                pass
+                continue
+
+            # Diameter (same indexing as your geojson function; missing -> None)
+            d = diams[j] if j < len(diams) else None
 
             rows.append({
                 "stem_id": i,
                 "node": j,
+                # IMPORTANT: GPKG attrs must be scalar -> store as JSON string
+                "Vector": json.dumps(coords, ensure_ascii=False),
                 "d": d,
             })
+            geoms.append(geom)
 
-    return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs)
+    return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs_epsg)
 
-
-# def stems_to_gpkg(stems, profile, path_prefix):
-#     """Create/overwrite a GeoPackage at <path_prefix>.gpkg.
-
-#     Writes layer 'stems'.
-#     """
-#     gpkg_path = path_prefix + ".gpkg"
-#     if os.path.exists(gpkg_path):
-#         os.remove(gpkg_path)
-
-#     gdf = stems_to_gdf(stems, profile)
-#     gdf = _fiona_safe(gdf)
-#     if not gdf.empty:
-#         gdf.to_file(gpkg_path, layer="stems", driver="GPKG")
-#     print(f"Wrote {gpkg_path} (layer=stems)")
-#     return gpkg_path
-
-
-# def nodes_to_gpkg(stems, profile, path_prefix):
-#     """Append layer 'nodes' to <path_prefix>.gpkg."""
-#     gpkg_path = path_prefix + ".gpkg"
-#     gdf = nodes_to_gdf(stems, profile)
-#     gdf = _fiona_safe(gdf)
-#     if not gdf.empty:
-#         try:
-#             gdf.to_file(gpkg_path, layer="nodes", driver="GPKG", mode="a")
-#         except TypeError:
-#             # fallback if mode isn't supported in an environment
-#             gdf.to_file(gpkg_path, layer="nodes", driver="GPKG")
-#     print(f"Wrote {gpkg_path} (layer=nodes)")
-#     return gpkg_path
-
-
-# def vectors_to_gpkg(stems, profile, path_prefix):
-#     """Append layer 'vectors' to <path_prefix>.gpkg."""
-#     gpkg_path = path_prefix + ".gpkg"
-#     gdf = vectors_to_gdf(stems, profile)
-#     gdf = _fiona_safe(gdf)
-#     if not gdf.empty:
-#         try:
-#             gdf.to_file(gpkg_path, layer="vectors", driver="GPKG", mode="a")
-#         except TypeError:
-#             gdf.to_file(gpkg_path, layer="vectors", driver="GPKG")
-#     print(f"Wrote {gpkg_path} (layer=vectors)")
-#     return gpkg_path
 
 
 def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
     """
-    Move/replace tmp_path -> final_path.
-    If final_path is locked (on Windows/QGIS), write a *_new.gpkg instead.
-    Returns the final path actually written.
-    """
-    final_path = str(Path(final_path))
-    os.makedirs(str(Path(final_path).parent), exist_ok=True)
+    Finalize a temporary GeoPackage in a robust, cross-platform way.
 
+    - Try atomic move (os.replace) when possible.
+    - If cross-device/cross-mount (Windows errno 18 or POSIX EXDEV), copy instead.
+    - If destination is locked, copy to *_new.gpkg (and if needed, *_new_<pid>.gpkg).
+    - Always removes the temporary directory on success.
+    Returns the path that was actually written.
+    """
+    tmp_path = str(tmp_path)
+    final_path = str(final_path)
+
+    tmp_dir = Path(tmp_path).parent
+    dst = Path(final_path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    def _cleanup():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _copy_to(target: Path) -> str:
+        shutil.copy2(tmp_path, str(target))
+        _cleanup()
+        return str(target)
+
+    def _alt_new_paths(base: Path):
+        yield base.with_name(base.stem + "_new" + base.suffix)
+        yield base.with_name(base.stem + f"_new_{os.getpid()}" + base.suffix)
+
+    # 1) Fast path: same filesystem -> atomic move
     try:
-        # atomic replace if possible
         os.replace(tmp_path, final_path)
-        shutil.rmtree(Path(tmp_path).parent, ignore_errors=True)
+        _cleanup()
         return final_path
+
     except PermissionError:
-        # likely locked by QGIS/AV/indexer: write alternative file
-        alt = str(Path(
-            final_path).with_name(Path(final_path).stem + "_new.gpkg"))
-        shutil.copy2(tmp_path, alt)
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-        return alt
-    except OSError:
-        # cross-device move etc. -> copy fallback
-        shutil.copy2(tmp_path, final_path)
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-        return final_path
+        # Destination locked: write alternative
+        for alt in _alt_new_paths(dst):
+            try:
+                return _copy_to(alt)
+            except PermissionError:
+                continue
+        raise
+
+    except OSError as e:
+        # Cross-device/mount move error:
+        # Windows commonly reports errno 18; POSIX uses errno.EXDEV.
+        exdev = getattr(errno, "EXDEV", 18)
+        if e.errno in (18, exdev):
+            # Copy to intended destination; if locked, fall back to *_new*
+            try:
+                return _copy_to(dst)
+            except PermissionError:
+                for alt in _alt_new_paths(dst):
+                    try:
+                        return _copy_to(alt)
+                    except PermissionError:
+                        continue
+            raise
+        raise
 
 
 def _drop_bad_geoms(gdf):
@@ -551,6 +509,7 @@ def write_all_layers_to_gpkg(stems, profile, path_prefix):
         crs=crs,
         final_path=final_path,
     )
+    print("Geopackage written to temporary file:", tmp_path)
     return _safe_finalize_gpkg(tmp_path, final_path)
 
 

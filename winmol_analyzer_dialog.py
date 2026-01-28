@@ -25,6 +25,9 @@ Dialog
 
 import os
 import psutil
+import glob
+import json
+from pathlib import Path
 
 from PyQt5.QtWidgets import QFileDialog
 
@@ -54,6 +57,16 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         """Constructor."""
         super(WINMOLAnalyzerDialog, self).__init__(parent)
         self.setupUi(self)
+        # Derived outputs are auto-generated from the stem map output path.
+        # Keep these fields visible for transparency, but prevent manual editing.
+        try:
+            self.output_lineEdit_trees.setReadOnly(True)
+            self.output_lineEdit_nodes.setReadOnly(True)
+            self.output_toolButton_trees.setEnabled(False)
+            self.output_toolButton_nodes.setEnabled(False)
+        except Exception:
+            pass
+        self._updating_output_fields = False
 
         # Set the initial title
         self.setWindowTitle("WINMOL Analyzer")
@@ -63,7 +76,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.model_path = ""
         self.stem_path = ""
         self.trees_path = ""
-        self.nodes_path = ""
         self.process_type = "Stems"
 
         self.uav_layer_path = None
@@ -79,7 +91,17 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.output_log.setReadOnly(True)
         self.venv_path = venv_path
         self.models_dir = os.path.join(os.path.dirname(self.venv_path), "models")
+        self.populate_model_combo_box()
         self.process_type = None
+
+        # Nodes output uses the Trees output path (no separate file/path field).
+        # Hide/disable the old nodes output widgets if they exist in the .ui.
+        for _wname in ("output_lineEdit_nodes", "output_toolButton_nodes"):
+            _w = getattr(self, _wname, None)
+            if _w is not None:
+                _w.hide()
+                _w.setEnabled(False)
+
 
         # hide warning label
         self.uav_warning_label.hide()
@@ -94,8 +116,8 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.uav_toolButton.clicked.connect(self.file_dialog_uav)
         self.model_toolButton.clicked.connect(self.model_file_dialog)
         self.output_toolButton_stem.clicked.connect(self.file_dialog_stem)
+        self.output_lineEdit_stem.textChanged.connect(self._update_derived_output_fields)
         self.output_toolButton_trees.clicked.connect(self.file_dialog_trees)
-        self.output_toolButton_nodes.clicked.connect(self.file_dialog_nodes)
         self.output_checkBox_stem.stateChanged.connect(self.checkbox_changed_stem)
         self.output_checkBox_trees.stateChanged.connect(self.checkbox_changed_trees)
         self.output_checkBox_nodes.stateChanged.connect(self.checkbox_changed_nodes)
@@ -104,6 +126,63 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.checkbox_changed_nodes(1)
         self.close_button.clicked.connect(self.close_application)
         self.cancel_button.clicked.connect(self.cancel_process)
+
+    def _log(self, msg: str) -> None:
+        """Write a message to the plugin log widget (and stdout as fallback)."""
+        try:
+            self.output_log.append(str(msg))
+        except Exception:
+            print(msg)
+
+    def populate_model_combo_box(self) -> None:
+        """Fill the model dropdown from config.json.
+
+        config.json is expected to be a mapping: {"ModelName": "https://.../model.hdf5"}
+        The installer downloads these into <plugin>/models/<ModelName>.hdf5.
+
+        We always append a "Custom" entry that lets users pick their own *.hdf5.
+        """
+        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        model_names = []
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            if isinstance(cfg, dict):
+                model_names = [k.strip() for k in cfg.keys() if isinstance(k, str) and k.strip()]
+        except Exception as e:
+            self._log(f"Could not load model list from config.json ({config_path}): {e}")
+
+        try:
+            self.model_comboBox.blockSignals(True)
+        except Exception:
+            pass
+
+        self.model_comboBox.clear()
+
+        if model_names:
+            for name in sorted(set(model_names), key=str.lower):
+                self.model_comboBox.addItem(name)
+        else:
+            # Backward-compatible fallback.
+            for name in ["Beech", "Spruce", "General"]:
+                self.model_comboBox.addItem(name)
+
+        self.model_comboBox.addItem("Custom")
+
+        if model_names and "General" in model_names:
+            idx = self.model_comboBox.findText("General")
+            if idx >= 0:
+                self.model_comboBox.setCurrentIndex(idx)
+
+        try:
+            self.model_comboBox.blockSignals(False)
+        except Exception:
+            pass
+
+        self.handle_model_combo_box_change()
+
+
 
     def handle_model_combo_box_change(self):
         selected_text = self.model_comboBox.currentText()
@@ -221,33 +300,130 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.check_input_file()
         self.uav_path = self.uav_lineEdit.text()
 
+        # Set a sensible default output stem map path (same folder, derived name)
+        if self.uav_path and not self.output_lineEdit_stem.text().strip():
+            suggested = self._suggest_stem_map_output(self.uav_path)
+            if suggested:
+                self.output_lineEdit_stem.setText(suggested)
+
     def file_dialog_stem(self):
         options = QFileDialog.Options()
+
+        # Suggest a default stem map filename derived from the input
+        suggested = ""
+        if self.uav_lineEdit.text().strip():
+            suggested = self._suggest_stem_map_output(self.uav_lineEdit.text().strip())
+
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Select Location And Name For Stem Map",
-            "",
-            "All Files (*)",
+            "Select Location And Name For Stem Map Output",
+            suggested,
+            "TIFF Files (*.tiff *.tif);;All Files (*)",
             options=options,
         )
         if file_path:
-            # Check if the file is already loaded in QGIS
-            self.check_uav_input_exists(file_path)
-            # File is not loaded in QGIS or user chose to remove, set the text in the line edit
+            # Normalize to '<base>_stem_map.tiff' and update derived outputs
             self.output_lineEdit_stem.setText(file_path)
-            self.stem_path = self.output_lineEdit_stem.text()
 
     def set_path_from_line_edit(self):
-        self.stem_path = self.output_lineEdit_stem.text()
-        self.trees_path = self.output_lineEdit_trees.text()
-        self.nodes_path = self.output_lineEdit_nodes.text()
+        # Single user-controlled output path: stem map output.
+        stem_out = self._normalize_stem_map_output(self.output_lineEdit_stem.text().strip())
+        self.stem_path = stem_out
+
+        # Derived vector output: '<base>_detected_stems.gpkg'
+        base = self._stem_base_from_stem_map(stem_out)
+        gpkg_path = f"{base}_detected_stems.gpkg" if base else ""
+
+        # Only pass the gpkg path for the selected mode.
+        if self.process_type != "Stems":
+            self.trees_path = gpkg_path
+        else:
+            self.trees_path = ""
+
+        # Keep UI in sync (read-only display)
+        try:
+            self.output_lineEdit_trees.setText(gpkg_path if self.output_checkBox_trees.isChecked() or self.output_checkBox_nodes.isChecked()  else "")
+        except Exception:
+            pass
+
+    def _suggest_stem_map_output(self, uav_path: str) -> str:
+        """Derive default stem map output path from input image path."""
+        try:
+            p = Path(uav_path)
+            base = str(p.with_suffix(""))
+            return f"{base}_stem_map.tiff"
+        except Exception:
+            return ""
+
+    def _normalize_stem_map_output(self, value: str) -> str:
+        """Ensure stem map output ends with '_stem_map.tiff'.
+
+        Users may type a base path, a .tif/.tiff, or even a .gpkg path.
+        We normalize to the required stem map filename convention.
+        """
+        if not value:
+            return ""
+
+        # Strip quotes (Windows copy/paste)
+        value = value.strip().strip('"').strip("'")
+
+        p = Path(value)
+
+        # If user picked a gpkg, treat it as base and convert to stem map
+        if p.suffix.lower() == ".gpkg":
+            p = p.with_suffix("")
+
+        # If user picked a tif/tiff, remove extension for base handling
+        if p.suffix.lower() in (".tif", ".tiff"):
+            p = p.with_suffix("")
+
+        s = str(p)
+
+        # Remove known suffixes if already present
+        for suf in ("_stem_map", "_detected_stems"):
+            if s.lower().endswith(suf):
+                s = s[: -len(suf)]
+                break
+
+        # Final normalized stem map
+        return f"{s}_stem_map.tiff"
+
+    def _stem_base_from_stem_map(self, stem_map_path: str) -> str:
+        """Return the common base (without suffixes/extensions)."""
+        if not stem_map_path:
+            return ""
+        p = Path(stem_map_path)
+        s = str(p.with_suffix(""))
+        if s.lower().endswith("_stem_map"):
+            s = s[:-len("_stem_map")]
+        return s
+
+    def _update_derived_output_fields(self):
+        """Update derived gpkg output fields whenever stem output changes."""
+        if getattr(self, "_updating_output_fields", False):
+            return
+        try:
+            self._updating_output_fields = True
+
+            stem_out = self._normalize_stem_map_output(self.output_lineEdit_stem.text().strip())
+            # If normalization changes the visible text, update it (keeps UI consistent)
+            if stem_out and self.output_lineEdit_stem.text().strip() != stem_out:
+                self.output_lineEdit_stem.setText(stem_out)
+
+            base = self._stem_base_from_stem_map(stem_out)
+            gpkg_path = f"{base}_detected_stems.gpkg" if base else ""
+
+            # Show derived gpkg paths (read-only)
+            self.output_lineEdit_trees.setText(gpkg_path if self.output_checkBox_trees.isChecked() else "")
+        finally:
+            self._updating_output_fields = False
 
     def check_uav_input_exists(self, file_path):
         # Check if the file is already loaded in QGIS
         loaded_layers = QgsProject.instance().mapLayers().values()
-        if any(layer.source() == file_path for layer in loaded_layers):
+        if any(layer.source().split("|")[0] == file_path for layer in loaded_layers):
             matching_layers = [
-                layer for layer in loaded_layers if layer.source() == file_path
+                layer for layer in loaded_layers if layer.source().split("|")[0] == file_path
             ]
             # Remove the matching layers
             for layer in matching_layers:
@@ -257,7 +433,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         options = QFileDialog.Options()
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Select Location And Name For Semantic Stem Map",
+            "Select location and name for the detected stems.",
             "",
             "All Files (*)",
             options=options,
@@ -266,49 +442,48 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.output_lineEdit_trees.setText(file_path)
             self.trees_path = self.output_lineEdit_trees.text()
 
-    def file_dialog_nodes(self):
-        options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Select Location And Name For Measuring Nodes",
-            "",
-            "All Files (*)",
-            options=options,
-        )
-        if file_path:
-            self.output_lineEdit_nodes.setText(file_path)
-            self.nodes_path = self.output_lineEdit_nodes.text()
-
     def checkbox_changed_stem(self, state):
         is_checked = state == 2
         self.output_lineEdit_stem.setEnabled(is_checked)
         self.output_toolButton_stem.setEnabled(is_checked)
         self.apply_style_to_line_edit(self.output_lineEdit_stem, is_checked)
+
+        # Stem map is the base output. If disabled, also disable higher modes.
         self.output_checkBox_trees.setEnabled(is_checked)
+        if not is_checked:
+            self.output_checkBox_trees.setChecked(False)
+            self.output_checkBox_nodes.setChecked(False)
+            self.output_checkBox_nodes.setEnabled(False)
+
+        self._update_derived_output_fields()
 
     def checkbox_changed_trees(self, state):
         is_checked = state == 2
-        self.output_lineEdit_trees.setEnabled(is_checked)
-        self.output_toolButton_trees.setEnabled(is_checked)
-        self.apply_style_to_line_edit(self.output_lineEdit_trees, is_checked)
+
+        # Trees/Nodes outputs are derived; prevent manual path editing.
         self.output_checkBox_nodes.setEnabled(is_checked)
+        if not is_checked:
+            self.output_checkBox_nodes.setChecked(False)
+
+        self._update_derived_output_fields()
 
     def checkbox_changed_nodes(self, state):
-        is_checked = state == 2
-        self.output_lineEdit_nodes.setEnabled(is_checked)
-        self.output_toolButton_nodes.setEnabled(is_checked)
-        self.apply_style_to_line_edit(self.output_lineEdit_nodes, is_checked)
+        # Nodes output is derived; prevent manual path editing.
+        _ = state  # kept for signal signature compatibility
+        self._update_derived_output_fields()
+
 
     def set_selected_model(self):
-        selected_text = self.model_comboBox.currentText()
-        if selected_text == "Beech":
-            self.model_path = os.path.join(self.models_dir, "Beech.hdf5")
-        elif selected_text == "Spruce":
-            self.model_path = os.path.join(self.models_dir, "Spruce.hdf5")
-        elif selected_text == "General":
-            self.model_path = os.path.join(self.models_dir, "General.hdf5")
-        elif selected_text == "Custom":
-            self.model_path = self.model_lineEdit.text()
+        selected_text = self.model_comboBox.currentText().strip()
+        if selected_text == "Custom":
+            self.model_path = self.model_lineEdit.text().strip()
+            return
+
+        if selected_text:
+            self.model_path = os.path.join(self.models_dir, f"{selected_text}.hdf5")
+        else:
+            self.model_path = ""
+
 
     def set_selected_process_type(self):
         stem_checked = self.output_checkBox_stem.isChecked()
@@ -324,12 +499,58 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         else:
             self.process_type = "Stems"
 
-    def save_temp_layer(self, layer, layer_name):
-        layer = self.uav_layer_path
-        # Save the layer to the project as temporary layer
-        QgsProject.instance().addMapLayer(layer, False)
-        # Set the layer name
-        layer.setName(layer_name)
+    def save_temp_layer(self, layer, layer_name: str, add_to_legend: bool = True):
+        """
+        Add a raster/vector layer to the current QGIS project as a *temporary* layer.
+
+        Parameters
+        ----------
+        layer : QgsMapLayer | str
+            Either an already-created QgsRasterLayer/QgsVectorLayer, or a datasource
+            path/URI (e.g. 'C:/x/out.gpkg|layername=stems', 'C:/x/out.tif').
+        layer_name : str
+            Name to assign in the QGIS layer tree.
+        add_to_legend : bool
+            Whether the layer should appear in the layer tree (default True).
+
+        Returns
+        -------
+        QgsMapLayer | None
+        """
+        if layer is None:
+            return None
+
+        # Allow passing a path/URI instead of a QgsMapLayer object
+        if isinstance(layer, str):
+            src = layer.strip()
+            if not src:
+                return None
+
+            # Decide raster vs vector by extension of the *file* part (before '|')
+            file_part = src.split("|", 1)[0]
+            ext = os.path.splitext(file_part)[1].lower()
+
+            if ext in (".tif", ".tiff", ".vrt", ".asc", ".img"):
+                layer = QgsRasterLayer(src, layer_name or os.path.basename(file_part), "gdal")
+            else:
+                layer = QgsVectorLayer(src, layer_name or os.path.basename(file_part), "ogr")
+
+        # Validate
+        if not layer or not layer.isValid():
+            print(f"save_temp_layer(): invalid layer for '{layer_name}'")
+            return None
+
+        if layer_name:
+            layer.setName(layer_name)
+
+        project = QgsProject.instance()
+
+        # Avoid duplicates if it’s already in the project
+        if layer.id() in project.mapLayers():
+            return layer
+
+        project.addMapLayer(layer, add_to_legend)
+        return layer
 
     def apply_style_to_line_edit(self, line_edit, is_checked):
         # Enable or disable the QLineEdit based on the checkbox state
@@ -360,11 +581,33 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
         # set chosen parameters
         self.set_selected_model()
+
+        if not self.model_path:
+            QtWidgets.QMessageBox.warning(self, "WINMOL Analyzer", "No model selected.")
+            return
+        if self.model_comboBox.currentText().strip() != "Custom" and not os.path.exists(self.model_path):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "WINMOL Analyzer",
+                f"Selected model file was not found:\n{self.model_path}\n\n"
+                "Tip: restart QGIS to let the plugin download models, or pick a Custom model file.",
+            )
+            return
+
         self.set_selected_process_type()
         self.set_path_from_line_edit()
 
         # check if uav image is loaded in qgis
         self.check_uav_input_exists(self.stem_path)
+
+        if self.trees_path:
+            # unload final gpkg layers
+            self.check_uav_input_exists(self.trees_path)
+
+            # unload *_new.gpkg layers too (fallback filename)
+            p = Path(self.trees_path)
+            alt = str(p.with_name(p.stem + "_new.gpkg"))
+            self.check_uav_input_exists(alt)
 
         # use python of venv (!)
         command = [
@@ -375,7 +618,6 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.uav_path,
             self.stem_path,
             self.trees_path,
-            self.nodes_path,
             self.process_type,
         ]
 
@@ -423,22 +665,88 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             )
             self.check_swap_memory()
 
+
     def update_output_log(self, text):
         # Update your QPlainTextEdit with the output
         self.output_log.appendPlainText(text)
 
+
     def load_layers_to_session(self):
+        """Load outputs after processing finishes.
+
+        Legacy output was GeoJSON:
+            (*_stems.geojson, *_nodes.geojson, *_vectors.geojson).
+        Newer versions write GeoPackage:
+            (*.gpkg) with layers: stems, nodes, vectors.
+
+        This method supports both.
+        """
+
+        print("Loading output layers into QGIS session...")
         self.load_raster(self.stem_path)
-        if self.trees_path:
-            self.load_geojson(self.trees_path + "_stems.geojson")
-        if self.nodes_path:
-            self.load_geojson(self.nodes_path + "_vectors.geojson")
-            self.load_geojson(self.nodes_path + "_nodes.geojson")
+        gpkg = self._resolve_output_gpkg(self.trees_path)
+
+        if not gpkg:
+            print("No output GeoPackage found; skipping vector layer loading.")
+            return
+
+        # Trees output: stems only
+        if self.output_checkBox_trees.isChecked():          
+            self.load_gpkg_layers(gpkg, ["stems"])
+
+        # Nodes output: stems + nodes + vectors
+        if self.output_checkBox_nodes.isChecked():
+            self.load_gpkg_layers(gpkg, ["stems", "vectors", "nodes"])
+
+
+
+    def _resolve_output_gpkg(self, path_prefix: str):
+        """Return an existing output GeoPackage path for a given prefix.
+
+        IO.write_*_to_gpkg uses Path(prefix).with_suffix('.gpkg').
+        On Windows/QGIS, the target file may be locked;
+        in that case IO writes '<name>_new.gpkg'.
+        """
+        if not path_prefix:
+            return None
+
+        p = Path(path_prefix)
+
+        # Normal target
+        gpkg = str(p.with_suffix(".gpkg"))
+        if os.path.exists(gpkg):
+            return gpkg
+
+        # Locked target fallback written by _safe_finalize_gpkg()
+        gpkg_new = str(Path(gpkg).with_name(Path(gpkg).stem + "_new.gpkg"))
+        if os.path.exists(gpkg_new):
+            return gpkg_new
+
+        # Any gpkg with the same prefix (e.g. foo_new.gpkg, foo_001.gpkg)
+        candidates = sorted(glob.glob(str(p.parent / (p.stem + "*.gpkg"))))
+        return candidates[0] if candidates else None
+
+
+    def load_gpkg_layers(self, gpkg_path: str, layer_names):
+        """Load multiple layers from a GeoPackage into the QGIS project."""
+        for ln in layer_names:
+            self.load_gpkg_layer(gpkg_path, ln)
+
+
+    def load_gpkg_layer(self, gpkg_path: str, layer_name: str):
+        name = f"{Path(gpkg_path).stem}_{layer_name}"
+        uri = f"{gpkg_path}|layername={layer_name}"
+        vector_layer = QgsVectorLayer(uri, name, "ogr")
+        if not vector_layer.isValid():
+            print(f"Error loading GeoPackage layer '{layer_name}' from {gpkg_path}")
+            return
+        QgsProject.instance().addMapLayer(vector_layer)
+
 
     def load_raster(self, path):
         # Check if the path ends with ".tiff" (case-insensitive)
         if not path.lower().endswith(".tiff"):
-            path += ".tiff"
+            path = str(Path(path).with_suffix(".tiff"))
         # Extract the base name of the input image file
         name = os.path.splitext(os.path.basename(path))[0]
         # Load raster layer
