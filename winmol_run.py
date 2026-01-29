@@ -2,6 +2,7 @@
 import os
 import sys
 import subprocess
+import traceback
 import tensorflow as tf
 
 from classes.Config import Config
@@ -35,7 +36,6 @@ class ImageProcessing:
             uav_path,
             stem_path,
             trees_path,
-            nodes_path,
             process_type
     ):
         print("Initialization")
@@ -43,7 +43,6 @@ class ImageProcessing:
         self.uav_path = uav_path
         self.stem_path = stem_path
         self.trees_path = trees_path
-        self.nodes_path = nodes_path
         self.process_type = process_type
         self.config = Config()
 
@@ -80,13 +79,7 @@ class ImageProcessing:
         Vec.rebuild_endnodes_from_stems(stems)
         print("\nQuantifying Stems...")
         stems = Quant.quantify_stems(stems, pred, profile)
-        # exporting as geojson
-        IO.stems_to_geojson(stems, profile, self.trees_path)
         return stems
-
-    def nodes_processing(self, stems, profile):
-        IO.vector_to_geojson(stems, profile, self.nodes_path)
-        IO.nodes_to_geojson(stems, profile, self.nodes_path)
 
     def check_DL_env(self):
         # Check if NVIDIA GPU is available and available for processing
@@ -128,24 +121,28 @@ class ImageProcessing:
         print("Model Path:", self.model_path)
         print("Image Path:", self.uav_path)
         print("Semantic Stem Map Path:", self.stem_path)
-        print("Process type:", process_type)
+        print("Process type:", self.process_type)
         if self.trees_path:
             print("Detected Wind-thrown Trees Path:", self.trees_path)
-        if self.nodes_path:
-            print("Detected Wind-thrown Nodes Path:", self.nodes_path)
         # print configuration settings
         self.config.display()
 
     def main(self):
-        if self.process_type == "Stems":  # 34 lines
-            self.stem_processing()
-        elif self.process_type == "Trees":  # 118 lines
-            pred, profile = self.stem_processing()
-            self.trees_processing(pred, profile)
-        elif self.process_type == "Nodes":  # 125 lines
-            pred, profile = self.stem_processing()
+        pred, profile = self.stem_processing()
+        if self.process_type != "Stems":
             stems = self.trees_processing(pred, profile)
-            self.nodes_processing(stems, profile)
+            if self.process_type == "Trees":
+                print("\nExporting detected stems to GeoPackage...")
+                IO.write_stems_to_gpkg(stems, profile, self.trees_path)
+            else:
+                print("\nExporting detected stems, "
+                      "and measuring nodes and vectors to GeoPackage...")
+                try:
+                    IO.write_all_layers_to_gpkg(stems, profile, self.trees_path)
+                except Exception as e:
+                    print("\nERROR while writing GeoPackage:", repr(e))
+                    traceback.print_exc()
+                    raise
 
 
 if __name__ == '__main__':
@@ -158,8 +155,7 @@ if __name__ == '__main__':
     uav_path = str(sys.argv[2])
     stem_path = str(sys.argv[3])
     trees_path = str(sys.argv[4])
-    nodes_path = str(sys.argv[5])
-    process_type = str(sys.argv[6])
+    process_type = str(sys.argv[5])
 
     # Create an instance of the ImageProcessing class and run the main method
     image_processor = ImageProcessing(
@@ -167,7 +163,6 @@ if __name__ == '__main__':
         uav_path,
         stem_path,
         trees_path,
-        nodes_path,
         process_type
     )
     image_processor.display_starting_text()

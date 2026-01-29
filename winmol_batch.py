@@ -1,89 +1,195 @@
+#!/usr/bin/env python3
+"""Batch runner for WINMOL Analyzer.
+
+- Reads available models from config.json (repo root).
+- Runs winmol_run.py for all *.tif / *.tiff in the input folder.
+- Optionally merges tiled outputs with utils.IO.merge_and_filter_tiled_results.
+"""
+
+import argparse
+import json
 import os
 import subprocess
-import argparse
-
-# Fixed paths
-INPUT_FOLDER = "./standalone/input"
-OUTPUT_FOLDER = "./standalone/output"
-MODEL_PATHS = {
-    "spruce": (
-        "./standalone/model/"
-        "model_UNet_SpecDS_Spruce_512_2023-02-27_061925.hdf5"
-    ),
-    "beech": (
-        "./standalone/model/"
-        "model_UNet_SpecDS_Beech_512_2023-02-28_042751.hdf5"
-    ),
-    "general": (
-        "./standalone/model/"
-        "model_UNet_GenDS_512_2023-02-27_211141.hdf5"
-    ),
-}
+import sys
+from typing import Dict, List, Optional
 
 
-def process_all_orthomosaics(model_name):
-    if model_name not in MODEL_PATHS:
-        raise ValueError(
-            f"Invalid model name: {model_name}. Must be one of "
-            f"{list(MODEL_PATHS.keys())}."
+DEFAULT_INPUT_FOLDER = "./standalone/input"
+DEFAULT_OUTPUT_FOLDER = "./standalone/output"
+DEFAULT_MODEL_DIR = "./standalone/model"
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+
+
+def url_to_filename(url: str) -> str:
+    """Turn a config.json URL into the local model filename."""
+    return url.split("/")[-1].split("?")[0]
+
+
+def load_model_paths(
+    config_path: str = DEFAULT_CONFIG_PATH,
+    model_dir: str = DEFAULT_MODEL_DIR,
+) -> Dict[str, str]:
+    """Load model names from config.json and map them to local model paths."""
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(
+            "config.json not found at: "
+            f"{config_path} (expected repo root; next to winmol_batch.py)"
         )
 
-    model_path = MODEL_PATHS[model_name]
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
 
-    orthos = [
-        os.path.join(INPUT_FOLDER, f)
-        for f in os.listdir(INPUT_FOLDER)
-        if f.lower().endswith(('.tif', '.tiff'))
-    ]
+    if not isinstance(cfg, dict) or not cfg:
+        raise ValueError(f"Invalid/empty config.json: {config_path}")
 
-    if not orthos:
-        print(f"No orthomosaics found in {INPUT_FOLDER}.")
-        return
+    model_paths: Dict[str, str] = {}
+    for model_name, url in cfg.items():
+        if not isinstance(model_name, str) or not isinstance(url, str):
+            continue
+        model_paths[model_name] = os.path.join(model_dir, url_to_filename(url))
 
-    for ortho in orthos:
-        process_image(ortho, model_path)
+    if not model_paths:
+        raise ValueError(
+            "No model entries found in config.json. Expected {name: url}."
+        )
+
+    return model_paths
 
 
-def process_image(input_image, model_path):
-    base_name = os.path.splitext(os.path.basename(input_image))[0]
-    output_stem_map = os.path.join(
-        OUTPUT_FOLDER, base_name + '_stem_map.tif'
+def list_orthomosaics(input_folder: str) -> List[str]:
+    if not os.path.isdir(input_folder):
+        return []
+    return sorted(
+        os.path.join(input_folder, f)
+        for f in os.listdir(input_folder)
+        if f.lower().endswith((".tif", ".tiff"))
     )
-    output_stems = os.path.join(OUTPUT_FOLDER, base_name)
-    output_nodes = os.path.join(OUTPUT_FOLDER, base_name)
 
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+def run_winmol(input_image: str, model_path: str, output_folder: str) -> None:
+    base_name = os.path.splitext(os.path.basename(input_image))[0]
+    output_stem_map = os.path.join(output_folder, f"{base_name}_stem_map.tif")
+    output_prefix = os.path.join(output_folder, base_name)
+
+    os.makedirs(output_folder, exist_ok=True)
 
     command = [
-        'python3', '-u', 'winmol_run.py',
+        sys.executable,
+        "-u",
+        "winmol_run.py",
         model_path,
         input_image,
         output_stem_map,
-        output_stems,
-        output_nodes,
-        'Nodes'
+        output_prefix,
+        output_prefix,
+        "Nodes",
     ]
 
-    try:
-        print(
-            f"Processing {input_image} with model "
-            f"{os.path.basename(model_path)}..."
-        )
-        subprocess.run(command, check=True)
-        print(f" ^|^s Done: {base_name}")
-    except subprocess.CalledProcessError as e:
-        print(f" ^|^w Failed: {input_image}. Reason: {e}")
+    print(f"Processing {input_image} with model {os.path.basename(model_path)}")
+    subprocess.run(command, check=True)
+    print(f" ^|^s Done: {base_name}")
 
 
-if __name__ == "__main__":
+def merge_results(
+    work_dir: str,
+    output_gpkg: Optional[str] = None,
+    edge_buffer_m: float = 1.0,
+) -> str:
+    """Merge tiled results into a single GeoPackage."""
+    from utils import IO  # local import: only needed when merge is requested
+
+    return IO.merge_and_filter_tiled_results(
+        work_dir=work_dir,
+        output_gpkg=output_gpkg,
+        edge_buffer_m=edge_buffer_m,
+    )
+
+
+def main(argv: List[str]) -> int:
+    model_paths = load_model_paths()
+
     parser = argparse.ArgumentParser(
-        description="Batch process orthomosaics in ./standalone/input."
+        description=(
+            "Batch process orthomosaics in a folder using WINMOL Analyzer. "
+            "Available models are loaded from config.json."
+        )
     )
     parser.add_argument(
         "model",
-        choices=MODEL_PATHS.keys(),
-        help="Model to use (spruce, beech, general)"
+        choices=sorted(model_paths.keys()),
+        help="Model to use (from config.json)",
+    )
+    parser.add_argument(
+        "--input",
+        default=DEFAULT_INPUT_FOLDER,
+        help=f"Input folder (default: {DEFAULT_INPUT_FOLDER})",
+    )
+    parser.add_argument(
+        "--output",
+        default=DEFAULT_OUTPUT_FOLDER,
+        help=f"Output folder (default: {DEFAULT_OUTPUT_FOLDER})",
     )
 
-    args = parser.parse_args()
-    process_all_orthomosaics(args.model)
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help=(
+            "After processing, run utils.IO.merge_and_filter_tiled_results "
+            "on the output folder (useful for tiled processing workflows)."
+        ),
+    )
+    parser.add_argument(
+        "--merge-output",
+        default=None,
+        help=(
+            "Optional output .gpkg path for merged results. If omitted, the IO "
+            "function chooses a default name in the work directory."
+        ),
+    )
+    parser.add_argument(
+        "--edge-buffer-m",
+        type=float,
+        default=1.0,
+        help="Edge buffer in meters used for tile-edge filtering (default: 1)",
+    )
+
+    args = parser.parse_args(argv)
+
+    model_path = model_paths[args.model]
+    if not os.path.exists(model_path):
+        print(
+            "ERROR: Model file not found: "
+            f"{model_path}. Did you download models into standalone/model?\n"
+            "Models should be downloaded automatically during build."
+        )
+        return 2
+
+    orthos = list_orthomosaics(args.input)
+    if not orthos:
+        print(f"No orthomosaics found in {args.input}.")
+        return 0
+
+    for ortho in orthos:
+        try:
+            run_winmol(ortho, model_path, args.output)
+        except subprocess.CalledProcessError as e:
+            print(f" ^|^w Failed: {ortho}. Reason: {e}")
+            continue
+
+    if args.merge:
+        try:
+            merged = merge_results(
+                work_dir=args.output,
+                output_gpkg=args.merge_output,
+                edge_buffer_m=args.edge_buffer_m,
+            )
+            print(f"Merged tiled results -> {merged}")
+        except Exception as e:
+            print(f"Merge failed: {e}")
+            return 3
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
