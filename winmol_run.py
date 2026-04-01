@@ -46,9 +46,35 @@ class ImageProcessing:
         self.process_type = process_type
         self.config = Config()
 
+    def _use_stream_prediction(self):
+        cfg_value = getattr(self.config, "stream_prediction", None)
+        if cfg_value is not None:
+            return bool(cfg_value)
+
+        env_value = os.environ.get("WINMOL_STREAM_PREDICTION", "")
+        return env_value.strip().lower() in {"1", "true", "yes", "on"}
+
     def stem_processing(self):
         print("\nLoading Model...")
         model = IO.load_model_from_path(self.model_path)
+
+        use_stream = self._use_stream_prediction()
+
+        if use_stream:
+            print("\nPerforming Prediction with Resampling in stream mode...")
+            profile = Pred.predict_with_resampling_stream_to_raster(
+                self.uav_path,
+                self.stem_path,
+                model,
+                self.config,
+            )
+
+            if self.process_type == "Stems":
+                return None, profile
+
+            print("\nReloading streamed stem map for downstream processing...")
+            pred, profile = IO.load_stem_map(self.stem_path)
+            return pred, profile
 
         # Loading Orthomosaic Image:
         print("\nLoading Orthomosaic Image...")
