@@ -1,22 +1,32 @@
 #!/usr/bin/env python
+from __future__ import annotations
+
 import os
-import sys
+import shutil
 import subprocess
+import sys
+import tempfile
 import traceback
+
 import tensorflow as tf
 
 from classes.Config import Config
+from classes.ExecutionPlan import build_execution_plan
+from classes.HardwareInfo import HardwareInfo
 from classes.Timer import Timer
 from utils import IO
 from utils import Prediction as Pred
 from utils import Skeletonization as Skel
 from utils import Vectorization as Vec
 from utils import Quantification as Quant
+from utils.PredictWorkers import run_multi_gpu_prediction
+from utils.Tiling import build_tile_grid
+from utils.VectorTilePipeline import process_prediction_tiles
+
 print("imports finished")
 
-# Set the environment variable for CUDA devices
-# Uncomment the following line to specify which GPUs to use
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,5,6,7"
+VALID_PROCESS_TYPES = {'Stems', 'Trees', 'Nodes'}
+
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
@@ -30,14 +40,7 @@ else:
 
 
 class ImageProcessing:
-    def __init__(
-            self,
-            model_path,
-            uav_path,
-            stem_path,
-            trees_path,
-            process_type
-    ):
+    def __init__(self, model_path, uav_path, stem_path, trees_path, process_type):
         print("Initialization")
         self.model_path = model_path
         self.uav_path = uav_path
@@ -46,51 +49,82 @@ class ImageProcessing:
         self.process_type = process_type
         self.config = Config()
 
-    def _use_stream_prediction(self):
-        cfg_value = getattr(self.config, "stream_prediction", None)
-        if cfg_value is not None:
-            return bool(cfg_value)
+    def detect_hardware(self):
+        hardware = HardwareInfo.detect()
+        print(
+            f"Hardware detected: CPUs={hardware.cpu_count}, RAM={hardware.total_ram_gb} GB, "
+            f"GPUs={hardware.gpu_count}"
+        )
+        if hardware.gpu_names:
+            print("Visible GPUs:", hardware.gpu_names)
+        return hardware
 
-        env_value = os.environ.get("WINMOL_STREAM_PREDICTION", "")
-        return env_value.strip().lower() in {"1", "true", "yes", "on"}
+    def build_plan(self, hardware=None):
+        if hardware is None:
+            hardware = self.detect_hardware()
+        raster_info = IO.get_raster_info(self.uav_path)
+        plan = build_execution_plan(self.config, hardware, raster_info, self.process_type)
 
-    def stem_processing(self):
-        print("\nLoading Model...")
-        model = IO.load_model_from_path(self.model_path)
+        env_stream = os.environ.get('WINMOL_STREAM_PREDICTION', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        env_tiled_vec = os.environ.get('WINMOL_TILED_VECTOR_PROCESSING', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        if env_stream and plan.prediction_mode == 'full':
+            plan.prediction_mode = 'stream' if plan.gpu_workers else 'cpu_stream'
+        if env_tiled_vec and self.process_type != 'Stems':
+            plan.vector_mode = 'tiled'
 
-        use_stream = self._use_stream_prediction()
+        print('Execution plan:')
+        print(f"  process_type     = {plan.process_type}")
+        print(f"  prediction_mode  = {plan.prediction_mode}")
+        print(f"  vector_mode      = {plan.vector_mode}")
+        print(f"  tile_inner_px    = {plan.tile_inner_px}")
+        print(f"  tile_overlap_m   = {plan.tile_overlap_m}")
+        print(f"  halo_px          = {plan.halo_px}")
+        print(f"  gpu_workers      = {plan.gpu_workers}")
+        print(f"  cpu_workers      = {plan.cpu_workers}")
+        return plan
 
-        if use_stream:
-            print("\nPerforming Prediction with Resampling in stream mode...")
-            profile = Pred.predict_with_resampling_stream_to_raster(
+    def run_prediction_phase(self, plan):
+        if plan.prediction_mode == 'full':
+            print("\nLoading Model...")
+            model = IO.load_model_from_path(self.model_path)
+            print("\nLoading Orthomosaic Image...")
+            img, profile = IO.load_orthomosaic(self.uav_path, self.config)
+            print("\nPerforming Prediction with Resampling...")
+            pred, profile = Pred.predict_with_resampling_per_tile(img, profile, model, self.config)
+            print("\nExporting Predicted Stem Map...")
+            stem_file_name = os.path.splitext(os.path.basename(self.stem_path))[0]
+            stem_dir = os.path.dirname(self.stem_path)
+            IO.export_stem_map(
+                pred,
+                profile,
+                stem_dir,
+                stem_file_name,
+                compress='DEFLATE' if getattr(self.config, 'compress_output', True) else None,
+            )
+            return pred, profile, self.stem_path
+
+        if plan.prediction_mode == 'tiled_multi_gpu' and plan.gpu_workers > 1:
+            print("\nPerforming multi-GPU streamed prediction...")
+            profile = run_multi_gpu_prediction(
+                self.model_path,
                 self.uav_path,
                 self.stem_path,
-                model,
-                self.config,
+                tile_jobs=None,
+                gpu_ids=list(range(plan.gpu_workers)),
+                config=self.config,
             )
+            return (None, profile, self.stem_path)
 
-            if self.process_type == "Stems":
-                return None, profile
-
-            print("\nReloading streamed stem map for downstream processing...")
-            pred, profile = IO.load_stem_map(self.stem_path)
-            return pred, profile
-
-        # Loading Orthomosaic Image:
-        print("\nLoading Orthomosaic Image...")
-        img, profile = IO.load_orthomosaic(self.uav_path, self.config)
-
-        print("\nPerforming Prediction with Resampling...")
-        pred, profile = Pred.predict_with_resampling_per_tile(
-            img, profile, model, self.config
+        print("\nLoading Model...")
+        model = IO.load_model_from_path(self.model_path)
+        print("\nPerforming Prediction with Resampling in stream mode...")
+        profile = Pred.predict_stream_to_raster(
+            self.uav_path,
+            self.stem_path,
+            model,
+            self.config,
         )
-
-        print("\nExporting Predicted Stem Map...")
-        stem_file_name = os.path.splitext(os.path.basename(self.stem_path))[0]
-        stem_dir = os.path.dirname(self.stem_path)
-        # exporting as tiff
-        IO.export_stem_map(pred, profile, stem_dir, stem_file_name)
-        return pred, profile
+        return (None, profile, self.stem_path)
 
     def trees_processing(self, pred, profile):
         print("\nFinding Stem Segments...")
@@ -107,16 +141,65 @@ class ImageProcessing:
         stems = Quant.quantify_stems(stems, pred, profile)
         return stems
 
+    def run_vector_phase(self, plan, pred_path=None, pred=None, profile=None):
+        if plan.vector_mode == 'global':
+            if pred is None or profile is None:
+                pred, profile = IO.load_stem_map(pred_path or self.stem_path)
+            stems = self.trees_processing(pred, profile)
+            if self.process_type == 'Trees':
+                print("\nExporting detected stems to GeoPackage...")
+                return IO.write_stems_to_gpkg(stems, profile, self.trees_path)
+            print("\nExporting detected stems, and measuring nodes and vectors to GeoPackage...")
+            return IO.write_all_layers_to_gpkg(stems, profile, self.trees_path)
+
+        print("\nRunning tiled vector processing...")
+        work_dir = tempfile.mkdtemp(prefix='winmol_tiles_', dir=os.path.dirname(self.trees_path) or None)
+        try:
+            raster_info = IO.get_raster_info(pred_path or self.stem_path)
+            jobs = build_tile_grid(raster_info['width'], raster_info['height'], plan.tile_inner_px, plan.halo_px)
+            tile_paths = []
+            for job in jobs:
+                pred_tile, tile_profile = IO.load_raster_window_with_profile(pred_path or self.stem_path, job.halo_window)
+                tile_path = os.path.join(work_dir, f"{job.tile_id}_roi_stem_map.tif")
+                IO.write_tile_raster(pred_tile, tile_profile, tile_path)
+                tile_paths.append(tile_path)
+            process_prediction_tiles(
+                tile_paths,
+                self.config,
+                self.process_type,
+                work_dir,
+                plan.cpu_workers,
+            )
+            merged = self.run_merge_phase(plan, work_dir)
+            if plan.keep_temp:
+                print(f"Keeping tile work directory: {work_dir}")
+            else:
+                shutil.rmtree(work_dir, ignore_errors=True)
+            return merged
+        except Exception:
+            if not plan.keep_temp:
+                shutil.rmtree(work_dir, ignore_errors=True)
+            raise
+
+    def run_merge_phase(self, plan, work_dir):
+        out_path = self.trees_path if self.trees_path.lower().endswith('.gpkg') else f"{self.trees_path}.gpkg"
+        return IO.merge_and_filter_tiled_results(
+            work_dir=work_dir,
+            output_gpkg=out_path,
+            edge_buffer_m=plan.tile_overlap_m,
+        )
+
+    def run_stem_pipeline(self, plan):
+        self.run_prediction_phase(plan)
+
+    def run_tree_pipeline(self, plan):
+        pred, profile, pred_path = self.run_prediction_phase(plan)
+        return self.run_vector_phase(plan, pred_path=pred_path, pred=pred, profile=profile)
+
     def check_DL_env(self):
-        # Check if NVIDIA GPU is available and available for processing
         def get_nvidia_driver_version():
             try:
-                result = subprocess.run(["nvidia-smi",
-                                         "--query-gpu=driver_version",
-                                         "--format=csv,noheader"],
-                                        stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE,
-                                        text=True)
+                result = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 if result.returncode == 0:
                     print(f"NVIDIA GPU Driver Version: {result.stdout.strip()}")
                 else:
@@ -127,16 +210,13 @@ class ImageProcessing:
         get_nvidia_driver_version()
         try:
             physical_devices = tf.config.list_physical_devices('GPU')
-            cuda_version = tf.sysconfig.get_build_info().get(
-                'cuda_version', 'Unknown')
-            cudnn_version = tf.sysconfig.get_build_info().get(
-                'cudnn_version', 'Unknown')
+            cuda_version = tf.sysconfig.get_build_info().get('cuda_version', 'Unknown')
+            cudnn_version = tf.sysconfig.get_build_info().get('cudnn_version', 'Unknown')
             print(f"CUDA is available: {cuda_version}")
             print(f"cuDNN version: {cudnn_version}")
             print("Num GPUs for CUDA processing:", len(physical_devices))
             print("Tensorflow version:", tf.__version__)
             print("Keras version:", tf.keras.__version__)
-
         except Exception as e:
             print("Tensorflow error: ", e)
 
@@ -150,50 +230,41 @@ class ImageProcessing:
         print("Process type:", self.process_type)
         if self.trees_path:
             print("Detected Wind-thrown Trees Path:", self.trees_path)
-        # print configuration settings
         self.config.display()
 
     def main(self):
-        pred, profile = self.stem_processing()
-        if self.process_type != "Stems":
-            stems = self.trees_processing(pred, profile)
-            if self.process_type == "Trees":
-                print("\nExporting detected stems to GeoPackage...")
-                IO.write_stems_to_gpkg(stems, profile, self.trees_path)
-            else:
-                print("\nExporting detected stems, "
-                      "and measuring nodes and vectors to GeoPackage...")
-                try:
-                    IO.write_all_layers_to_gpkg(stems, profile, self.trees_path)
-                except Exception as e:
-                    print("\nERROR while writing GeoPackage:", repr(e))
-                    traceback.print_exc()
-                    raise
+        hardware = self.detect_hardware()
+        plan = self.build_plan(hardware)
+        if self.process_type == 'Stems':
+            self.run_stem_pipeline(plan)
+        else:
+            self.run_tree_pipeline(plan)
 
 
 if __name__ == '__main__':
-    # Create a timer to measure the execution time of the script
+    if len(sys.argv) != 6:
+        print("Usage: python3 -u winmol_run.py <model_path> <input_tiff> <stem_map_tiff> <output_prefix> <Stems|Trees|Nodes>")
+        print(f"Received {len(sys.argv) - 1} arguments: {sys.argv[1:]}")
+        sys.exit(2)
+
     tt = Timer()
     tt.start()
     print("Start timer")
-    # Extract command-line arguments
     model_path = str(sys.argv[1])
     uav_path = str(sys.argv[2])
     stem_path = str(sys.argv[3])
     trees_path = str(sys.argv[4])
     process_type = str(sys.argv[5])
 
-    # Create an instance of the ImageProcessing class and run the main method
-    image_processor = ImageProcessing(
-        model_path,
-        uav_path,
-        stem_path,
-        trees_path,
-        process_type
-    )
+    valid_process_types = {"Stems", "Trees", "Nodes"}
+    if process_type not in valid_process_types:
+        print(f"Invalid process type: {process_type}")
+        print(f"Allowed values: {sorted(valid_process_types)}")
+        sys.exit(2)
+
+    image_processor = ImageProcessing(model_path, uav_path, stem_path, trees_path, process_type)
     image_processor.display_starting_text()
     image_processor.main()
 
-    # Stop the timer and display the elapsed time
     print("Stop timer")
     tt.stop()
