@@ -5,11 +5,12 @@
 
 import math
 import multiprocessing as mp
-from typing import List
+from typing import List, Optional, Sequence, Set
 
 import numpy as np
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge
+from shapely.strtree import STRtree
 
 from classes.Part import Part
 from classes.Stem import Stem
@@ -20,31 +21,91 @@ from utils.IO import get_bounds_from_profile
 # System epsilon
 epsilon = np.finfo(float).eps
 
+
+def _worker_count(config=None):
+    value = getattr(config, 'cpu_workers', None) if config is not None else None
+    if value is None:
+        value = max(mp.cpu_count() - 1, 1)
+    try:
+        return max(1, int(value))
+    except Exception:
+        return 1
+
+
+def _clone_stem(stem: Stem) -> Stem:
+    return Stem(
+        start=Point(stem.start.coords[0]),
+        stop=Point(stem.stop.coords[0]),
+        path=LineString(list(stem.path.coords)),
+        vector=list(getattr(stem, 'vector', [])),
+        segment_diameter_list=list(getattr(stem, 'segment_diameter_list', [])),
+        segment_length_list=list(getattr(stem, 'segment_length_list', [])),
+        segment_volume_list=list(getattr(stem, 'segment_volume_list', [])),
+        crs=getattr(stem, 'crs', None),
+    )
+
+
+def _stem_end_lines(stem: Stem):
+    if len(stem.path.coords) < 4:
+        line_start = LineString([stem.path.coords[0], stem.path.coords[-1]])
+        line_stop = LineString([stem.path.coords[0], stem.path.coords[-1]])
+    else:
+        i = len(stem.path.coords) - 2 if len(stem.path.coords) < 8 else 6
+        line_start = LineString([stem.path.coords[1], stem.path.coords[i]])
+        line_stop = LineString([stem.path.coords[-(i + 1)], stem.path.coords[-2]])
+    return line_start, line_stop
+
+
+def _query_tree_indices(tree: STRtree, geom, fallback_geoms=None):
+    try:
+        matches = tree.query(geom)
+    except Exception:
+        return []
+    if len(matches) == 0:
+        return []
+    first = matches[0]
+    if isinstance(first, (int, np.integer)):
+        return [int(i) for i in matches]
+    if fallback_geoms is None:
+        return []
+    geom_to_idx = {id(g): i for i, g in enumerate(fallback_geoms)}
+    return [geom_to_idx[id(g)] for g in matches if id(g) in geom_to_idx]
+
+
+def _remove_duplicates_against_base(cycle_stems: Sequence[Stem], remaining: Set[int], base_idx: int) -> tuple[Set[int], int]:
+    if base_idx not in remaining:
+        return remaining, 0
+    base = cycle_stems[base_idx]
+    buffer_geom = base.path.buffer(0.3)
+    to_remove = set()
+    for idx in remaining:
+        if idx == base_idx:
+            continue
+        try:
+            if buffer_geom.contains(cycle_stems[idx].path):
+                to_remove.add(idx)
+        except Exception:
+            continue
+    if to_remove:
+        remaining = set(remaining)
+        remaining.difference_update(to_remove)
+    return remaining, len(to_remove)
+
 ################################################################################
 """Vector operations"""
 
 
-# Parallel version of connect_stems
+# Spatial-index accelerated version of connect_stems
 def connect_stems(stems: List[Stem], config) -> List[Stem]:
     max_distance = config.max_distance
     max_tree_height = config.max_tree_height
     tolerance_angle = config.tolerance_angle
 
-    # Aggregate aligned stem segments to stems. Reconstructs occluded stems
-    # parts up die max_distance
-
-    def return_callback(result):
-        if result is not None:
-            results.append(result)
-
-    def error_callback(error):
-        print(error, flush=True)
-
     t = Timer()
     t.start()
-    pool = mp.Pool(mp.cpu_count() - 1)
     print("#######################################################")
-    print("Gathering stem segments ")
+    print("Gathering stem segments")
+
     cycle_nbr = 1
     c_count = 0
     out_count = 0
@@ -53,123 +114,87 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
     global_change = True
 
     while global_change:
-        # loop as long as stem parts can be attached to each other
         global_change = False
-        # sort by x coordinate
-        #   stems.sort(key=lambda x: x.start.x)#, reverse=True)
         print("Cycle ", cycle_nbr)
+        cycle_stems = list(stems)
+        if not cycle_stems:
+            break
+
+        start_points = [s.start for s in cycle_stems]
+        stop_points = [s.stop for s in cycle_stems]
+        start_tree = STRtree(start_points)
+        stop_tree = STRtree(stop_points)
+        remaining = set(range(len(cycle_stems)))
         connected_stems = []
 
-        stem_count = 0
-        can_count = 0
-        merged_count = 0
-        vote_count = 0
-        dub_count = 0
+        while remaining:
+            base_idx = next(iter(remaining))
+            base_stem = cycle_stems[base_idx]
 
-        while stems:
-            # loop while there are stems to extend
+            while True:
+                line_start, line_stop = _stem_end_lines(base_stem)
+                start_buffer = base_stem.start.buffer(max_distance, resolution=32)
+                end_buffer = base_stem.stop.buffer(max_distance, resolution=32)
 
-            # create a line of max 6 segments at both ends of the stem which
-            # represents the direction of the stem end
-            if len(stems[0].path.coords) < 4:
-                line_start = LineString(
-                    [stems[0].path.coords[0], stems[0].path.coords[-1]]
-                )
-                line_stop = LineString(
-                    [stems[0].path.coords[0], stems[0].path.coords[-1]]
-                )
-            else:
-                if len(stems[0].path.coords) < 8:
-                    i = len(stems[0].path.coords) - 2
-                else:
-                    i = 6
-                line_start = LineString(
-                    [stems[0].path.coords[1], stems[0].path.coords[i]]
-                )
-                line_stop = LineString(
-                    [stems[0].path.coords[-(i + 1)], stems[0].path.coords[-2]]
-                )
-            start_buffer = stems[0].start.buffer(max_distance, resolution=32)
-            end_buffer = stems[0].stop.buffer(max_distance, resolution=32)
+                candidate_indices = set(_query_tree_indices(stop_tree, start_buffer, stop_points))
+                candidate_indices.update(_query_tree_indices(start_tree, end_buffer, start_points))
+                candidate_indices.intersection_update(remaining)
+                candidate_indices.discard(base_idx)
 
-            # look at both ends for stems and search for potentially candidates
-            # to append on stem[0]
-            stems_ = [s for s in stems[1:] if
-                      start_buffer.contains(s.stop) or end_buffer.contains(
-                          s.start)]
-            can_count = can_count + (len(stems_))
+                # exact endpoint filter
+                filtered_indices = []
+                for idx in candidate_indices:
+                    candidate = cycle_stems[idx]
+                    if start_buffer.contains(candidate.stop) or end_buffer.contains(candidate.start):
+                        filtered_indices.append(idx)
 
-            candidates = []
-            votes = []
-            slaves = []
-            results = []
+                best_vote = math.inf
+                best_candidate = None
+                best_slave_idx = None
 
-            r = []
-            # Parallel computation of connectivity votes for stem parts
-            # potentially appended to stems[0]
-            for stem in stems_:
-                r.append(
-                    pool.apply_async(
-                        calc_connectivity_votes, args=(
-                            stems[0],
-                            line_start,
-                            line_stop,
-                            start_buffer,
-                            end_buffer,
-                            max_distance,
-                            max_tree_height,
-                            tolerance_angle,
-                            stem
-                        ), callback=return_callback,
-                        error_callback=error_callback))
+                for idx in filtered_indices:
+                    changed, vote, candidate_stem, _ = calc_connectivity_votes(
+                        base_stem,
+                        line_start,
+                        line_stop,
+                        start_buffer,
+                        end_buffer,
+                        max_distance,
+                        max_tree_height,
+                        tolerance_angle,
+                        cycle_stems[idx],
+                    )
+                    if changed and vote < best_vote:
+                        best_vote = vote
+                        best_candidate = candidate_stem
+                        best_slave_idx = idx
 
-            for r_ in r:
-                r_.wait()
+                if best_candidate is not None and best_slave_idx is not None:
+                    base_stem = best_candidate
+                    cycle_stems[base_idx] = base_stem
+                    remaining.discard(best_slave_idx)
+                    global_change = True
+                    c_count += 1
+                    remaining, dup_removed = _remove_duplicates_against_base(cycle_stems, remaining, base_idx)
+                    duplicates_count += dup_removed
+                    continue
 
-            # prepare for evaluation
-            change = [result[0] for result in results]
-            votes = [result[1] for result in results]
-            candidates = [result[2] for result in results]
-            slaves = [result[3] for result in results]
-            vote_count = vote_count + len(votes)
+                connected_stems.append(base_stem)
+                remaining.discard(base_idx)
+                break
 
-            if any(change):
-                index_min = min(range(len(votes)), key=votes.__getitem__)
-                # stem is updated and the merged part is removed
-                stems[0] = candidates[index_min]
-                stems.remove(slaves[index_min])
-                global_change = True
-                c_count = c_count + 1
-                stems, dub_count_ = remove_duplicates(stems, stems[0])
-                dub_count = dub_count + dub_count_
-                merged_count = merged_count + 1
-
-            else:
-                # if no other stem part could be attached to stems[0], it is
-                # added to the export container and removed from the stem list
-                connected_stems.append(stems[0])
-                stems.remove(stems[0])
-                stem_count = stem_count + 1
-                duplicates_count = duplicates_count + dub_count
-
-                can_count = 0
-                merged_count = 0
-                dub_count = 0
-
-        # all stems have veen observed and passed to connected stems. s
         stems = connected_stems
-        cycle_nbr = cycle_nbr + 1
-
-    pool.close()
+        cycle_nbr += 1
 
     connected_stems = []
     for stem in stems:
         if stem.length > config.min_length:
             connected_stems.append(stem)
         else:
-            out_count = out_count + 1
+            out_count += 1
     connected_stems, dup_count_2 = remove_duplicates(connected_stems)
-    dub_count_ = duplicates_count + dup_count_2
+    duplicates_count += dup_count_2
+
     print("")
     print(count_stem_parts, "stem segments analyzed")
     print(c_count, "stem segments appended to other stems")
@@ -254,7 +279,7 @@ def calc_connectivity_votes(
                             new_path = missing_part_
 
             change = True
-            candidate = stems0
+            candidate = _clone_stem(stems0)
             candidate.path = new_path
             candidate.stop = stem.stop
             slave = stem
@@ -297,7 +322,7 @@ def calc_connectivity_votes(
                             new_path = missing_part_
 
             change = True
-            candidate = stems0
+            candidate = _clone_stem(stems0)
             candidate.path = new_path
             candidate.start = stem.start
             slave = stem
@@ -377,25 +402,40 @@ def rebuild_endnodes_from_stems(stems: List[Stem]) -> List[Point]:
 
 # Removes duplicates from stem list
 def remove_duplicates(stems: List[Stem], stems0=None) -> List[Stem]:
+    stems = list(stems)
     stems.sort(key=lambda x: x.length, reverse=True)
-    stems_ = []
     count = 0
+
     if type(stems0) is Stem:
+        kept = []
+        buffer_geom = stems0.path.buffer(0.3)
         for s in stems:
-            if stems0.path.buffer(0.3).contains(s.path):
-                stems.remove(s)
-                count = count + 1
-        stems_ = stems
-        stems_.append(stems0)
-    else:
-        while stems:
-            for s in stems[1:]:
-                if stems[0].path.buffer(0.3).contains(s.path):
-                    stems.remove(s)
-                    count = count + 1
-            stems_.append(stems[0])
-            stems.remove(stems[0])
-    return stems_, count
+            try:
+                if buffer_geom.contains(s.path):
+                    count += 1
+                    continue
+            except Exception:
+                pass
+            kept.append(s)
+        kept.append(stems0)
+        return kept, count
+
+    kept = []
+    while stems:
+        base = stems.pop(0)
+        buffer_geom = base.path.buffer(0.3)
+        survivors = []
+        for s in stems:
+            try:
+                if buffer_geom.contains(s.path):
+                    count += 1
+                    continue
+            except Exception:
+                pass
+            survivors.append(s)
+        kept.append(base)
+        stems = survivors
+    return kept, count
 
 
 # remove padding and restore geoinformation of the stems

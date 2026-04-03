@@ -81,7 +81,25 @@ class ImageProcessing:
         print(f"  halo_px          = {plan.halo_px}")
         print(f"  gpu_workers      = {plan.gpu_workers}")
         print(f"  cpu_workers      = {plan.cpu_workers}")
+        print(f"  vector_tile_workers = {plan.vector_tile_workers}")
+        print(f"  vector_inner_workers = {plan.vector_inner_workers}")
+        print(f"  prediction_batch = {plan.prediction_batch_size}")
+        print(f"  queue_batches    = {plan.producer_queue_batches}")
+        print(f"  producer_workers = {plan.producer_workers}")
+        print(f"  progress_interval_s = {plan.progress_interval_s}")
+        print(f"  est_pred_tiles   = {plan.estimated_prediction_tiles}")
+        self._apply_plan_to_config(plan)
         return plan
+
+
+    def _apply_plan_to_config(self, plan):
+        self.config.cpu_workers = plan.vector_inner_workers if plan.vector_mode == 'tiled' else plan.cpu_workers
+        self.config.gpu_workers = plan.gpu_workers
+        self.config.vector_tile_workers = plan.vector_tile_workers
+        self.config.prediction_batch_size = plan.prediction_batch_size
+        self.config.producer_queue_batches = plan.producer_queue_batches
+        self.config.prediction_producer_workers = plan.producer_workers
+        self.config.progress_interval_s = plan.progress_interval_s
 
     def run_prediction_phase(self, plan):
         if plan.prediction_mode == 'full':
@@ -94,16 +112,10 @@ class ImageProcessing:
             print("\nExporting Predicted Stem Map...")
             stem_file_name = os.path.splitext(os.path.basename(self.stem_path))[0]
             stem_dir = os.path.dirname(self.stem_path)
-            IO.export_stem_map(
-                pred,
-                profile,
-                stem_dir,
-                stem_file_name,
-                compress='DEFLATE' if getattr(self.config, 'compress_output', True) else None,
-            )
+            IO.export_stem_map(pred, profile, stem_dir, stem_file_name, compress='DEFLATE' if getattr(self.config, 'compress_output', True) else None)
             return pred, profile, self.stem_path
 
-        if plan.prediction_mode == 'tiled_multi_gpu' and plan.gpu_workers > 1:
+        if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
             print("\nPerforming multi-GPU streamed prediction...")
             profile = run_multi_gpu_prediction(
                 self.model_path,
@@ -138,7 +150,7 @@ class ImageProcessing:
         print("\nRebuilding End Nodes...")
         Vec.rebuild_endnodes_from_stems(stems)
         print("\nQuantifying Stems...")
-        stems = Quant.quantify_stems(stems, pred, profile)
+        stems = Quant.quantify_stems(stems, pred, profile, config=self.config)
         return stems
 
     def run_vector_phase(self, plan, pred_path=None, pred=None, profile=None):

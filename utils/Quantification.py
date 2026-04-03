@@ -5,11 +5,12 @@
 
 import math
 import multiprocessing as mp
-from typing import List
+from typing import List, Optional, Tuple
 
 import geopandas as gpd
 import numpy as np
 import rasterio.features
+import scipy.ndimage as ndi
 from shapely.geometry import LineString, Point
 
 from classes.Stem import Stem
@@ -19,13 +20,21 @@ from utils.Geometry import create_vector
 # System epsilon
 epsilon = np.finfo(float).eps
 
+
+def _worker_count(config=None):
+    value = getattr(config, 'cpu_workers', None) if config is not None else None
+    if value is None:
+        value = max(mp.cpu_count() - 1, 1)
+    try:
+        return max(1, int(value))
+    except Exception:
+        return 1
+
 ################################################################################
 """Stem quantification operations"""
 
 
-# Parallel quantification of stem parameters
-def quantify_stems(stems: List[Stem], pred, profile):
-    # Quantification of the stem parameters
+def quantify_stems(stems: List[Stem], pred, profile, config=None):
     t = Timer()
     t.start()
 
@@ -34,14 +43,19 @@ def quantify_stems(stems: List[Stem], pred, profile):
 
     print("#######################################################")
     print("Quantifying stems")
-    stems = get_diameters(stems, pred, profile)
-    pool = mp.Pool(mp.cpu_count() - 1)
-    for stem in pool.imap_unordered(clean_diameter, stems):
-        stems_.append(stem)
-
-    for stem in pool.imap_unordered(quantify_stem, stems_):
-        stems__.append(stem)
-    pool.close()
+    stems = get_diameters(stems, pred, profile, config=config)
+    workers = min(_worker_count(config), max(len(stems), 1))
+    if workers <= 1 or len(stems) <= 1:
+        for stem in stems:
+            stems_.append(clean_diameter(stem))
+        for stem in stems_:
+            stems__.append(quantify_stem(stem))
+    else:
+        with mp.Pool(workers) as pool:
+            for stem in pool.imap_unordered(clean_diameter, stems):
+                stems_.append(stem)
+            for stem in pool.imap_unordered(quantify_stem, stems_):
+                stems__.append(stem)
 
     print("Volume of ", len(stems__), " stems calculated")
     t.stop()
@@ -50,20 +64,17 @@ def quantify_stems(stems: List[Stem], pred, profile):
     return stems__
 
 
-# Parallel version of get_diameters
-def get_diameters(stems: List[Stem], pred, profile):
-    # Calculates the diameters for all stems in the list
+def get_diameters(stems: List[Stem], pred, profile, config=None):
     transform = profile['transform']
-    mask = None
-    pred[np.where(pred < 0.5)] = 0
-    pred[np.where(pred >= 0.5)] = 1
-    pred = pred.astype(np.int16)
-    pred_shapes_ = ({'properties': {'raster_val': v}, 'geometry': s} for
-                    i, (s, v) in enumerate(
-        rasterio.features.shapes(pred, mask=mask, transform=transform)))
-    pred_shapes = list(pred_shapes_)
-    pred_shapes = gpd.GeoDataFrame.from_features(pred_shapes)
-    pred_shapes = pred_shapes[pred_shapes['raster_val'] == 1]
+    pred_bin = np.asarray(pred).copy()
+    pred_bin[np.where(pred_bin < 0.5)] = 0
+    pred_bin[np.where(pred_bin >= 0.5)] = 1
+    pred_bin = pred_bin.astype(np.int16)
+
+    spacing_m = getattr(config, 'measuring_point_spacing_m', 0.5) if config is not None else 0.5
+    diameter_method = str(getattr(config, 'diameter_method', 'contour')).lower() if config is not None else 'contour'
+
+    stems = [_resample_stem_measure_points(stem, spacing_m) for stem in stems]
 
     diam_count = 0
     measured_stems = []
@@ -76,22 +87,53 @@ def get_diameters(stems: List[Stem], pred, profile):
     def error_callback(error):
         print(error, flush=True)
 
-    pool = mp.Pool(mp.cpu_count() - 1)
-    r = []
-    for stem in stems:
-        r.append(pool.apply_async(calc_v_d, args=(stem, pred_shapes),
-                                  callback=return_callback,
-                                  error_callback=error_callback))
+    workers = min(_worker_count(config), max(len(stems), 1))
 
-    for r_ in r:
-        r_.wait()
-    pool.close()
+    if diameter_method == 'edt':
+        edt_map = _distance_transform_m(pred_bin, profile)
+        if workers <= 1 or len(stems) <= 1:
+            for stem in stems:
+                try:
+                    return_callback(calc_v_d_edt(stem, edt_map, profile, config=config))
+                except Exception as error:
+                    error_callback(error)
+        else:
+            # EDT array pickling can be expensive; default to serial unless many stems
+            for stem in stems:
+                try:
+                    return_callback(calc_v_d_edt(stem, edt_map, profile, config=config))
+                except Exception as error:
+                    error_callback(error)
+    else:
+        mask = None
+        pred_shapes_ = (
+            {'properties': {'raster_val': v}, 'geometry': s}
+            for i, (s, v) in enumerate(rasterio.features.shapes(pred_bin, mask=mask, transform=transform))
+        )
+        pred_shapes = list(pred_shapes_)
+        pred_shapes = gpd.GeoDataFrame.from_features(pred_shapes)
+        pred_shapes = pred_shapes[pred_shapes['raster_val'] == 1]
+
+        if workers <= 1 or len(stems) <= 1:
+            for stem in stems:
+                try:
+                    return_callback(calc_v_d_contour(stem, pred_shapes, config=config))
+                except Exception as error:
+                    error_callback(error)
+        else:
+            with mp.Pool(workers) as pool:
+                r = []
+                for stem in stems:
+                    r.append(pool.apply_async(calc_v_d_contour, args=(stem, pred_shapes, config),
+                                              callback=return_callback,
+                                              error_callback=error_callback))
+                for r_ in r:
+                    r_.wait()
 
     print(diam_count, " measurements of diameters where conducted")
     return measured_stems
 
 
-# Calculates the volume and length of a stem
 def quantify_stem(stem: Stem):
     stem.segment_length_list = []
     stem.segment_volume_list = []
@@ -109,8 +151,52 @@ def quantify_stem(stem: Stem):
 
 # --- Helper functions ---
 
-# Replaces outlier from the diameter list by interpolation or substitution
+def _pixel_size(profile) -> Tuple[float, float]:
+    return abs(profile['transform'][0]), abs(profile['transform'][4])
+
+
+def _resample_stem_measure_points(stem: Stem, spacing_m: float) -> Stem:
+    try:
+        line = stem.path
+        if line is None or line.length <= 0:
+            return stem
+        spacing = max(float(spacing_m), epsilon)
+        total_len = float(line.length)
+        distances = [0.0]
+        d = spacing
+        while d < total_len:
+            distances.append(float(d))
+            d += spacing
+        if total_len > distances[-1]:
+            distances.append(total_len)
+        pts = [line.interpolate(dist) for dist in distances]
+        coords = [(float(p.x), float(p.y)) for p in pts]
+        if len(coords) < 2:
+            coords = list(line.coords)
+        # remove duplicate consecutive coords
+        clean = [coords[0]]
+        for c in coords[1:]:
+            if math.dist(clean[-1], c) > 1e-9:
+                clean.append(c)
+        if len(clean) < 2:
+            clean = list(line.coords)
+        stem.path = LineString(clean)
+        stem.start = Point(clean[0])
+        stem.stop = Point(clean[-1])
+        stem.vector = []
+        stem.segment_diameter_list = []
+        stem.segment_length_list = []
+        stem.segment_volume_list = []
+        return stem
+    except Exception:
+        return stem
+
+
 def clean_diameter(stem):
+    if len(stem.segment_diameter_list) < 2:
+        return stem
+    if len(stem.segment_diameter_list) == 2:
+        return stem
     q1 = np.quantile(stem.segment_diameter_list, 0.25)
     q3 = np.quantile(stem.segment_diameter_list, 0.75)
     iqr = q3 - q1
@@ -122,66 +208,93 @@ def clean_diameter(stem):
             i_lw = stem.segment_diameter_list[i] < lw
             if i_uw or i_lw:
                 wd1 = stem.segment_diameter_list[i - 1] * abs(
-                    Point(stem.path.coords[i]).distance(
-                        Point(stem.path.coords[i + 1])))
+                    Point(stem.path.coords[i]).distance(Point(stem.path.coords[i + 1])))
                 wd2 = stem.segment_diameter_list[i + 1] * abs(
-                    Point(stem.path.coords[i - 1]).distance(
-                        Point(stem.path.coords[i])))
-                d12 = abs(Point(stem.path.coords[i - 1]).distance(
-                    Point(stem.path.coords[i + 1])))
-                stem.segment_diameter_list[i] = (wd1 + wd2) / d12
-        list_uw = stem.segment_diameter_list[0] > uw
-        list_lw = stem.segment_diameter_list[0] < lw
-        if list_uw or list_lw:
+                    Point(stem.path.coords[i - 1]).distance(Point(stem.path.coords[i])))
+                d12 = abs(Point(stem.path.coords[i - 1]).distance(Point(stem.path.coords[i + 1])))
+                if d12 > epsilon:
+                    stem.segment_diameter_list[i] = (wd1 + wd2) / d12
+        if stem.segment_diameter_list[0] > uw or stem.segment_diameter_list[0] < lw:
             stem.segment_diameter_list[0] = stem.segment_diameter_list[1]
-        diameter_list_uw = stem.segment_diameter_list[-1] > uw
-        diameter_list_lw = stem.segment_diameter_list[-1] < lw
-        if diameter_list_uw or diameter_list_lw:
+        if stem.segment_diameter_list[-1] > uw or stem.segment_diameter_list[-1] < lw:
             stem.segment_diameter_list[-1] = stem.segment_diameter_list[-2]
     return stem
 
 
-# calculate radial vector to measure the diameter
-def calc_v_d(stem, contours):
-    vector = create_vector((stem.path.coords[0], stem.path.coords[1]))
-    vector = [-vector[1], vector[0]]
-    p1 = Point(stem.path.coords[0][0] - vector[0] * 1.0,
-               stem.path.coords[0][1] - vector[1] * 1.0)
-    p2 = Point(stem.path.coords[0][0] + vector[0] * 1.0,
-               stem.path.coords[0][1] + vector[1] * 1.0)
-    vector = LineString([p1, p2])
-    stem.segment_diameter_list.append(
-        calc_d(stem.path.coords[0], vector, contours))
-    stem.vector.append(vector)
+def _local_normal(coords, idx):
+    if len(coords) < 2:
+        return (0.0, 1.0)
+    if idx == 0:
+        v = create_vector((coords[0], coords[1]))
+    elif idx == len(coords) - 1:
+        v = create_vector((coords[-2], coords[-1]))
+    else:
+        v = create_vector((coords[idx - 1], coords[idx + 1]))
+    return (-float(v[1]), float(v[0]))
 
-    for i in range(1, len(stem.path.coords) - 1):
-        vector = create_vector(
-            (stem.path.coords[i - 1], stem.path.coords[i + 1]))
-        vector = [-vector[1], vector[0]]
-        p1 = Point(stem.path.coords[i][0] - vector[0] * 1.0,
-                   stem.path.coords[i][1] - vector[1] * 1.0)
-        p2 = Point(stem.path.coords[i][0] + vector[0] * 1.0,
-                   stem.path.coords[i][1] + vector[1] * 1.0)
-        vector = LineString([p1, p2])
-        stem.segment_diameter_list.append(
-            calc_d(stem.path.coords[i], vector, contours))
+
+def _measurement_vector(node_xy, normal_xy, half_len):
+    nx, ny = normal_xy
+    x, y = node_xy
+    p1 = Point(x - nx * half_len, y - ny * half_len)
+    p2 = Point(x + nx * half_len, y + ny * half_len)
+    return LineString([p1, p2])
+
+
+def calc_v_d_contour(stem, contours, config=None):
+    coords = list(stem.path.coords)
+    half_len = float(getattr(config, 'diameter_vector_half_length_m', 1.0)) if config is not None else 1.0
+    stem.vector = []
+    stem.segment_diameter_list = []
+
+    for i, xy in enumerate(coords):
+        normal = _local_normal(coords, i)
+        vector = _measurement_vector(xy, normal, half_len)
+        stem.segment_diameter_list.append(calc_d(xy, vector, contours))
         stem.vector.append(vector)
-
-    vector = create_vector((stem.path.coords[-2], stem.path.coords[-1]))
-    vector = [-vector[1], vector[0]]
-    p1 = Point(stem.path.coords[-1][0] - vector[0] * 1.0,
-               stem.path.coords[-1][1] - vector[1] * 1.0)
-    p2 = Point(stem.path.coords[-1][0] + vector[0] * 1.0,
-               stem.path.coords[-1][1] + vector[1] * 1.0)
-    vector = LineString([p1, p2])
-    stem.segment_diameter_list.append(
-        calc_d(stem.path.coords[-1], vector, contours))
-    stem.vector.append(vector)
-
     return stem
 
 
-# Calculate the diameter for a specific node
+def _distance_transform_m(pred_bin, profile):
+    px, py = _pixel_size(profile)
+    return ndi.distance_transform_edt(pred_bin.astype(bool), sampling=(py, px))
+
+
+def _xy_to_rowcol(x, y, profile) -> Tuple[int, int]:
+    transform = profile['transform']
+    inv = ~transform
+    col, row = inv * (x, y)
+    return int(round(row)), int(round(col))
+
+
+def calc_v_d_edt(stem, edt_map, profile, config=None):
+    coords = list(stem.path.coords)
+    default_half = float(getattr(config, 'diameter_vector_half_length_m', 1.0)) if config is not None else 1.0
+    clip_max = getattr(config, 'edt_clip_max_m', None) if config is not None else None
+    stem.vector = []
+    stem.segment_diameter_list = []
+
+    h, w = edt_map.shape
+    for i, xy in enumerate(coords):
+        row, col = _xy_to_rowcol(xy[0], xy[1], profile)
+        if row < 0 or row >= h or col < 0 or col >= w:
+            radius = 0.0
+        else:
+            radius = float(edt_map[row, col])
+            if clip_max is not None:
+                radius = min(radius, float(clip_max))
+        diameter = max(0.0, 2.0 * radius)
+        normal = _local_normal(coords, i)
+        half_len = max(default_half, radius)
+        stem.vector.append(_measurement_vector(xy, normal, half_len))
+        stem.segment_diameter_list.append(diameter)
+    return stem
+
+
+# Backward-compatible name
+calc_v_d = calc_v_d_contour
+
+
 def calc_d(node, line, contours):
     node = Point(node)
     d = 0
@@ -193,14 +306,12 @@ def calc_d(node, line, contours):
             if i.geom_type == 'MultiLineString':
                 for i_ in i.geoms:
                     if node.distance(i_) < 0.01:
-                        d = i_.length
+                        d = max(d, i_.length)
             else:
-                d = i.length
+                d = max(d, i.length)
     return d
 
 
-# Calculate the length and volume of a segment described by 2 points and the
-# respective diameters
 def calc_l_v(p1, p2, d1, d2):
     length = math.dist(p1, p2)
     v = 1 / 3 * math.pi * (

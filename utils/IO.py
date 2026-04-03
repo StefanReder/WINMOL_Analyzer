@@ -36,74 +36,6 @@ from pathlib import Path
 """Streaming and tiling operations"""
 
 
-
-def _safe_compress_value(compress):
-    """Normalize output compression for prediction rasters.
-
-    We never inherit compression/layout options from the source orthomosaic.
-    WEBP/JPEG are intentionally rejected here because prediction outputs are
-    single-band float rasters and must remain robust for huge windowed writes.
-    """
-    if compress is None:
-        return None
-    if compress is True:
-        return 'DEFLATE'
-    if compress is False:
-        return None
-    c = str(compress).strip().upper()
-    if c in {'', 'NONE', 'OFF', 'FALSE', '0'}:
-        return None
-    if c in {'DEFLATE', 'LZW', 'ZSTD'}:
-        return c
-    return 'DEFLATE'
-
-
-def build_safe_prediction_profile(
-    src_profile,
-    width: int,
-    height: int,
-    transform,
-    compress: str | None = 'DEFLATE',
-):
-    """Build a fresh GeoTIFF profile for prediction output.
-
-    This intentionally ignores source compression/interleave/photometric layout,
-    which may be incompatible with huge streamed writes.
-    """
-    profile = {
-        'driver': 'GTiff',
-        'dtype': 'float32',
-        'count': 1,
-        'width': int(width),
-        'height': int(height),
-        'transform': transform,
-        'crs': src_profile.get('crs', None),
-        'nodata': 0.0,
-        'tiled': True,
-        'blockxsize': 512,
-        'blockysize': 512,
-        'BIGTIFF': 'YES',
-        'interleave': 'BAND',
-    }
-    comp = _safe_compress_value(compress)
-    if comp is not None:
-        profile['compress'] = comp
-        if comp in {'DEFLATE', 'LZW', 'ZSTD'}:
-            profile['predictor'] = 2
-        if comp == 'DEFLATE':
-            profile['zlevel'] = 1
-    return profile
-
-
-def atomic_tmp_path(final_path: str) -> str:
-    p = Path(final_path)
-    return str(p.with_suffix(p.suffix + '.tmp'))
-
-
-def finalize_raster(tmp_path: str, final_path: str) -> str:
-    os.replace(tmp_path, final_path)
-    return final_path
-
 def get_raster_info(path) -> dict:
     with rasterio.open(path) as src:
         dtype = src.dtypes[0] if src.dtypes else 'unknown'
@@ -123,6 +55,48 @@ def get_raster_info(path) -> dict:
         }
 
 
+def atomic_tmp_path(final_path: str) -> str:
+    p = Path(final_path)
+    return str(p.with_suffix(p.suffix + '.tmp'))
+
+
+def finalize_raster(tmp_path: str, final_path: str) -> str:
+    os.replace(tmp_path, final_path)
+    return final_path
+
+
+def build_safe_prediction_profile(src_profile, width: int, height: int, transform, compress: str | None = 'DEFLATE'):
+    profile = {
+        'driver': 'GTiff',
+        'dtype': 'float32',
+        'count': 1,
+        'width': int(width),
+        'height': int(height),
+        'transform': transform,
+        'crs': src_profile.get('crs', None),
+        'nodata': 0.0,
+        'tiled': True,
+        'blockxsize': 512,
+        'blockysize': 512,
+        'BIGTIFF': 'YES',
+        'interleave': 'BAND',
+    }
+    if compress is not None:
+        c = str(compress).upper()
+        if c in {'DEFLATE', 'LZW', 'ZSTD'}:
+            profile['compress'] = c
+            profile['predictor'] = 2
+            if c == 'DEFLATE':
+                profile['zlevel'] = 1
+        elif c in {'NONE', 'OFF', 'FALSE', '0'}:
+            pass
+        else:
+            profile['compress'] = 'DEFLATE'
+            profile['predictor'] = 2
+            profile['zlevel'] = 1
+    return profile
+
+
 def create_output_raster_like(
     src_path: str,
     dst_path: str,
@@ -131,24 +105,22 @@ def create_output_raster_like(
     width: int | None = None,
     height: int | None = None,
     transform=None,
-    compress: str | None = 'DEFLATE',
+    compress: str | None = "DEFLATE",
 ):
     os.makedirs(os.path.dirname(dst_path) or '.', exist_ok=True)
     with rasterio.open(src_path) as src:
-        src_profile = src.profile.copy()
-    profile = build_safe_prediction_profile(
-        src_profile=src_profile,
-        width=int(width or src_profile['width']),
-        height=int(height or src_profile['height']),
-        transform=transform or src_profile['transform'],
-        compress=compress,
-    )
-    profile['dtype'] = dtype
-    profile['count'] = count
+        profile = build_safe_prediction_profile(
+            src.profile,
+            width=int(width or src.width),
+            height=int(height or src.height),
+            transform=transform or src.transform,
+            compress=compress,
+        )
+        profile['dtype'] = dtype
+        profile['count'] = count
     with rasterio.open(dst_path, 'w', **profile):
         pass
     return profile
-
 
 
 def read_window(path: str, window, bands: list[int] | None = None, boundless: bool = True, fill_value=0):
@@ -165,17 +137,17 @@ def write_window(dst_path: str, array, window, band: int = 1):
             dst.write(array, window=window)
 
 
-def write_tile_raster(pred_tile, tile_profile, output_path: str, compress: str | None = 'DEFLATE'):
+def write_tile_raster(pred_tile, tile_profile, output_path: str):
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     prof = build_safe_prediction_profile(
-        src_profile=tile_profile,
+        tile_profile,
         width=pred_tile.shape[1],
         height=pred_tile.shape[0],
         transform=tile_profile['transform'],
-        compress=compress,
+        compress=None,
     )
     with rasterio.open(output_path, 'w', **prof) as dst:
-        dst.write(np.ascontiguousarray(pred_tile, dtype=np.float32), 1)
+        dst.write(pred_tile.astype(np.float32), 1)
     return output_path
 
 
@@ -282,7 +254,7 @@ def load_stem_map(path):
     raise ValueError(f'Unsupported stem map path: {path}')
 
 
-def export_stem_map(pred, profile, pred_dir, pred_name, compress: str | None = 'DEFLATE'):
+def export_stem_map(pred, profile, pred_dir, pred_name, compress="DEFLATE"):
     final_path = os.path.join(pred_dir, f'{pred_name}.tiff')
     tmp_path = atomic_tmp_path(final_path)
     os.makedirs(pred_dir or '.', exist_ok=True)
@@ -295,9 +267,8 @@ def export_stem_map(pred, profile, pred_dir, pred_name, compress: str | None = '
         compress=compress,
     )
     with rasterio.open(tmp_path, 'w', **safe_profile) as dst:
-        dst.write(np.ascontiguousarray(pred, dtype=np.float32), 1)
+        dst.write(pred.astype(rasterio.float32), 1)
     finalize_raster(tmp_path, final_path)
-
 
 def get_bounds_from_profile(profile):
     left = profile['transform'][2]
@@ -531,8 +502,13 @@ def _drop_bad_geoms(gdf):
     except Exception:
         pass
     try:
+        geom_types = gdf.geometry.geom_type.astype(str)
+        is_pointlike = geom_types.isin(["Point", "MultiPoint"])
+
         lengths = gdf.geometry.length
-        gdf = gdf[(~lengths.isna()) & (lengths > 0)].copy()
+        keep = is_pointlike | ((~lengths.isna()) & (lengths > 0))
+
+        gdf = gdf[keep].copy()
     except Exception:
         pass
     return gdf
@@ -684,8 +660,9 @@ def _feature_records(gdf, schema):
             "properties": props,
         }
 
-def _fiona_write_layer(path, layer_name, gdf, crs):
+def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
     schema = _infer_fiona_schema(gdf)
+    mode = "a" if append else "w"
 
     crs_wkt = None
     if crs is not None:
@@ -708,35 +685,8 @@ def _fiona_write_layer(path, layer_name, gdf, crs):
         kwargs["crs_wkt"] = crs_wkt
 
     # Always use "w" for creating a layer
-    with fiona.open(path, mode="w", **kwargs) as dst:
+    with fiona.open(path, mode=mode, **kwargs) as dst:
         dst.writerecords(_feature_records(gdf, schema))
-
-
-# def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
-#     schema = _infer_fiona_schema(gdf)
-#     mode = "a" if append else "w"
-
-#     crs_wkt = None
-#     if crs is not None:
-#         try:
-#             crs_wkt = CRS.from_user_input(crs).to_wkt()
-#         except Exception:
-#             try:
-#                 crs_wkt = crs.to_wkt()
-#             except Exception:
-#                 crs_wkt = None
-
-#     print(f"Fiona schema for layer '{layer_name}': {schema}")
-#     kwargs = {
-#         "driver": "GPKG",
-#         "layer": layer_name,
-#         "schema": schema,
-#     }
-#     if crs_wkt is not None:
-#         kwargs["crs_wkt"] = crs_wkt
-
-#     with fiona.open(path, mode=mode, **kwargs) as dst:
-#         dst.writerecords(_feature_records(gdf, schema))
 
 
 def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
@@ -803,15 +753,12 @@ def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
             if first:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
-                    first = False
-
-                _fiona_write_layer(tmp_path, name, gdf, crs=crs)
+                _fiona_write_layer(tmp_path, name, gdf, crs=crs, append=False)
                 first = False
+            else:
+                _fiona_write_layer(tmp_path, name, gdf, crs=crs, append=True)
         except Exception as e:
             raise RuntimeError(f"Failed while writing GeoPackage layer '{name}' at'{tmp_path}'") from e
-
-
- 
     return tmp_path
 
 
