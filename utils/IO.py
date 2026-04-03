@@ -66,9 +66,9 @@ def finalize_raster(tmp_path: str, final_path: str) -> str:
 
 
 def build_safe_prediction_profile(
-    src_profile, width: int, height: int, 
-    transform, compress: str | None = 'DEFLATE'):
-
+    src_profile, width: int, height: int,
+    transform, compress: str | None = 'DEFLATE'
+):
     profile = {
         'driver': 'GTiff',
         'dtype': 'float32',
@@ -126,7 +126,8 @@ def create_output_raster_like(
 
 
 def read_window(path: str, window, bands:
-               list[int] | None = None, boundless: bool = True, fill_value=0):
+                list[int] | None = None, boundless: bool = True, fill_value=0
+):
     with rasterio.open(path) as src:
         indexes = bands if bands is not None else list(range(1, src.count + 1))
         return src.read(
@@ -571,7 +572,7 @@ def _normalize_dtypes(gdf):
             gdf[col] = pd.to_numeric(s, errors="coerce").astype("float64")
             continue
 
-        gdf[col] = s.map(lambda v: None if pd.isna(v) \
+        gdf[col] = s.map(lambda v: None if pd.isna(v)
                          else str(v)).astype(object)
 
     return gdf
@@ -604,7 +605,7 @@ def _schema_type_for_series(series):
 
 def _infer_geometry_type(gdf):
     try:
-        geom_types = [g.geom_type for g in gdf.geometry \
+        geom_types = [g.geom_type for g in gdf.geometry
                       if g is not None and not g.is_empty]
     except Exception:
         geom_types = []

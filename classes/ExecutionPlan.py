@@ -73,7 +73,8 @@ def _cfg(config: Any, key: str, default: Any) -> Any:
 
 
 def _meters_to_pixels(
-    tile_overlap_m: float, pixel_size_x: float, pixel_size_y: float) -> int:
+    tile_overlap_m: float, pixel_size_x: float, pixel_size_y: float
+) -> int:
     px = max(abs(pixel_size_x) or 0.0, abs(pixel_size_y) or 0.0)
     if px <= 0.0:
         return 0
@@ -129,7 +130,7 @@ def build_execution_plan(
     threshold_gb = float(_cfg(config, 'legacy_full_array_threshold_gb', 8.0))
     max_gpu_workers = int(_cfg(config, 'max_gpu_workers', 8))
     hw_cpu = max(1, int(getattr(hardware, 'cpu_count', 1) or 1))
-    max_cpu_workers = min(int(_cfg(config, 'max_cpu_workers', 
+    max_cpu_workers = min(int(_cfg(config, 'max_cpu_workers',
                                    max(hw_cpu - 1, 1))), max(hw_cpu - 1, 1))
     tiles = _estimate_prediction_tiles(config, raster)
     scen = _scenario(hardware)
@@ -147,7 +148,7 @@ def build_execution_plan(
 
     if scen == CPU_ONLY:
         cpu_workers = \
-            max(1, min(max_cpu_workers, 
+            max(1, min(max_cpu_workers,
                        int(round(max_cpu_workers * 0.75)) or 1))
         gpu_workers = 0
         prediction_batch_size = \
@@ -162,8 +163,8 @@ def build_execution_plan(
             else max(1, min(2, cpu_workers // 4 or 1))
     elif scen == SINGLE_GPU:
         cpu_workers = max(1, min(
-            max_cpu_workers, 
-            int(_cfg(config, 'single_gpu_cpu_workers', 
+            max_cpu_workers,
+            int(_cfg(config, 'single_gpu_cpu_workers',
                      min(12, max(8, hw_cpu // 2))))))
         gpu_workers = 1
         if gpu_mem_gb >= 20:
@@ -173,17 +174,20 @@ def build_execution_plan(
         else:
             default_batch = 2
         prediction_batch_size = max(1, min(
-            int(_cfg(config, 'prediction_batch_max_gpu', 12)), 
+            int(_cfg(config, 'prediction_batch_max_gpu', 12)),
             int(_cfg(config, 'prediction_batch_gpu', default_batch))))
         producer_queue_batches = max(4, int(_cfg(
             config, 'producer_queue_batches', 8)))
         if huge_nodes_job:
             producer_queue_batches = max(producer_queue_batches, 8)
-        producer_workers = int(_cfg(config, 'prediction_producer_workers_gpu', 3))
+        producer_workers = \
+            int(_cfg(config, 'prediction_producer_workers_gpu', 3))
         if cpu_workers < 10:
             producer_workers = min(producer_workers, 2)
-        producer_workers = max(1, min(producer_workers, max(1, cpu_workers // 3)))
-        progress_interval_s = float(_cfg(config, 'progress_interval_s_gpu', 60.0))
+        producer_workers = \
+            max(1, min(producer_workers, max(1, cpu_workers // 3)))
+        progress_interval_s = \
+            float(_cfg(config, 'progress_interval_s_gpu', 60.0))
         vector_tile_workers = 1 if not huge_nodes_job \
             else max(1, min(3, cpu_workers // 4 or 1))
     else:
@@ -193,8 +197,10 @@ def build_execution_plan(
             gpu_workers = min(gpu_workers, 2)
         elif tiles < 5000:
             gpu_workers = min(gpu_workers, 4)
-        cpu_workers = max(1, min(max_cpu_workers, int(_cfg(config, \
-            'multi_gpu_cpu_workers', max(24, int(max_cpu_workers * 0.75))))))
+        cpu_workers = \
+            max(1, min(max_cpu_workers,
+                       int(_cfg(config, 'multi_gpu_cpu_workers',
+                                max(24, int(max_cpu_workers * 0.75))))))
         if gpu_mem_gb >= 70:
             default_batch = 8
         elif gpu_mem_gb >= 40:
@@ -225,21 +231,22 @@ def build_execution_plan(
     elif exec_pref == 'stream':
         prediction_mode = 'cpu_stream' if scen == CPU_ONLY else 'stream'
     elif exec_pref == 'tiled':
-        prediction_mode = 'multi_gpu_stream' if scen == MULTI_GPU \
+        prediction_mode = 'multi_gpu_stream' \
+            if scen == MULTI_GPU \
             else ('cpu_stream' if scen == CPU_ONLY else 'stream')
     else:
         if scen == CPU_ONLY:
-            prediction_mode = 'full' if (
-                process_type == 'Stems' and not medium_raster) \
-                    else 'cpu_stream'
+            prediction_mode = 'full' \
+                if (process_type == 'Stems'
+                    and not medium_raster) else 'cpu_stream'
         elif scen == SINGLE_GPU:
-            prediction_mode = 'full' if (
-                process_type == 'Stems' and not medium_raster) \
-                    else 'stream'
+            prediction_mode = 'full' \
+                if (process_type == 'Stems' 
+                    and not medium_raster) else 'stream'
         else:
-            prediction_mode = 'multi_gpu_stream' if (
-                large_raster or medium_raster or process_type != 'Stems') \
-                    else 'stream'
+            prediction_mode = 'multi_gpu_stream' \
+                if (large_raster or medium_raster or
+                    process_type != 'Stems') else 'stream'
 
     if pred_pref == 'cpu':
         prediction_mode = 'cpu_stream'

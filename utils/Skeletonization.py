@@ -65,7 +65,7 @@ def find_segments(pred, config, profile) -> (List[Part], List[Tuple[int]]):
 
     end_nodes, skel = get_nodes(skel)
     segments, skel = find_skeleton_segments(
-        skel, end_nodes, math.floor(min_length / px_size), 
+        skel, end_nodes, math.floor(min_length / px_size),
         padding, config=config
     )
     segments = refine_skeleton_segments(
@@ -119,8 +119,9 @@ def remove_dense_skeleton_nodes(skel: np.ndarray) -> Tuple[ndarray, int]:
     return skel, count
 
 
-def find_skeleton_nodes(skel: np.ndarray) \
-    -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+def find_skeleton_nodes(
+    skel:np.ndarray) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+
     print("Find skeletion nodes")
 
     print("# Pad the skeleton array (same as in the numpy version)")
@@ -215,9 +216,9 @@ def _build_part_from_path(path: List[Tuple[int, int]], min_length: int):
     return Part(start, stop, path, l_bound, u_bound)
 
 
-def _trace_chain(start: Tuple[int, int], neighbor: Tuple[int, int], \
-    skel: np.ndarray, node_set: set, visited_edges: set) \
-    -> List[Tuple[int, int]]:
+def _trace_chain(start: Tuple[int, int], neighbor:
+                 Tuple[int, int], skel: np.ndarray, node_set:
+                 set, visited_edges: set) -> List[Tuple[int, int]]:
 
     path = [start, neighbor]
     visited_edges.add(_edge_key(start, neighbor))
@@ -247,8 +248,8 @@ def _trace_chain(start: Tuple[int, int], neighbor: Tuple[int, int], \
     return path
 
 
-def _trace_loop(seed: Tuple[int, int], skel: np.ndarray, visited_edges: set) \
-    -> List[Tuple[int, int]]:
+def _trace_loop(seed: Tuple[int, int], skel:
+               np.ndarray, visited_edges: set) -> List[Tuple[int, int]]:
 
     nbrs = get_neighbors(seed[0], seed[1], skel)
     if not nbrs:
@@ -316,8 +317,8 @@ def find_skeleton_segments(
                     out_skel[rr, cc] = True
 
     # handle loops or isolated remnants without degree!=2 nodes
-    remaining = [tuple(map(int, p)) \
-        for p in np.argwhere(skel_bool & (~out_skel))]
+    remaining = [tuple(map(int, p)) 
+                 for p in np.argwhere(skel_bool & (~out_skel))]
     for seed in remaining:
         if out_skel[seed]:
             continue
@@ -338,8 +339,9 @@ def find_skeleton_segments(
 
 # Parallel version of refine_skeleton_segments
 # Find stem parts between nodes using the connectivity in the skeleton.
-def refine_skeleton_segments(parts: List[Part], skel: np.ndarray, \
-    distance: int, config=None) -> (List[Part], np.ndarray):
+def refine_skeleton_segments(parts: List[Part], skel: np.ndarray, distance:
+                            int, config=None) -> (List[Part], np.ndarray):
+
     split = 0
     out = 0
     refined_parts = []
@@ -360,7 +362,7 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray, \
 
     t = Timer()
     t.start()
-    #refined_parts = []
+    # refined_parts = []
 
     print("#######################################################")
     print("#Refining and sorting out skeleton segments")
@@ -434,8 +436,9 @@ def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
                 angle = ang(p_recent, p_last)
                 if w == z:
                     if angle > 10:
-                        new_part = Part(n, parts[0].stop, \
-                            [n, parts[0].stop], low_bounds, up_bounds)
+                        new_part = Part(n, parts[0].stop,
+                                        [n, parts[0].stop],
+                                        low_bounds, up_bounds)
                         parts.append(new_part)
                         parts[0].stop = n
                         skel[np.where(temp.__eq__(True))] = True
@@ -448,8 +451,9 @@ def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
                     if math.dist(n, w) > distance:
                         if n == parts[0].start:
                             if angle > 10:
-                                new_part = Part(w, parts[0].stop, \
-                                    [w, parts[0].stop], low_bounds, up_bounds)
+                                new_part = Part(w, parts[0].stop,
+                                                [w, parts[0].stop],
+                                                low_bounds, up_bounds)
                                 parts.append(new_part)
                                 parts[0].stop = w
                                 parts[0].path.extend([w])
@@ -462,8 +466,9 @@ def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
                                 temp = np.full(skel.shape, False)
                         else:
                             if angle > 30:
-                                new_part = Part(n, parts[0].stop, \
-                                    [n, parts[0].stop], low_bounds, up_bounds)
+                                new_part = Part(n, parts[0].stop,
+                                                [n, parts[0].stop],
+                                                low_bounds, up_bounds)
                                 parts.append(new_part)
                                 parts[0].stop = n
                                 skel[np.where(temp.__eq__(True))] = True
@@ -480,23 +485,23 @@ def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
                 z = (x, y)
                 w = z
 
-        refined_part_ = Part(parts[0].start, parts[0].stop, parts[0].path, \
-            low_bounds, up_bounds)
+        refined_part_ = Part(parts[0].start, parts[0].stop, parts[0].path, 
+                             low_bounds, up_bounds)
         parts.pop(0)
 
         if math.dist(refined_part_.start, refined_part_.stop) >= distance:
-            refined_part_.start = (refined_part_.start[0] + low_bounds[0], \
-                refined_part_.start[1] + low_bounds[1])
-            refined_part_.stop = (refined_part_.stop[0] + low_bounds[0], \
-                refined_part_.stop[1] + low_bounds[1])
+            refined_part_.start = (refined_part_.start[0] + low_bounds[0],
+                                   refined_part_.start[1] + low_bounds[1])
+            refined_part_.stop = (refined_part_.stop[0] + low_bounds[0],
+                                  refined_part_.stop[1] + low_bounds[1])
             for i in range(len(refined_part_.path)):
                 refined_part_.path[i] = (
                     refined_part_.path[i][0] + low_bounds[0],
                     refined_part_.path[i][1] + low_bounds[1]
                 )
             if refined_part_.start[0] > refined_part_.stop[0]:
-                refined_part_ = Part(refined_part_.stop, refined_part_.start, \
-                    refined_part_.path, low_bounds, up_bounds)
+                refined_part_ = Part(refined_part_.stop, refined_part_.start,
+                                     refined_part_.path, low_bounds, up_bounds)
                 refined_part_.path.reverse()
             refined_parts_.append(refined_part_)
         else:

@@ -58,12 +58,12 @@ class HardwareInfo:
     def _detect_gpu_memory_gb_nvidia_smi() -> List[float]:
         try:
             result = subprocess.run(
-                ['nvidia-smi', '--query-gpu=memory.total', \
-                    '--format=csv,noheader,nounits'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
+                ['nvidia-smi', '--query-gpu=memory.total',
+                 '--format=csv,noheader,nounits'],
+                 stdout=subprocess.PIPE,
+                 stderr=subprocess.PIPE,
+                 text=True,
+                 check=False,
             )
             if result.returncode != 0:
                 return []

@@ -5,7 +5,7 @@
 
 import math
 import multiprocessing as mp
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import geopandas as gpd
 import numpy as np
@@ -30,6 +30,7 @@ def _worker_count(config=None):
         return max(1, int(value))
     except Exception:
         return 1
+
 
 ################################################################################
 """Stem quantification operations"""
@@ -134,9 +135,9 @@ def get_diameters(stems: List[Stem], pred, profile, config=None):
                 r = []
                 for stem in stems:
                     r.append(pool.apply_async(
-                        calc_v_d_contour, 
-                        args=(stem, pred_shapes, config), 
-                        callback=return_callback, 
+                        calc_v_d_contour,
+                        args=(stem, pred_shapes, config),
+                        callback=return_callback,
                         error_callback=error_callback))
                 for r_ in r:
                     r_.wait()
@@ -219,21 +220,21 @@ def clean_diameter(stem):
             i_lw = stem.segment_diameter_list[i] < lw
             if i_uw or i_lw:
                 wd1 = stem.segment_diameter_list[i - 1] * abs(
-                    Point(stem.path.coords[i])\
-                        .distance(Point(stem.path.coords[i + 1])))
+                    Point(stem.path.coords[i]).distance(Point(
+                        stem.path.coords[i + 1])))
                 wd2 = stem.segment_diameter_list[i + 1] * abs(
-                    Point(stem.path.coords[i - 1])\
-                        .distance(Point(stem.path.coords[i])))
-                d12 = abs(Point(stem.path.coords[i - 1])\
-                    .distance(Point(stem.path.coords[i + 1])))
+                    Point(stem.path.coords[i - 1]).distance(Point(
+                        stem.path.coords[i])))
+                d12 = abs(Point(stem.path.coords[i - 1]).distance(
+                    Point(stem.path.coords[i + 1])))
                 if d12 > epsilon:
                     stem.segment_diameter_list[i] = (wd1 + wd2) / d12
         if stem.segment_diameter_list[0] > uw \
             or stem.segment_diameter_list[0] < lw:
-            stem.segment_diameter_list[0] = stem.segment_diameter_list[1]
+                stem.segment_diameter_list[0] = stem.segment_diameter_list[1]
         if stem.segment_diameter_list[-1] > uw \
             or stem.segment_diameter_list[-1] < lw:
-            stem.segment_diameter_list[-1] = stem.segment_diameter_list[-2]
+                stem.segment_diameter_list[-1] = stem.segment_diameter_list[-2]
     return stem
 
 
@@ -274,7 +275,7 @@ def calc_v_d_contour(stem, contours, config=None):
 
 def _distance_transform_m(pred_bin, profile):
     px, py = _pixel_size(profile)
-    return ndi.distance_transform_edt(pred_bin.astype(bool), 
+    return ndi.distance_transform_edt(pred_bin.astype(bool),
                                       sampling=(py, px))
 
 

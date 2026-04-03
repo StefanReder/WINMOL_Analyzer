@@ -39,7 +39,7 @@ else:
 
 
 class ImageProcessing:
-    def __init__(self, model_path, uav_path, stem_path, 
+    def __init__(self, model_path, uav_path, stem_path,
                  trees_path, process_type):
         print("Initialization")
         self.model_path = model_path
@@ -64,8 +64,8 @@ class ImageProcessing:
         if hardware is None:
             hardware = self.detect_hardware()
         raster_info = IO.get_raster_info(self.uav_path)
-        plan = build_execution_plan(self.config, hardware, raster_info,\
-           self.process_type)
+        plan = build_execution_plan(self.config, hardware, raster_info,
+                                    self.process_type)
 
         env_stream = os.environ.get('WINMOL_STREAM_PREDICTION', '')\
             .strip().lower() in {'1', 'true', 'yes', 'on'}
@@ -117,12 +117,12 @@ class ImageProcessing:
             pred, profile = Pred.predict_with_resampling_per_tile(
                 img, profile, model, self.config)
             print("\nExporting Predicted Stem Map...")
-            stem_file_name = os.path.splitext( \
+            stem_file_name = os.path.splitext(
                 os.path.basename(self.stem_path))[0]
             stem_dir = os.path.dirname(self.stem_path)
-            IO.export_stem_map(pred, profile, stem_dir, stem_file_name, \
-                compress='DEFLATE' if getattr(self.config, 'compress_output',\
-                True) else None)
+            IO.export_stem_map(pred, profile, stem_dir, stem_file_name,
+                               compress='DEFLATE' if getattr(self.config,
+                               'compress_output', True) else None)
             return pred, profile, self.stem_path
 
         if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
@@ -172,24 +172,25 @@ class ImageProcessing:
                 print("\nExporting detected stems to GeoPackage...")
                 return IO.write_stems_to_gpkg(stems, profile, self.trees_path)
             print("\nExporting detected stems, and measuring nodes"
-                 "and vectors to GeoPackage...")
+                  "and vectors to GeoPackage...")
             return IO.write_all_layers_to_gpkg(stems, profile, self.trees_path)
 
         print("\nRunning tiled vector processing...")
         work_dir = tempfile.mkdtemp(
-            prefix='winmol_tiles_', 
+            prefix='winmol_tiles_',
             dir=os.path.dirname(self.trees_path) or None)
         try:
             raster_info = IO.get_raster_info(pred_path or self.stem_path)
-            jobs = build_tile_grid(raster_info['width'], 
-                                   raster_info['height'], 
-                                   plan.tile_inner_px, 
+            jobs = build_tile_grid(raster_info['width'],
+                                   raster_info['height'],
+                                   plan.tile_inner_px,
                                    plan.halo_px)
             tile_paths = []
             for job in jobs:
                 pred_tile, tile_profile = IO.load_raster_window_with_profile(
                     pred_path or self.stem_path, job.halo_window)
-                tile_path = os.path.join(work_dir, f"{job.tile_id}_roi_stem_map.tif")
+                tile_path = os.path.join(
+                    work_dir, f"{job.tile_id}_roi_stem_map.tif")
                 IO.write_tile_raster(pred_tile, tile_profile, tile_path)
                 tile_paths.append(tile_path)
             process_prediction_tiles(
@@ -231,8 +232,8 @@ class ImageProcessing:
         def get_nvidia_driver_version():
             try:
                 result = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=driver_version", 
-                     "--format=csv,noheader"], stdout=subprocess.PIPE, 
+                    ["nvidia-smi", "--query-gpu=driver_version",
+                     "--format=csv,noheader"], stdout=subprocess.PIPE,
                      stderr=subprocess.PIPE, text=True)
                 if result.returncode == 0:
                     print(
@@ -301,8 +302,8 @@ if __name__ == '__main__':
         print(f"Allowed values: {sorted(valid_process_types)}")
         sys.exit(2)
 
-    image_processor = ImageProcessing(model_path, uav_path, stem_path, \
-        trees_path, process_type)
+    image_processor = ImageProcessing(
+        model_path, uav_path, stem_path, trees_path, process_type)
     image_processor.display_starting_text()
     image_processor.main()
 

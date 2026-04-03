@@ -53,7 +53,8 @@ def _stem_end_lines(stem: Stem):
     else:
         i = len(stem.path.coords) - 2 if len(stem.path.coords) < 8 else 6
         line_start = LineString([stem.path.coords[1], stem.path.coords[i]])
-        line_stop = LineString([stem.path.coords[-(i + 1)], stem.path.coords[-2]])
+        line_stop = LineString([stem.path.coords[-(i + 1)],
+                                stem.path.coords[-2]])
     return line_start, line_stop
 
 
@@ -155,7 +156,7 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                     candidate = cycle_stems[idx]
                     if start_buffer.contains(candidate.stop) or \
                         end_buffer.contains(candidate.start):
-                        filtered_indices.append(idx)
+                            filtered_indices.append(idx)
 
                 best_vote = math.inf
                 best_candidate = None
