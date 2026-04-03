@@ -6,7 +6,6 @@ import os
 import queue
 import threading
 import time
-from typing import Iterable
 
 import numpy as np
 import rasterio
@@ -32,8 +31,10 @@ def _to_float32_image(arr):
 
 def _resampling_layout(shape, profile, config):
     height, width = int(shape[0]), int(shape[1])
-    px_per_tile_x = int(np.ceil(config.tile_size / abs(profile['transform'][0])))
-    px_per_tile_y = int(np.ceil(config.tile_size / abs(profile['transform'][4])))
+    px_per_tile_x = int(np.ceil(config.tile_size / \
+        abs(profile['transform'][0])))
+    px_per_tile_y = int(np.ceil(config.tile_size / \
+        abs(profile['transform'][4])))
     overlap_img_x = config.overlap_pred * px_per_tile_x / config.img_width
     overlap_img_y = config.overlap_pred * px_per_tile_y / config.img_width
     x_tiles = int(np.ceil(width / max(px_per_tile_x - overlap_img_x, 1)))
@@ -67,9 +68,11 @@ def _iter_tile_jobs(layout, config):
     src_height = max(1, layout['px_per_tile_y'] - 1)
     tile_index = 0
     for i in range(layout['y_tiles']):
-        src_row = int(np.floor(i * (layout['px_per_tile_y'] - layout['overlap_img_y'])))
+        src_row = int(np.floor(i * (layout['px_per_tile_y'] \
+            - layout['overlap_img_y'])))
         for j in range(layout['x_tiles']):
-            src_col = int(np.floor(j * (layout['px_per_tile_x'] - layout['overlap_img_x'])))
+            src_col = int(np.floor(j * (layout['px_per_tile_x'] \
+                - layout['overlap_img_x'])))
             dst_row = config.overlap_pred // 2 + i * core
             dst_col = config.overlap_pred // 2 + j * core
             yield {
@@ -89,7 +92,9 @@ def _raw_tile_to_batchable(tile_img):
     if tile_img.ndim == 2:
         tile_img = tile_img[:, :, None]
     if tile_img.shape[2] < 3:
-        pad = np.zeros((tile_img.shape[0], tile_img.shape[1], 3 - tile_img.shape[2]), dtype=np.float32)
+        pad = np.zeros(
+            (tile_img.shape[0], tile_img.shape[1], 3 - tile_img.shape[2]), \
+                dtype=np.float32)
         tile_img = np.concatenate([tile_img, pad], axis=2)
     return tile_img[:, :, :3]
 
@@ -127,19 +132,24 @@ def _prepare_inference_batch(raw_tiles, raw_masks, config):
 
 
 def _predict_batch_core(raw_tiles, raw_masks, model, config):
-    tile_tensor, mask_resized = _prepare_inference_batch(raw_tiles, raw_masks, config)
+    tile_tensor, mask_resized = _prepare_inference_batch(
+        raw_tiles, raw_masks, config)
     pred = model.predict_on_batch(tile_tensor)
     crop = config.overlap_pred // 2
     pred_cores = []
     for idx in range(pred.shape[0]):
-        pred_core = pred[idx, crop:(config.img_width - crop), crop:(config.img_width - crop), 0]
-        mask_core = mask_resized[idx, crop:(config.img_width - crop), crop:(config.img_width - crop), 0] > 0.5
-        pred_cores.append(np.ascontiguousarray((pred_core * mask_core).astype(np.float32)))
+        pred_core = pred[idx, crop:(
+            config.img_width - crop), crop:(config.img_width - crop), 0]
+        mask_core = mask_resized[idx, crop:(
+            config.img_width - crop), crop:(config.img_width - crop), 0] > 0.5
+        pred_cores.append(np.ascontiguousarray(
+            (pred_core * mask_core).astype(np.float32)))
     return pred_cores
 
 
 def predict_tile_array(tile_img, model, config, tile_mask=None):
-    return _predict_batch_core([tile_img], [tile_mask] if tile_mask is not None else None, model, config)[0]
+    return _predict_batch_core([tile_img], [tile_mask] if \
+        tile_mask is not None else None, model, config)[0]
 
 
 def _format_eta(seconds: float) -> str:
@@ -155,7 +165,8 @@ def _format_eta(seconds: float) -> str:
 
 def _prediction_batch_candidates(config, initial_batch: int) -> list[int]:
     initial = max(1, int(initial_batch))
-    max_batch = max(initial, int(getattr(config, 'prediction_batch_max_gpu', initial) or initial))
+    max_batch = max(initial, int(getattr(
+        config, 'prediction_batch_max_gpu', initial) or initial))
     values = [max(1, initial // 2), initial, max_batch]
     out = []
     for v in values:
@@ -165,7 +176,8 @@ def _prediction_batch_candidates(config, initial_batch: int) -> list[int]:
 
 
 class TileBatchProducer(threading.Thread):
-    def __init__(self, uav_path, chunk_size, jobs, n_channels, out_queue, producer_id=0):
+    def __init__(self, uav_path, chunk_size, jobs, n_channels, \
+        out_queue, producer_id=0):
         super().__init__(daemon=True)
         self.uav_path = uav_path
         self.chunk_size = max(1, int(chunk_size))
@@ -183,7 +195,8 @@ class TileBatchProducer(threading.Thread):
                 indexes = list(range(1, min(self.n_channels, src.count) + 1))
                 for job in self.jobs:
                     t0 = time.perf_counter()
-                    window = Window(job['src_col'], job['src_row'], job['src_width'], job['src_height'])
+                    window = Window(job['src_col'], job['src_row'], \
+                        job['src_width'], job['src_height'])
                     tile = src.read(
                         indexes,
                         window=window,
@@ -200,7 +213,8 @@ class TileBatchProducer(threading.Thread):
                     pixel_mask = np.any(tile != 0, axis=2)
 
                     # If GDAL mask is effectively all valid, it is not helping.
-                    # Fall back to pixel-based validity for black background suppression.
+                    # Fall back to pixel-based validity for 
+                    # black background suppression.
                     if np.all(gdal_mask):
                         valid_mask = pixel_mask
                     else:
@@ -209,15 +223,18 @@ class TileBatchProducer(threading.Thread):
                     batch_read_s += time.perf_counter() - t0
                     batch_items.append((job, tile, valid_mask))
                     if len(batch_items) >= self.chunk_size:
-                        self.out_queue.put({'items': batch_items, 'read_s': batch_read_s, 'producer_id': self.producer_id})
+                        self.out_queue.put({'items': batch_items, 'read_s': \
+                            batch_read_s, 'producer_id': self.producer_id})
                         batch_items = []
                         batch_read_s = 0.0
                 if batch_items:
-                    self.out_queue.put({'items': batch_items, 'read_s': batch_read_s, 'producer_id': self.producer_id})
+                    self.out_queue.put({'items': batch_items, 'read_s': \
+                        batch_read_s, 'producer_id': self.producer_id})
         except Exception as exc:  # pragma: no cover
             self.error = exc
         finally:
-            self.out_queue.put({'producer_done': True, 'producer_id': self.producer_id})
+            self.out_queue.put(
+                {'producer_done': True, 'producer_id': self.producer_id})
 
 
 def _write_prediction_core(dst, pred_core, job, layout):
@@ -227,46 +244,60 @@ def _write_prediction_core(dst, pred_core, job, layout):
     write_w = min(pred_core.shape[1], layout['out_width'] - out_col)
     if write_h <= 0 or write_w <= 0:
         return 0.0
-    pred_write = np.ascontiguousarray(pred_core[:write_h, :write_w], dtype=np.float32)
-    out_window = Window(col_off=out_col, row_off=out_row, width=write_w, height=write_h)
+    pred_write = np.ascontiguousarray(
+        pred_core[:write_h, :write_w], dtype=np.float32)
+    out_window = Window(
+        col_off=out_col, row_off=out_row, width=write_w, height=write_h)
     t0 = time.perf_counter()
     dst.write(pred_write, 1, window=out_window)
     return time.perf_counter() - t0
 
 
-def _predict_batch_adaptive(raw_tiles, raw_masks, model, config, batch_size):
+def _predict_batch_adaptive(
+    raw_tiles, raw_masks, model, config, batch_size):
     try:
-        return _predict_batch_core(raw_tiles, raw_masks, model, config), batch_size
+        return _predict_batch_core(
+            raw_tiles, raw_masks, model, config), batch_size
     except (tf.errors.ResourceExhaustedError, RuntimeError) as exc:
         msg = str(exc).lower()
-        if batch_size <= 1 or ('resourceexhausted' not in msg and 'oom' not in msg and 'out of memory' not in msg):
+        if batch_size <= 1 or ('resourceexhausted' not in msg \
+            and 'oom' not in msg and 'out of memory' not in msg):
             raise
         reduced = max(1, batch_size // 2)
-        print(f"Prediction batch too large; reducing micro-batch size from {batch_size} to {reduced}", flush=True)
-        return _predict_batch_adaptive(raw_tiles[:reduced], raw_masks[:reduced] if raw_masks is not None else None, model, config, reduced)
+        print(f"Prediction batch too large; reducing micro-batch size from "
+              f"{batch_size} to {reduced}", flush=True)
+        return _predict_batch_adaptive(raw_tiles[:reduced], \
+            raw_masks[:reduced] if raw_masks is not None \
+            else None, model, config, reduced)
 
 
-def _autotune_batch_size(sample_tiles, sample_masks, model, config, initial_batch):
+def _autotune_batch_size(
+    sample_tiles, sample_masks, model, config, initial_batch):
     autotune = bool(getattr(config, 'prediction_batch_autotune', True))
     if not autotune:
         return max(1, int(initial_batch))
     if len(sample_tiles) < 2:
         return max(1, int(initial_batch))
 
-    candidates = [c for c in _prediction_batch_candidates(config, initial_batch) if c <= len(sample_tiles)]
+    candidates = [c for c in _prediction_batch_candidates(
+        config, initial_batch) if c <= len(sample_tiles)]
     if len(candidates) <= 1:
         return max(1, int(initial_batch))
 
     # Warm up compiled graph once before timing comparisons.
     warmup_n = min(candidates[0], len(sample_tiles))
-    _ = _predict_batch_adaptive(sample_tiles[:warmup_n], sample_masks[:warmup_n] if sample_masks is not None else None, model, config, warmup_n)
+    _ = _predict_batch_adaptive(sample_tiles[:warmup_n], \
+        sample_masks[:warmup_n] if sample_masks is not None \
+        else None, model, config, warmup_n)
 
     best_batch = max(1, int(initial_batch))
     best_per_tile = float('inf')
     results = []
     for cand in candidates:
         t0 = time.perf_counter()
-        _, used = _predict_batch_adaptive(sample_tiles[:cand], sample_masks[:cand] if sample_masks is not None else None, model, config, cand)
+        _, used = _predict_batch_adaptive(sample_tiles[:cand], \
+            sample_masks[:cand] if sample_masks is not None \
+            else None, model, config, cand)
         elapsed = time.perf_counter() - t0
         per_tile = elapsed / max(used, 1)
         results.append((used, per_tile))
@@ -276,7 +307,8 @@ def _autotune_batch_size(sample_tiles, sample_masks, model, config, initial_batc
 
     if results:
         summary = ', '.join(f"b{b}={pt:.3f}s/tile" for b, pt in results)
-        print(f"Prediction micro-batch autotune: {summary} -> selected {best_batch}", flush=True)
+        print(f"Prediction micro-batch autotune: {summary} -> "
+              f"selected {best_batch}", flush=True)
     return best_batch
 
 
@@ -311,19 +343,30 @@ def predict_stream_to_raster(
         width=layout['out_width'],
         height=layout['out_height'],
         transform=layout['out_transform'],
-        compress='DEFLATE' if getattr(config, 'compress_output', True) else None,
+        compress='DEFLATE' if getattr(
+            config, 'compress_output', True) else None,
     )
 
     total_tiles = layout['x_tiles'] * layout['y_tiles']
-    initial_batch_size = max(1, int(getattr(config, 'prediction_batch_size', None) or getattr(config, 'prediction_batch_gpu', 1)))
-    chunk_size = max(initial_batch_size, int(getattr(config, 'prediction_batch_max_gpu', initial_batch_size) or initial_batch_size))
-    queue_depth = max(2, int(getattr(config, 'producer_queue_batches', getattr(config, 'prediction_prefetch', 2))))
+    initial_batch_size = max(1, int(getattr(
+        config, 'prediction_batch_size', None) or getattr(
+            config, 'prediction_batch_gpu', 1)))
+    chunk_size = max(initial_batch_size, int(getattr(
+        config, 'prediction_batch_max_gpu', initial_batch_size) \
+            or initial_batch_size))
+    queue_depth = max(2, int(getattr(
+        config, 'producer_queue_batches', getattr(
+            config, 'prediction_prefetch', 2))))
     progress_interval_s = float(getattr(config, 'progress_interval_s', 30.0))
-    producer_workers = max(1, int(getattr(config, 'prediction_producer_workers', getattr(config, 'prediction_producer_workers_gpu', 1)) or 1))
-    jobs_iter = list(_iter_tile_jobs(layout, config)) if tile_jobs is None else list(tile_jobs)
+    producer_workers = max(1, int(getattr(
+        config, 'prediction_producer_workers', getattr(
+            config, 'prediction_producer_workers_gpu', 1)) or 1))
+    jobs_iter = list(_iter_tile_jobs(layout, config)) \
+        if tile_jobs is None else list(tile_jobs)
 
     q = queue.Queue(maxsize=queue_depth)
-    producer_job_lists = _split_jobs_for_producers(jobs_iter, producer_workers)
+    producer_job_lists = _split_jobs_for_producers(
+        jobs_iter, producer_workers)
     producers = [
         TileBatchProducer(
             uav_path=uav_path,
@@ -353,7 +396,8 @@ def predict_stream_to_raster(
 
     with rasterio.open(tmp_path, 'w', **out_profile) as dst:
         while finished_producers < len(producers) or pending_items:
-            while finished_producers < len(producers) and len(pending_items) < chunk_size:
+            while finished_producers < len(producers) \
+                and len(pending_items) < chunk_size:
                 payload = q.get()
                 if isinstance(payload, dict) and payload.get('producer_done'):
                     finished_producers += 1
@@ -368,9 +412,13 @@ def predict_stream_to_raster(
                 continue
 
             if done == 0:
-                sample_tiles = [tile for _, tile, _ in pending_items[:chunk_size]]
-                sample_masks = [mask for _, _, mask in pending_items[:chunk_size]]
-                active_batch_size = _autotune_batch_size(sample_tiles, sample_masks, model, config, initial_batch_size)
+                sample_tiles = [tile for _, tile, _ in \
+                    pending_items[:chunk_size]]
+                sample_masks = [mask for _, _, mask in \
+                    pending_items[:chunk_size]]
+                active_batch_size = _autotune_batch_size(
+                    sample_tiles, sample_masks, model, 
+                    config, initial_batch_size)
 
             current_n = min(active_batch_size, len(pending_items))
             items = pending_items[:current_n]
@@ -379,7 +427,8 @@ def predict_stream_to_raster(
             raw_masks = [mask for _, _, mask in items]
 
             prep0 = time.perf_counter()
-            tile_tensor, mask_resized = _prepare_inference_batch(raw_tiles, raw_masks, config)
+            tile_tensor, mask_resized = _prepare_inference_batch(
+                raw_tiles, raw_masks, config)
             total_prep_s += time.perf_counter() - prep0
 
             infer0 = time.perf_counter()
@@ -389,29 +438,43 @@ def predict_stream_to_raster(
             crop = config.overlap_pred // 2
             write_batch_s = 0.0
             for idx, (job, _, _) in enumerate(items):
-                pred_core = pred[idx, crop:(config.img_width - crop), crop:(config.img_width - crop), 0]
-                mask_core = mask_resized[idx, crop:(config.img_width - crop), crop:(config.img_width - crop), 0] > 0.5
-                pred_core = np.ascontiguousarray((pred_core * mask_core).astype(np.float32))
-                write_batch_s += _write_prediction_core(dst, pred_core, job, layout)
+                pred_core = pred[idx, crop:(
+                    config.img_width - crop), crop:(
+                        config.img_width - crop), 0]
+                mask_core = mask_resized[idx, crop:(
+                    config.img_width - crop), crop:(
+                        config.img_width - crop), 0] > 0.5
+                pred_core = np.ascontiguousarray((
+                    pred_core * mask_core).astype(np.float32))
+                write_batch_s += _write_prediction_core(
+                    dst, pred_core, job, layout)
                 done += 1
             total_write_s += write_batch_s
 
             now = time.monotonic()
-            if done == 1 or done == total_tiles or (now - last_report) >= progress_interval_s:
+            if done == 1 or done == total_tiles \
+                or (now - last_report) >= progress_interval_s:
                 elapsed = max(now - start, 1e-9)
                 rate = done / elapsed
-                eta_s = (total_tiles - done) / rate if rate > 0 else float('inf')
+                eta_s = (total_tiles - done) / rate if rate > 0 \
+                    else float('inf')
                 avg_read = total_read_s / max(done, 1)
                 avg_prep = total_prep_s / max(done, 1)
                 avg_infer = total_infer_s / max(done, 1)
                 avg_write = total_write_s / max(done, 1)
-                queue_fill = (q.qsize() / max(queue_depth, 1)) if queue_depth > 0 else 0.0
+                queue_fill = (q.qsize() / max(queue_depth, 1)) \
+                    if queue_depth > 0 else 0.0
                 print(
-                    f"Written tile {done}/{total_tiles} | {done / total_tiles:.1%} | "
+                    f"Written tile {done}/{total_tiles} | "
+                    f"{done / total_tiles:.1%} | "
                     f"{rate * 60:.1f} tiles/min | ETA {_format_eta(eta_s)} | "
-                    f"avg read {avg_read:.3f}s prep {avg_prep:.3f}s infer {avg_infer:.3f}s write {avg_write:.3f}s | "
-                    f"batch {active_batch_size} | queue {queue_fill:.0%} full | producers {len(producers)} | "
-                    f"src {layout['px_per_tile_x']}x{layout['px_per_tile_y']} -> out {config.img_width - config.overlap_pred}x{config.img_width - config.overlap_pred}",
+                    f"avg read {avg_read:.3f}s prep {avg_prep:.3f}s infer "
+                    f"{avg_infer:.3f}s write {avg_write:.3f}s | "
+                    f"batch {active_batch_size} | queue {queue_fill:.0%} full"
+                    f" | producers {len(producers)} | "
+                    f"src {layout['px_per_tile_x']}x{layout['px_per_tile_y']} "
+                    f"-> out {config.img_width - config.overlap_pred}x"
+                    f"{config.img_width - config.overlap_pred}",
                     flush=True,
                 )
                 last_report = now
@@ -447,7 +510,8 @@ def predict_stream_cpu(
     return predict_stream_to_raster(uav_path, output_stem_map, model, config)
 
 
-def predict_with_resampling_stream_to_raster(uav_path, output_stem_path, model, config):
+def predict_with_resampling_stream_to_raster(
+    uav_path, output_stem_path, model, config):
     return predict_stream_to_raster(uav_path, output_stem_path, model, config)
 
 
@@ -479,7 +543,8 @@ def predict(img, model, config):
     img_pad[0:img.shape[0], 0:img.shape[1], ] = img
 
     img_width_ = config.img_width - config.overlap_pred
-    prediction = np.zeros((img_pad.shape[0], img_pad.shape[1]), dtype=np.float32)
+    prediction = np.zeros((
+        img_pad.shape[0], img_pad.shape[1]), dtype=np.float32)
     mask = np.where(img[:, :, 0:3] == (0, 0, 0), False, True)[:, :, 0]
 
     for i in range(y_tiles):
@@ -521,7 +586,6 @@ def predict(img, model, config):
     return prediction
 
 
-
 def predict_with_resampling_per_tile(img, profile, model, config):
     t = Timer()
     t.start()
@@ -530,8 +594,10 @@ def predict_with_resampling_per_tile(img, profile, model, config):
     print("Resampling tiles while analyzing")
 
     layout = _resampling_layout(img.shape[:2], profile, config)
-    sy = int(np.ceil(layout['y_tiles'] * (layout['px_per_tile_y'] - layout['overlap_img_y']) + layout['overlap_img_y']))
-    sx = int(np.ceil(layout['x_tiles'] * (layout['px_per_tile_x'] - layout['overlap_img_x']) + layout['overlap_img_x']))
+    sy = int(np.ceil(layout['y_tiles'] * (layout['px_per_tile_y'] \
+        - layout['overlap_img_y']) + layout['overlap_img_y']))
+    sx = int(np.ceil(layout['x_tiles'] * (layout['px_per_tile_x'] \
+        - layout['overlap_img_x']) + layout['overlap_img_x']))
     img_pd = np.full(
         (sy, sx, config.n_channels),
         fill_value=0,
@@ -540,22 +606,29 @@ def predict_with_resampling_per_tile(img, profile, model, config):
     img_pd[0:img.shape[0], 0:img.shape[1], ] = img
 
     img_width_ = layout['img_width_inner']
-    prediction = np.zeros((layout['out_height'], layout['out_width']), dtype=np.float32)
+    prediction = np.zeros((layout['out_height'], layout['out_width']), 
+                          dtype=np.float32)
     mask = np.where(img_pd[:, :, 0:3] == (0, 0, 0), False, True)[:, :, 0]
-    mask = resize(mask, prediction.shape, order=0, preserve_range=True, anti_aliasing=False).astype(np.float32)
+    mask = resize(mask, prediction.shape, order=0, preserve_range=True, 
+                  anti_aliasing=False).astype(np.float32)
 
     for i in range(layout['y_tiles']):
-        x = int(np.floor(i * (layout['px_per_tile_y'] - layout['overlap_img_y'])))
+        x = int(np.floor(i * (layout['px_per_tile_y'] - \
+            layout['overlap_img_y'])))
         for j in range(layout['x_tiles']):
-            y = int(np.floor(j * (layout['px_per_tile_x'] - layout['overlap_img_x'])))
-            tile = img_pd[x:x + layout['px_per_tile_x'] - 1, y:y + layout['px_per_tile_y'] - 1, 0:3]
+            y = int(np.floor(j * (layout['px_per_tile_x'] - \
+                layout['overlap_img_x'])))
+            tile = img_pd[x:x + layout['px_per_tile_x'] - 1, y:
+                          y + layout['px_per_tile_y'] - 1, 0:3]
             pred2 = predict_tile_array(tile, model, config)
             prediction[
                 (config.overlap_pred // 2 + i * img_width_): (
-                    (config.img_width - config.overlap_pred // 2) + i * img_width_
+                    (config.img_width - config.overlap_pred // 2) \
+                        + i * img_width_
                 ),
                 (config.overlap_pred // 2 + j * img_width_): (
-                    (config.img_width - config.overlap_pred // 2) + j * img_width_
+                    (config.img_width - config.overlap_pred // 2) \
+                        + j * img_width_
                 ),
             ] = pred2
     prediction = prediction * mask

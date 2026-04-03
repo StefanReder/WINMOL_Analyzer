@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
-from typing import Iterable
 
 import rasterio
 from rasterio.windows import Window
@@ -26,7 +25,8 @@ class TileJob:
 
     @property
     def halo_window(self) -> Window:
-        return Window(self.hx0, self.hy0, self.hx1 - self.hx0, self.hy1 - self.hy0)
+        return Window(
+            self.hx0, self.hy0, self.hx1 - self.hx0, self.hy1 - self.hy0)
 
 
 def meters_to_pixels(tile_overlap_m, pixel_size_x, pixel_size_y) -> int:
@@ -36,7 +36,8 @@ def meters_to_pixels(tile_overlap_m, pixel_size_x, pixel_size_y) -> int:
     return int(ceil(tile_overlap_m / px))
 
 
-def build_tile_grid(width: int, height: int, tile_inner_px: int, halo_px: int) -> list[TileJob]:
+def build_tile_grid(width: int, height: int, tile_inner_px: int, halo_px: int)\
+   -> list[TileJob]:
     tile_inner_px = max(1, int(tile_inner_px))
     halo_px = max(0, int(halo_px))
     jobs: list[TileJob] = []

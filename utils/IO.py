@@ -25,11 +25,11 @@ from tensorflow.keras import layers
 from tensorflow.keras.utils import get_custom_objects
 from matplotlib import pyplot as plt
 from rasterio.enums import Resampling
-from rasterio.windows import Window
 from shapely.geometry import LineString, Point, box
 from collections.abc import Mapping
 from pyproj import CRS
 from pathlib import Path
+
 
 ###############################################################################
 
@@ -65,7 +65,10 @@ def finalize_raster(tmp_path: str, final_path: str) -> str:
     return final_path
 
 
-def build_safe_prediction_profile(src_profile, width: int, height: int, transform, compress: str | None = 'DEFLATE'):
+def build_safe_prediction_profile(
+    src_profile, width: int, height: int, 
+    transform, compress: str | None = 'DEFLATE'):
+
     profile = {
         'driver': 'GTiff',
         'dtype': 'float32',
@@ -74,7 +77,6 @@ def build_safe_prediction_profile(src_profile, width: int, height: int, transfor
         'height': int(height),
         'transform': transform,
         'crs': src_profile.get('crs', None),
-        'nodata': 0.0,
         'tiled': True,
         'blockxsize': 512,
         'blockysize': 512,
@@ -123,10 +125,12 @@ def create_output_raster_like(
     return profile
 
 
-def read_window(path: str, window, bands: list[int] | None = None, boundless: bool = True, fill_value=0):
+def read_window(path: str, window, bands:
+               list[int] | None = None, boundless: bool = True, fill_value=0):
     with rasterio.open(path) as src:
         indexes = bands if bands is not None else list(range(1, src.count + 1))
-        return src.read(indexes, window=window, boundless=boundless, fill_value=fill_value)
+        return src.read(
+            indexes, window=window, boundless=boundless, fill_value=fill_value)
 
 
 def write_window(dst_path: str, array, window, band: int = 1):
@@ -159,7 +163,8 @@ def iter_prediction_tiles(src_path: str, config, tile_jobs):
             profile = src.profile.copy()
             profile['width'] = int(window.width)
             profile['height'] = int(window.height)
-            profile['transform'] = rasterio.windows.transform(window, src.transform)
+            profile['transform'] = rasterio.windows.transform(
+                window, src.transform)
             yield job, arr, profile
 
 
@@ -169,7 +174,8 @@ def load_raster_window_with_profile(path: str, window):
         profile = src.profile.copy()
         profile['width'] = int(window.width)
         profile['height'] = int(window.height)
-        profile['transform'] = rasterio.windows.transform(window, src.transform)
+        profile['transform'] = rasterio.windows.transform(
+            window, src.transform)
         return pred, profile
 
 
@@ -211,7 +217,8 @@ def load_model_from_path(model_path):
 
 def load_orthomosaic(path, config):
     with rasterio.open(path) as src:
-        img = src.read(list(range(1, config.n_channels + 1))).transpose(1, 2, 0)
+        img = src.read(list(range(1, config.n_channels + 1)))\
+            .transpose(1, 2, 0)
         img = (img / 255).astype(np.float32)
         return img, src.profile
 
@@ -270,10 +277,13 @@ def export_stem_map(pred, profile, pred_dir, pred_name, compress="DEFLATE"):
         dst.write(pred.astype(rasterio.float32), 1)
     finalize_raster(tmp_path, final_path)
 
+
 def get_bounds_from_profile(profile):
     left = profile['transform'][2]
-    right = profile['transform'][2] + profile['transform'][0] * profile['width']
-    bot = profile['transform'][5] + profile['transform'][4] * profile['height']
+    right = profile['transform'][2] \
+        + profile['transform'][0] * profile['width']
+    bot = profile['transform'][5] \
+        + profile['transform'][4] * profile['height']
     top = profile['transform'][5]
     return rasterio.coords.BoundingBox(left, bot, right, top)
 
@@ -441,6 +451,7 @@ def vectors_to_gdf(stems, profile):
 
     return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs)
 
+
 def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
     tmp_path = str(tmp_path)
     final_path = str(final_path)
@@ -513,6 +524,7 @@ def _drop_bad_geoms(gdf):
         pass
     return gdf
 
+
 def _normalize_dtypes(gdf):
     if gdf is None or gdf.empty:
         return gdf
@@ -559,9 +571,11 @@ def _normalize_dtypes(gdf):
             gdf[col] = pd.to_numeric(s, errors="coerce").astype("float64")
             continue
 
-        gdf[col] = s.map(lambda v: None if pd.isna(v) else str(v)).astype(object)
+        gdf[col] = s.map(lambda v: None if pd.isna(v) \
+                         else str(v)).astype(object)
 
     return gdf
+
 
 def _schema_type_for_series(series):
     non_null = [v for v in series.tolist() if pd.notna(v)]
@@ -590,7 +604,8 @@ def _schema_type_for_series(series):
 
 def _infer_geometry_type(gdf):
     try:
-        geom_types = [g.geom_type for g in gdf.geometry if g is not None and not g.is_empty]
+        geom_types = [g.geom_type for g in gdf.geometry \
+                      if g is not None and not g.is_empty]
     except Exception:
         geom_types = []
 
@@ -660,6 +675,7 @@ def _feature_records(gdf, schema):
             "properties": props,
         }
 
+
 def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
     schema = _infer_fiona_schema(gdf)
     mode = "a" if append else "w"
@@ -720,7 +736,8 @@ def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
 
     if not prepared:
         layer_name = layers[0][0] if layers else "layer"
-        empty = gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=crs)
+        empty = gpd.GeoDataFrame(
+            {"geometry": []}, geometry="geometry", crs=crs)
         empty.to_file(tmp_path, layer=layer_name, driver="GPKG", index=False)
         return tmp_path
 
@@ -738,7 +755,8 @@ def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
                 first = False
             return tmp_path
         except Exception as e:
-            print(f"pyogrio GeoPackage write failed, falling back to Fiona: {e}")
+            print("pyogrio GeoPackage write failed, "
+                  f"falling back to Fiona: {e}")
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
@@ -758,7 +776,8 @@ def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
             else:
                 _fiona_write_layer(tmp_path, name, gdf, crs=crs, append=True)
         except Exception as e:
-            raise RuntimeError(f"Failed while writing GeoPackage layer '{name}' at'{tmp_path}'") from e
+            raise RuntimeError(f"Failed while writing GeoPackage layer '{name}'"
+                               f" at'{tmp_path}'") from e
     return tmp_path
 
 

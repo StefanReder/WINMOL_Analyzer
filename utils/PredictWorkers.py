@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
-import queue
 import time
 from typing import List
 
@@ -12,7 +11,8 @@ from rasterio.windows import Window
 
 from classes.Config import Config
 from utils import IO
-from utils.Prediction import _iter_tile_jobs, _prepare_inference_batch, _resampling_layout, _format_eta
+from utils.Prediction import _iter_tile_jobs, _prepare_inference_batch, \
+    _resampling_layout, _format_eta
 
 
 def _config_from_dict(config_dict: dict) -> Config:
@@ -26,14 +26,18 @@ def _config_from_dict(config_dict: dict) -> Config:
 
 
 def _predict_batch(raw_tiles, raw_masks, model, config):
-    tile_tensor, mask_resized = _prepare_inference_batch(raw_tiles, raw_masks, config)
+    tile_tensor, mask_resized = _prepare_inference_batch(
+        raw_tiles, raw_masks, config)
     pred = model.predict_on_batch(tile_tensor)
     crop = config.overlap_pred // 2
     cores = []
     for idx in range(pred.shape[0]):
-        pred_core = pred[idx, crop:(config.img_width - crop), crop:(config.img_width - crop), 0]
-        mask_core = mask_resized[idx, crop:(config.img_width - crop), crop:(config.img_width - crop), 0] > 0.5
-        cores.append(np.ascontiguousarray((pred_core * mask_core).astype(np.float32)))
+        pred_core = pred[idx, crop:(config.img_width - crop), \
+            crop:(config.img_width - crop), 0]
+        mask_core = mask_resized[idx, crop:(config.img_width - crop), \
+            crop:(config.img_width - crop), 0] > 0.5
+        cores.append(np.ascontiguousarray((pred_core * mask_core)\
+            .astype(np.float32)))
     return cores
 
 
@@ -69,7 +73,8 @@ def prediction_worker(
 
     cfg = _config_from_dict(config_dict)
     model = load_model_from_path(model_path)
-    batch_size = max(1, int(getattr(cfg, 'prediction_batch_size', None) or getattr(cfg, 'prediction_batch_gpu', 4)))
+    batch_size = max(1, int(getattr(cfg, 'prediction_batch_size', None) \
+        or getattr(cfg, 'prediction_batch_gpu', 4)))
 
     with rasterio.open(input_raster) as src:
         indexes = list(range(1, min(cfg.n_channels, src.count) + 1))
@@ -79,7 +84,8 @@ def prediction_worker(
             read_s = 0.0
             for job in batch_jobs:
                 t0 = time.perf_counter()
-                window = Window(job['src_col'], job['src_row'], job['src_width'], job['src_height'])
+                window = Window(job['src_col'], job['src_row'], \
+                    job['src_width'], job['src_height'])
                 tile = src.read(
                     indexes,
                     window=window,
@@ -117,7 +123,6 @@ def prediction_worker(
     results.put({'done': True, 'gpu_id': gpu_id})
 
 
-
 def run_multi_gpu_prediction(
     model_path: str,
     input_raster: str,
@@ -127,7 +132,7 @@ def run_multi_gpu_prediction(
     config,
 ):
     if not gpu_ids:
-        raise ValueError('run_multi_gpu_prediction requires at least one GPU id')
+        raise ValueError('multi_gpu_prediction requires at least one GPU id')
 
     ctx = mp.get_context('spawn')
     result_q = ctx.Queue(maxsize=max(8, len(gpu_ids) * 8))
@@ -135,7 +140,8 @@ def run_multi_gpu_prediction(
     with rasterio.open(input_raster) as src:
         profile = src.profile.copy()
         layout = _resampling_layout((src.height, src.width), profile, config)
-        all_jobs = list(_iter_tile_jobs(layout, config)) if tile_jobs is None else list(tile_jobs)
+        all_jobs = list(_iter_tile_jobs(layout, config)) \
+            if tile_jobs is None else list(tile_jobs)
 
     shards = [[] for _ in gpu_ids]
     for idx, job in enumerate(all_jobs):
@@ -146,7 +152,8 @@ def run_multi_gpu_prediction(
         width=layout['out_width'],
         height=layout['out_height'],
         transform=layout['out_transform'],
-        compress='DEFLATE' if getattr(config, 'compress_output', True) else None,
+        compress='DEFLATE' if getattr(config, 'compress_output', True) \
+            else None,
     )
     tmp_path = IO.atomic_tmp_path(output_raster)
 
@@ -182,19 +189,27 @@ def run_multi_gpu_prediction(
             write_h = min(arr.shape[0], layout['out_height'] - row_off)
             write_w = min(arr.shape[1], layout['out_width'] - col_off)
             t0 = time.perf_counter()
-            dst.write(np.ascontiguousarray(arr[:write_h, :write_w], dtype=np.float32), 1, window=Window(col_off, row_off, write_w, write_h))
+            dst.write(np.ascontiguousarray(arr[:write_h, :write_w], \
+                dtype=np.float32), 1, window=Window(
+                    col_off, row_off, write_w, write_h))
             total_write_s += time.perf_counter() - t0
             total_read_s += float(result.get('read_s', 0.0))
             total_infer_s += float(result.get('infer_s', 0.0))
             done += 1
             now = time.monotonic()
-            if done == 1 or done == total_tiles or (now - last_report) >= progress_interval_s:
+            if done == 1 or done == total_tiles \
+                or (now - last_report) >= progress_interval_s:
                 elapsed = max(now - start, 1e-9)
                 rate = done / elapsed
-                eta_s = (total_tiles - done) / rate if rate > 0 else float('inf')
+                eta_s = (total_tiles - done) / rate if rate > 0 \
+                    else float('inf')
                 print(
-                    f"Multi-GPU prediction {done}/{total_tiles} | {done / total_tiles:.1%} | {rate * 60:.1f} tiles/min | "
-                    f"ETA {_format_eta(eta_s)} | avg read {total_read_s / max(done, 1):.3f}s infer {total_infer_s / max(done, 1):.3f}s write {total_write_s / max(done, 1):.3f}s",
+                    f"Multi-GPU prediction {done}/{total_tiles} | "
+                    f"{done / total_tiles:.1%} | {rate * 60:.1f} tiles/min | "
+                    f"ETA {_format_eta(eta_s)} | avg read "
+                    f"{total_read_s / max(done, 1):.3f}s infer "
+                    f"{total_infer_s / max(done, 1):.3f}s write "
+                    f"{total_write_s / max(done, 1):.3f}s",
                     flush=True,
                 )
                 last_report = now

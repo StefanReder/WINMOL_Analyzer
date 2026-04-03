@@ -22,7 +22,8 @@ epsilon = np.finfo(float).eps
 
 
 def _worker_count(config=None):
-    value = getattr(config, 'cpu_workers', None) if config is not None else None
+    value = getattr(config, 'cpu_workers', None) \
+        if config is not None else None
     if value is None:
         value = max(mp.cpu_count() - 1, 1)
     try:
@@ -71,8 +72,10 @@ def get_diameters(stems: List[Stem], pred, profile, config=None):
     pred_bin[np.where(pred_bin >= 0.5)] = 1
     pred_bin = pred_bin.astype(np.int16)
 
-    spacing_m = getattr(config, 'measuring_point_spacing_m', 0.5) if config is not None else 0.5
-    diameter_method = str(getattr(config, 'diameter_method', 'contour')).lower() if config is not None else 'contour'
+    spacing_m = getattr(config, 'measuring_point_spacing_m', 0.5) \
+        if config is not None else 0.5
+    diameter_method = str(getattr(config, 'diameter_method', 'contour'))\
+        .lower() if config is not None else 'contour'
 
     stems = [_resample_stem_measure_points(stem, spacing_m) for stem in stems]
 
@@ -94,21 +97,26 @@ def get_diameters(stems: List[Stem], pred, profile, config=None):
         if workers <= 1 or len(stems) <= 1:
             for stem in stems:
                 try:
-                    return_callback(calc_v_d_edt(stem, edt_map, profile, config=config))
+                    return_callback(
+                        calc_v_d_edt(stem, edt_map, profile, config=config))
                 except Exception as error:
                     error_callback(error)
         else:
-            # EDT array pickling can be expensive; default to serial unless many stems
+            # EDT array pickling can be expensive;
+            #  default to serial unless many stems
             for stem in stems:
                 try:
-                    return_callback(calc_v_d_edt(stem, edt_map, profile, config=config))
+                    return_callback(
+                        calc_v_d_edt(stem, edt_map, profile, config=config))
                 except Exception as error:
                     error_callback(error)
     else:
         mask = None
         pred_shapes_ = (
             {'properties': {'raster_val': v}, 'geometry': s}
-            for i, (s, v) in enumerate(rasterio.features.shapes(pred_bin, mask=mask, transform=transform))
+            for i, (s, v) in enumerate(
+                rasterio.features.shapes(
+                    pred_bin, mask=mask, transform=transform))
         )
         pred_shapes = list(pred_shapes_)
         pred_shapes = gpd.GeoDataFrame.from_features(pred_shapes)
@@ -117,16 +125,19 @@ def get_diameters(stems: List[Stem], pred, profile, config=None):
         if workers <= 1 or len(stems) <= 1:
             for stem in stems:
                 try:
-                    return_callback(calc_v_d_contour(stem, pred_shapes, config=config))
+                    return_callback(calc_v_d_contour(
+                        stem, pred_shapes, config=config))
                 except Exception as error:
                     error_callback(error)
         else:
             with mp.Pool(workers) as pool:
                 r = []
                 for stem in stems:
-                    r.append(pool.apply_async(calc_v_d_contour, args=(stem, pred_shapes, config),
-                                              callback=return_callback,
-                                              error_callback=error_callback))
+                    r.append(pool.apply_async(
+                        calc_v_d_contour, 
+                        args=(stem, pred_shapes, config), 
+                        callback=return_callback, 
+                        error_callback=error_callback))
                 for r_ in r:
                     r_.wait()
 
@@ -208,15 +219,20 @@ def clean_diameter(stem):
             i_lw = stem.segment_diameter_list[i] < lw
             if i_uw or i_lw:
                 wd1 = stem.segment_diameter_list[i - 1] * abs(
-                    Point(stem.path.coords[i]).distance(Point(stem.path.coords[i + 1])))
+                    Point(stem.path.coords[i])\
+                        .distance(Point(stem.path.coords[i + 1])))
                 wd2 = stem.segment_diameter_list[i + 1] * abs(
-                    Point(stem.path.coords[i - 1]).distance(Point(stem.path.coords[i])))
-                d12 = abs(Point(stem.path.coords[i - 1]).distance(Point(stem.path.coords[i + 1])))
+                    Point(stem.path.coords[i - 1])\
+                        .distance(Point(stem.path.coords[i])))
+                d12 = abs(Point(stem.path.coords[i - 1])\
+                    .distance(Point(stem.path.coords[i + 1])))
                 if d12 > epsilon:
                     stem.segment_diameter_list[i] = (wd1 + wd2) / d12
-        if stem.segment_diameter_list[0] > uw or stem.segment_diameter_list[0] < lw:
+        if stem.segment_diameter_list[0] > uw \
+            or stem.segment_diameter_list[0] < lw:
             stem.segment_diameter_list[0] = stem.segment_diameter_list[1]
-        if stem.segment_diameter_list[-1] > uw or stem.segment_diameter_list[-1] < lw:
+        if stem.segment_diameter_list[-1] > uw \
+            or stem.segment_diameter_list[-1] < lw:
             stem.segment_diameter_list[-1] = stem.segment_diameter_list[-2]
     return stem
 
@@ -243,7 +259,8 @@ def _measurement_vector(node_xy, normal_xy, half_len):
 
 def calc_v_d_contour(stem, contours, config=None):
     coords = list(stem.path.coords)
-    half_len = float(getattr(config, 'diameter_vector_half_length_m', 1.0)) if config is not None else 1.0
+    half_len = float(getattr(config, 'diameter_vector_half_length_m', 1.0)) \
+        if config is not None else 1.0
     stem.vector = []
     stem.segment_diameter_list = []
 
@@ -257,7 +274,8 @@ def calc_v_d_contour(stem, contours, config=None):
 
 def _distance_transform_m(pred_bin, profile):
     px, py = _pixel_size(profile)
-    return ndi.distance_transform_edt(pred_bin.astype(bool), sampling=(py, px))
+    return ndi.distance_transform_edt(pred_bin.astype(bool), 
+                                      sampling=(py, px))
 
 
 def _xy_to_rowcol(x, y, profile) -> Tuple[int, int]:
@@ -269,8 +287,11 @@ def _xy_to_rowcol(x, y, profile) -> Tuple[int, int]:
 
 def calc_v_d_edt(stem, edt_map, profile, config=None):
     coords = list(stem.path.coords)
-    default_half = float(getattr(config, 'diameter_vector_half_length_m', 1.0)) if config is not None else 1.0
-    clip_max = getattr(config, 'edt_clip_max_m', None) if config is not None else None
+    default_half = float(getattr(
+        config, 'diameter_vector_half_length_m', 1.0)) \
+            if config is not None else 1.0
+    clip_max = getattr(config, 'edt_clip_max_m', None) \
+        if config is not None else None
     stem.vector = []
     stem.segment_diameter_list = []
 

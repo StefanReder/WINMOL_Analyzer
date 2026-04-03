@@ -5,7 +5,7 @@
 
 import math
 import multiprocessing as mp
-from typing import List, Optional, Sequence, Set
+from typing import List, Sequence, Set
 
 import numpy as np
 from shapely.geometry import LineString, Point
@@ -23,7 +23,8 @@ epsilon = np.finfo(float).eps
 
 
 def _worker_count(config=None):
-    value = getattr(config, 'cpu_workers', None) if config is not None else None
+    value = getattr(config, 'cpu_workers', None) \
+        if config is not None else None
     if value is None:
         value = max(mp.cpu_count() - 1, 1)
     try:
@@ -72,7 +73,9 @@ def _query_tree_indices(tree: STRtree, geom, fallback_geoms=None):
     return [geom_to_idx[id(g)] for g in matches if id(g) in geom_to_idx]
 
 
-def _remove_duplicates_against_base(cycle_stems: Sequence[Stem], remaining: Set[int], base_idx: int) -> tuple[Set[int], int]:
+def _remove_duplicates_against_base(
+    cycle_stems: Sequence[Stem], remaining: Set[int], base_idx: int) \
+        -> tuple[Set[int], int]:
     if base_idx not in remaining:
         return remaining, 0
     base = cycle_stems[base_idx]
@@ -90,6 +93,7 @@ def _remove_duplicates_against_base(cycle_stems: Sequence[Stem], remaining: Set[
         remaining = set(remaining)
         remaining.difference_update(to_remove)
     return remaining, len(to_remove)
+
 
 ################################################################################
 """Vector operations"""
@@ -133,11 +137,15 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
 
             while True:
                 line_start, line_stop = _stem_end_lines(base_stem)
-                start_buffer = base_stem.start.buffer(max_distance, resolution=32)
-                end_buffer = base_stem.stop.buffer(max_distance, resolution=32)
+                start_buffer = base_stem.start.buffer(
+                    max_distance, resolution=32)
+                end_buffer = base_stem.stop.buffer(
+                    max_distance, resolution=32)
 
-                candidate_indices = set(_query_tree_indices(stop_tree, start_buffer, stop_points))
-                candidate_indices.update(_query_tree_indices(start_tree, end_buffer, start_points))
+                candidate_indices = set(
+                    _query_tree_indices(stop_tree, start_buffer, stop_points))
+                candidate_indices.update(
+                    _query_tree_indices(start_tree, end_buffer, start_points))
                 candidate_indices.intersection_update(remaining)
                 candidate_indices.discard(base_idx)
 
@@ -145,7 +153,8 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                 filtered_indices = []
                 for idx in candidate_indices:
                     candidate = cycle_stems[idx]
-                    if start_buffer.contains(candidate.stop) or end_buffer.contains(candidate.start):
+                    if start_buffer.contains(candidate.stop) or \
+                        end_buffer.contains(candidate.start):
                         filtered_indices.append(idx)
 
                 best_vote = math.inf
@@ -175,7 +184,8 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                     remaining.discard(best_slave_idx)
                     global_change = True
                     c_count += 1
-                    remaining, dup_removed = _remove_duplicates_against_base(cycle_stems, remaining, base_idx)
+                    remaining, dup_removed = _remove_duplicates_against_base(
+                        cycle_stems, remaining, base_idx)
                     duplicates_count += dup_removed
                     continue
 
