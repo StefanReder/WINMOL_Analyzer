@@ -73,12 +73,8 @@ def get_diameters(stems: List[Stem], pred, profile, config=None):
     pred_bin[np.where(pred_bin >= 0.5)] = 1
     pred_bin = pred_bin.astype(np.int16)
 
-    spacing_m = getattr(config, 'measuring_point_spacing_m', 0.5) \
-        if config is not None else 0.5
     diameter_method = str(getattr(config, 'diameter_method', 'contour'))\
         .lower() if config is not None else 'contour'
-
-    # stems = [_resample_stem_measure_points(stem, spacing_m) for stem in stems]
 
     diam_count = 0
     measured_stems = []
@@ -165,43 +161,6 @@ def quantify_stem(stem: Stem):
 
 def _pixel_size(profile) -> Tuple[float, float]:
     return abs(profile['transform'][0]), abs(profile['transform'][4])
-
-
-def _resample_stem_measure_points(stem: Stem, spacing_m: float) -> Stem:
-    try:
-        line = stem.path
-        if line is None or line.length <= 0:
-            return stem
-        spacing = max(float(spacing_m), epsilon)
-        total_len = float(line.length)
-        distances = [0.0]
-        d = spacing
-        while d < total_len:
-            distances.append(float(d))
-            d += spacing
-        if total_len > distances[-1]:
-            distances.append(total_len)
-        pts = [line.interpolate(dist) for dist in distances]
-        coords = [(float(p.x), float(p.y)) for p in pts]
-        if len(coords) < 2:
-            coords = list(line.coords)
-        # remove duplicate consecutive coords
-        clean = [coords[0]]
-        for c in coords[1:]:
-            if math.dist(clean[-1], c) > 1e-9:
-                clean.append(c)
-        if len(clean) < 2:
-            clean = list(line.coords)
-        stem.path = LineString(clean)
-        stem.start = Point(clean[0])
-        stem.stop = Point(clean[-1])
-        stem.vector = []
-        stem.segment_diameter_list = []
-        stem.segment_length_list = []
-        stem.segment_volume_list = []
-        return stem
-    except Exception:
-        return stem
 
 
 def clean_diameter(stem):

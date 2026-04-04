@@ -44,7 +44,7 @@ def find_segments(pred, config, profile) -> (List[Part], List[Tuple[int]]):
     print("Skeletonize Image")
 
     px_size = abs(profile['transform'][0])
-    min_length = math.floor((config.min_length/4) / px_size)
+    min_length = math.floor((config.min_length / 4) / px_size)
     padding = int(config.max_tree_height / px_size) + 1
     pred = np.pad(
         pred,
@@ -367,7 +367,7 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
 
     def error_callback(error):
         print(error, flush=True)
-  
+
 
     print("#######################################################")
     print("#Refining and sorting out skeleton segments")
@@ -384,7 +384,8 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
                 low_bounds[1]:up_bounds[1] + 1
             ]
             return_callback(refine_skeleton_segment(
-                part, low_bounds, up_bounds, sub_skel, measuring_point_spacing, min_length
+                part, low_bounds, up_bounds, sub_skel,
+                measuring_point_spacing, min_length
             ))
     else:
         with mp.Pool(workers) as pool:
@@ -397,7 +398,8 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
                     low_bounds[1]:up_bounds[1] + 1
                 ]
                 r.append(pool.apply_async(refine_skeleton_segment, args=(
-                    part, low_bounds, up_bounds, sub_skel, measuring_point_spacing, min_length
+                    part, low_bounds, up_bounds, sub_skel,
+                    measuring_point_spacing, min_length
                 ), callback=return_callback, error_callback=error_callback))
             for r_ in r:
                 r_.wait()
@@ -414,7 +416,8 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
 
 def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
                             up_bounds: Tuple[int, int],
-                            skel: np.ndarray, measuring_point_spacing: int, min_length: int) -> List[Part]:
+                            skel: np.ndarray, measuring_point_spacing: int,
+                            min_length: int) -> List[Part]:
     part.start = (part.start[0] - low_bounds[0], part.start[1] - low_bounds[1])
     part.stop = (part.stop[0] - low_bounds[0], part.stop[1] - low_bounds[1])
     part.path = [part.start, part.stop]
