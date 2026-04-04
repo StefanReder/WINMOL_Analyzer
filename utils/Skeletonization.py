@@ -125,10 +125,10 @@ def find_skeleton_nodes(
 
     print("Find skeletion nodes")
 
-    print("# Pad the skeleton array (same as in the numpy version)")
+    # Pad the skeleton array (same as in the numpy version)
     skel = np.pad(skel, 1, mode='constant', constant_values=0)
 
-    print("# Extract 8-neighbors using slicing")
+    # Extract 8-neighbors using slicing"
     p2 = skel[:-2, 1:-1]
     p3 = skel[:-2, 2:]
     p4 = skel[1:-1, 2:]
@@ -139,10 +139,10 @@ def find_skeleton_nodes(
     p9 = skel[:-2, :-2]
     p1 = skel[1:-1, 1:-1]
 
-    print("# Binary skeleton mask")
+    # Binary skeleton mask
     mask = p1 == 1
 
-    print("# A(p1) calculation (transition count)")
+    # A(p1) calculation (transition count)
     transitions = ((p2 == 0) & (p3 == 1)).astype(np.uint8) + \
                   ((p3 == 0) & (p4 == 1)) + \
                   ((p4 == 0) & (p5 == 1)) + \
@@ -152,15 +152,15 @@ def find_skeleton_nodes(
                   ((p8 == 0) & (p9 == 1)) + \
                   ((p9 == 0) & (p2 == 1))
 
-    print("# Endpoint: A(p1) == 1, Branchpoint: A(p1) >= 3")
+    # Endpoint: A(p1) == 1, Branchpoint: A(p1) >= 3
     endpoint_mask = (transitions == 1) & mask
     branchpoint_mask = (transitions >= 3) & mask
 
-    print("# Get coordinates (remove padding offset)")
+    # Get coordinates (remove padding offset)
     endpoints = np.argwhere(endpoint_mask)
     branchpoints = np.argwhere(branchpoint_mask)
 
-    print("# Convert to CPU tuples")
+    # Convert to CPU tuples
     endpoints = [tuple(map(int, p)) for p in endpoints]
     branchpoints = [tuple(map(int, p)) for p in branchpoints]
 
