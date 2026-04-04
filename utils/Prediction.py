@@ -409,9 +409,9 @@ def predict_stream_to_raster(
                    and len(pending_items) < chunk_size
                    ):
                 payload = q.get()
-                if( isinstance(payload, dict)
-                   and payload.get('producer_done')
-                   ):
+                if (isinstance(payload, dict)
+                    and payload.get('producer_done')
+                    ):
                     finished_producers += 1
                     continue
                 if payload is None:

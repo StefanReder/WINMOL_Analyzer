@@ -200,7 +200,7 @@ def run_multi_gpu_prediction(
             now = time.monotonic()
             if (done == 1 or done == total_tiles
                or (now - last_report) >= progress_interval_s
-               ):
+                ):
                 elapsed = max(now - start, 1e-9)
                 rate = done / elapsed
                 eta_s = \

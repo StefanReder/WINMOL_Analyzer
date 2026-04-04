@@ -231,11 +231,13 @@ def clean_diameter(stem):
                     stem.segment_diameter_list[i] = (wd1 + wd2) / d12
         if (stem.segment_diameter_list[0] > uw
             or stem.segment_diameter_list[0] < lw
-            ): stem.segment_diameter_list[0] = stem.segment_diameter_list[1]
+            ):
+            stem.segment_diameter_list[0] = stem.segment_diameter_list[1]
 
         if (stem.segment_diameter_list[-1] > uw
             or stem.segment_diameter_list[-1] < lw
-            ): stem.segment_diameter_list[-1] = stem.segment_diameter_list[-2]
+            ):
+            stem.segment_diameter_list[-1] = stem.segment_diameter_list[-2]
     return stem
 
 
@@ -289,9 +291,9 @@ def _xy_to_rowcol(x, y, profile) -> Tuple[int, int]:
 
 def calc_v_d_edt(stem, edt_map, profile, config=None):
     coords = list(stem.path.coords)
-    default_half = float(getattr(
-        config, 'diameter_vector_half_length_m', 1.0)) \
-            if config is not None else 1.0
+    default_half = \
+        float(getattr(config, 'diameter_vector_half_length_m', 1.0)) \
+        if config is not None else 1.0
     clip_max = getattr(config, 'edt_clip_max_m', None) \
         if config is not None else None
     stem.vector = []

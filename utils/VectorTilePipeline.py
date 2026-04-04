@@ -97,11 +97,11 @@ def process_prediction_tiles(
 
     with mp.Pool(tile_workers) as pool:
         for idx, result in enumerate(pool.imap_unordered(
-            _process_prediction_tile_star, tasks), start=1):
+            _process_prediction_tile_star, tasks),
+                                     start=1):
             results.append(result)
             now = time.monotonic()
-            if idx == len(tasks) or (now - last_report) \
-                >= progress_interval_s:
+            if idx == len(tasks) or (now - last_report) >= progress_interval_s:
                 rate = idx / max(now - start, 1e-9)
                 eta = (len(tasks) - idx) / rate if rate > 0 else float('inf')
                 print(f"Vector tiles {idx}/{len(tasks)} | "
