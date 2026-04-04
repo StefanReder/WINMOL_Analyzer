@@ -192,29 +192,28 @@ def run_multi_gpu_prediction(
             dst.write(
                 np.ascontiguousarray(arr[:write_h, :write_w],
                                      dtype=np.float32), 1,
-               window=Window(col_off, row_off, write_w, write_h))
+                window=Window(col_off, row_off, write_w, write_h))
             total_write_s += time.perf_counter() - t0
             total_read_s += float(result.get('read_s', 0.0))
             total_infer_s += float(result.get('infer_s', 0.0))
             done += 1
             now = time.monotonic()
-            if(done == 1 or done == total_tiles
+            if (done == 1 or done == total_tiles
                or (now - last_report) >= progress_interval_s
-            ):
-                    elapsed = max(now - start, 1e-9)
-                    rate = done / elapsed
-                    eta_s = (total_tiles - done) / rate if rate > 0 \
-                        else float('inf')
-                    print(
-                        f"Multi-GPU prediction {done}/{total_tiles} | "
-                        f"{done / total_tiles:.1%} | {rate * 60:.1f} tiles/min"
-                        f" | ETA {_format_eta(eta_s)} | avg read "
-                        f"{total_read_s / max(done, 1):.3f}s infer "
-                        f"{total_infer_s / max(done, 1):.3f}s write "
-                        f"{total_write_s / max(done, 1):.3f}s",
-                        flush=True,
-                    )
-                    last_report = now
+               ):
+                elapsed = max(now - start, 1e-9)
+                rate = done / elapsed
+                eta_s = \
+                    (total_tiles - done) / rate if rate > 0 else float('inf')
+                print(
+                    f"Multi-GPU prediction {done}/{total_tiles} | "
+                    f"{done / total_tiles:.1%} | {rate * 60:.1f} tiles/min"
+                    f" | ETA {_format_eta(eta_s)} | avg read "
+                    f"{total_read_s / max(done, 1):.3f}s infer "
+                    f"{total_infer_s / max(done, 1):.3f}s write "
+                    f"{total_write_s / max(done, 1):.3f}s",
+                    flush=True, )
+                last_report = now
 
     for p in workers:
         p.join()

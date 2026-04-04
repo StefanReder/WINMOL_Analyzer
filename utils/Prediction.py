@@ -405,20 +405,20 @@ def predict_stream_to_raster(
 
     with rasterio.open(tmp_path, 'w', **out_profile) as dst:
         while finished_producers < len(producers) or pending_items:
-            while(finished_producers < len(producers)
-                  and len(pending_items) < chunk_size
-            ):
-                    payload = q.get()
-                    if( isinstance(payload, dict)
-                       and payload.get('producer_done')
-                    ):
-                        finished_producers += 1
-                        continue
-                    if payload is None:
-                        finished_producers += 1
-                        continue
-                    pending_items.extend(payload['items'])
-                    total_read_s += float(payload.get('read_s', 0.0))
+            while (finished_producers < len(producers)
+                   and len(pending_items) < chunk_size
+                   ):
+                payload = q.get()
+                if( isinstance(payload, dict)
+                   and payload.get('producer_done')
+                   ):
+                    finished_producers += 1
+                    continue
+                if payload is None:
+                    finished_producers += 1
+                    continue
+                pending_items.extend(payload['items'])
+                total_read_s += float(payload.get('read_s', 0.0))
 
             if not pending_items:
                 continue
@@ -464,9 +464,9 @@ def predict_stream_to_raster(
             total_write_s += write_batch_s
 
             now = time.monotonic()
-            if(done == 1 or done == total_tiles
-               or (now - last_report) >= progress_interval_s
-            ):
+            if (done == 1 or done == total_tiles
+                or (now - last_report) >= progress_interval_s
+                ):
                 elapsed = max(now - start, 1e-9)
                 rate = done / elapsed
                 eta_s = (total_tiles - done) / rate if rate > 0 \
