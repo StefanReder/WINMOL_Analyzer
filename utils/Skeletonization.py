@@ -345,7 +345,7 @@ def find_skeleton_segments(
 
 # Parallel version of refine_skeleton_segments
 # Find stem parts between nodes using the connectivity in the skeleton.
-def refine_skeleton_segments(parts: List[Part], skel: np.ndarray, 
+def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
                              measuring_point_spacing: int, min_length: int,
                              config=None) -> (List[Part], np.ndarray):
     t = Timer()
@@ -367,7 +367,6 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
 
     def error_callback(error):
         print(error, flush=True)
-
 
     print("#######################################################")
     print("#Refining and sorting out skeleton segments")
