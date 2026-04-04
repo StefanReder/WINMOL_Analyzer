@@ -287,7 +287,6 @@ def _trace_loop(seed: Tuple[int, int], skel:
 def find_skeleton_segments(
         skel: np.ndarray,
         end_nodes: List[Tuple[int]],
-        measuring_point_spacing: int,
         min_length: int,
         padding: int,
         config=None
