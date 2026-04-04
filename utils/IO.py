@@ -706,7 +706,9 @@ def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
         dst.writerecords(_feature_records(gdf, schema))
 
 
-def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
+def _write_layers_to_temp_gpkg(  # noqa: C901
+    layers, crs, final_path: str) \
+        -> str:
     tmp_dir = tempfile.mkdtemp(prefix="winmol_gpkg_")
     tmp_path = str(Path(tmp_dir) / (Path(final_path).stem + ".gpkg"))
 

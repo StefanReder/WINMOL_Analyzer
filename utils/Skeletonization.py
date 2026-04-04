@@ -352,7 +352,7 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
         refined_part, s, o = result
         nonlocal split
         nonlocal out
-        nonlocal refined_parts
+        # nonlocal refined_parts
         split = split + s
         out = out + o
         if refined_part is not None:

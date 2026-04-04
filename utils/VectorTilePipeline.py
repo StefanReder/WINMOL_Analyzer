@@ -96,9 +96,10 @@ def process_prediction_tiles(
         return results
 
     with mp.Pool(tile_workers) as pool:
-        for idx, result in enumerate(pool.imap_unordered(
-            _process_prediction_tile_star, tasks),
-                                     start=1):
+        for idx, result in enumerate(
+            pool.imap_unordered(_process_prediction_tile_star, tasks),
+            start=1,
+        ):
             results.append(result)
             now = time.monotonic()
             if idx == len(tasks) or (now - last_report) >= progress_interval_s:

@@ -409,9 +409,10 @@ def predict_stream_to_raster(
                    and len(pending_items) < chunk_size
                    ):
                 payload = q.get()
-                if (isinstance(payload, dict)
+                if (
+                    isinstance(payload, dict)
                     and payload.get('producer_done')
-                    ):
+                ):
                     finished_producers += 1
                     continue
                 if payload is None:
@@ -464,9 +465,11 @@ def predict_stream_to_raster(
             total_write_s += write_batch_s
 
             now = time.monotonic()
-            if (done == 1 or done == total_tiles
+            if (
+                done == 1
+                or done == total_tiles
                 or (now - last_report) >= progress_interval_s
-                ):
+            ):
                 elapsed = max(now - start, 1e-9)
                 rate = done / elapsed
                 eta_s = (total_tiles - done) / rate if rate > 0 \

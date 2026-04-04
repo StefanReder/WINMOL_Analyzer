@@ -117,7 +117,7 @@ def _gpu_memory_gb(hardware: Any) -> float:
     return max(values) if values else 0.0
 
 
-def build_execution_plan(
+def build_execution_plan( # noqa: C901
     config: Any, hardware: Any, raster_info: Any, process_type: str) \
         -> ExecutionPlan:
 
