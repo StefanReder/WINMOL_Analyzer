@@ -44,7 +44,7 @@ def find_segments(pred, config, profile) -> (List[Part], List[Tuple[int]]):
     print("Skeletonize Image")
 
     px_size = abs(profile['transform'][0])
-    min_length = config.min_length / 4
+    min_length = math.floor((config.min_length/4) / px_size)
     padding = int(config.max_tree_height / px_size) + 1
     pred = np.pad(
         pred,
@@ -65,11 +65,16 @@ def find_segments(pred, config, profile) -> (List[Part], List[Tuple[int]]):
 
     end_nodes, skel = get_nodes(skel)
     segments, skel = find_skeleton_segments(
-        skel, end_nodes, math.floor(min_length / px_size),
+        skel, end_nodes, math.floor(min_length / 4),
         padding, config=config
     )
+    measuring_point_spacing = math.floor(
+        min(config.min_length, config.measuring_point_spacing_m) / px_size)
+
     segments = refine_skeleton_segments(
-        segments, skel, math.floor(min_length / px_size), config=config
+        segments, skel,
+        measuring_point_spacing,
+        min_length, config=config
     )
 
     return segments
@@ -282,6 +287,7 @@ def _trace_loop(seed: Tuple[int, int], skel:
 def find_skeleton_segments(
         skel: np.ndarray,
         end_nodes: List[Tuple[int]],
+        measuring_point_spacing: int,
         min_length: int,
         padding: int,
         config=None
@@ -340,10 +346,11 @@ def find_skeleton_segments(
 
 # Parallel version of refine_skeleton_segments
 # Find stem parts between nodes using the connectivity in the skeleton.
-def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
-                             distance: int, config=None) -> (List[Part],
-                                                             np.ndarray):
-
+def refine_skeleton_segments(parts: List[Part], skel: np.ndarray, 
+                             measuring_point_spacing: int, min_length: int,
+                             config=None) -> (List[Part], np.ndarray):
+    t = Timer()
+    t.start()
     split = 0
     out = 0
     refined_parts = []
@@ -361,10 +368,7 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
 
     def error_callback(error):
         print(error, flush=True)
-
-    t = Timer()
-    t.start()
-    # refined_parts = []
+  
 
     print("#######################################################")
     print("#Refining and sorting out skeleton segments")
@@ -381,7 +385,7 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
                 low_bounds[1]:up_bounds[1] + 1
             ]
             return_callback(refine_skeleton_segment(
-                part, low_bounds, up_bounds, sub_skel, distance
+                part, low_bounds, up_bounds, sub_skel, measuring_point_spacing, min_length
             ))
     else:
         with mp.Pool(workers) as pool:
@@ -394,7 +398,7 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
                     low_bounds[1]:up_bounds[1] + 1
                 ]
                 r.append(pool.apply_async(refine_skeleton_segment, args=(
-                    part, low_bounds, up_bounds, sub_skel, distance
+                    part, low_bounds, up_bounds, sub_skel, measuring_point_spacing, min_length
                 ), callback=return_callback, error_callback=error_callback))
             for r_ in r:
                 r_.wait()
@@ -411,7 +415,7 @@ def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
 
 def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
                             up_bounds: Tuple[int, int],
-                            skel: np.ndarray, distance: int) -> List[Part]:
+                            skel: np.ndarray, measuring_point_spacing: int, min_length: int) -> List[Part]:
     part.start = (part.start[0] - low_bounds[0], part.start[1] - low_bounds[1])
     part.stop = (part.stop[0] - low_bounds[0], part.stop[1] - low_bounds[1])
     part.path = [part.start, part.stop]
@@ -450,7 +454,7 @@ def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
                         parts[0].path.extend([w])
                         temp = np.full(skel.shape, False)
                 else:
-                    if math.dist(n, w) > distance:
+                    if math.dist(n, w) > measuring_point_spacing:
                         if n == parts[0].start:
                             if angle > 10:
                                 new_part = Part(w, parts[0].stop,
@@ -491,7 +495,7 @@ def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
                              low_bounds, up_bounds)
         parts.pop(0)
 
-        if math.dist(refined_part_.start, refined_part_.stop) >= distance:
+        if math.dist(refined_part_.start, refined_part_.stop) >= min_length:
             refined_part_.start = (refined_part_.start[0] + low_bounds[0],
                                    refined_part_.start[1] + low_bounds[1])
             refined_part_.stop = (refined_part_.stop[0] + low_bounds[0],

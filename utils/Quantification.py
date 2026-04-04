@@ -78,7 +78,7 @@ def get_diameters(stems: List[Stem], pred, profile, config=None):
     diameter_method = str(getattr(config, 'diameter_method', 'contour'))\
         .lower() if config is not None else 'contour'
 
-    stems = [_resample_stem_measure_points(stem, spacing_m) for stem in stems]
+    # stems = [_resample_stem_measure_points(stem, spacing_m) for stem in stems]
 
     diam_count = 0
     measured_stems = []
