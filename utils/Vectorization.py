@@ -154,8 +154,8 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                 filtered_indices = []
                 for idx in candidate_indices:
                     candidate = cycle_stems[idx]
-                    if start_buffer.contains(candidate.stop) or \
-                        end_buffer.contains(candidate.start):
+                    if start_buffer.contains(candidate.stop) \
+                        or end_buffer.contains(candidate.start):
                             filtered_indices.append(idx)
 
                 best_vote = math.inf

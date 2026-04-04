@@ -127,7 +127,7 @@ def create_output_raster_like(
 
 def read_window(path: str, window, bands:
                 list[int] | None = None, boundless: bool = True, fill_value=0
-):
+                ):
     with rasterio.open(path) as src:
         indexes = bands if bands is not None else list(range(1, src.count + 1))
         return src.read(

@@ -120,7 +120,8 @@ def remove_dense_skeleton_nodes(skel: np.ndarray) -> Tuple[ndarray, int]:
 
 
 def find_skeleton_nodes(
-    skel:np.ndarray) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    skel: np.ndarray
+) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
 
     print("Find skeletion nodes")
 
@@ -249,7 +250,7 @@ def _trace_chain(start: Tuple[int, int], neighbor:
 
 
 def _trace_loop(seed: Tuple[int, int], skel:
-               np.ndarray, visited_edges: set) -> List[Tuple[int, int]]:
+                np.ndarray, visited_edges: set) -> List[Tuple[int, int]]:
 
     nbrs = get_neighbors(seed[0], seed[1], skel)
     if not nbrs:
@@ -317,7 +318,7 @@ def find_skeleton_segments(
                     out_skel[rr, cc] = True
 
     # handle loops or isolated remnants without degree!=2 nodes
-    remaining = [tuple(map(int, p)) 
+    remaining = [tuple(map(int, p))
                  for p in np.argwhere(skel_bool & (~out_skel))]
     for seed in remaining:
         if out_skel[seed]:
@@ -339,8 +340,9 @@ def find_skeleton_segments(
 
 # Parallel version of refine_skeleton_segments
 # Find stem parts between nodes using the connectivity in the skeleton.
-def refine_skeleton_segments(parts: List[Part], skel: np.ndarray, distance:
-                            int, config=None) -> (List[Part], np.ndarray):
+def refine_skeleton_segments(parts: List[Part], skel: np.ndarray,
+                             distance: int, config=None) -> (List[Part],
+                                                             np.ndarray):
 
     split = 0
     out = 0
@@ -485,7 +487,7 @@ def refine_skeleton_segment(part: Part, low_bounds: Tuple[int, int],
                 z = (x, y)
                 w = z
 
-        refined_part_ = Part(parts[0].start, parts[0].stop, parts[0].path, 
+        refined_part_ = Part(parts[0].start, parts[0].stop, parts[0].path,
                              low_bounds, up_bounds)
         parts.pop(0)
 

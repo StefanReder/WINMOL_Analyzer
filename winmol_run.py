@@ -122,7 +122,8 @@ class ImageProcessing:
             stem_dir = os.path.dirname(self.stem_path)
             IO.export_stem_map(pred, profile, stem_dir, stem_file_name,
                                compress='DEFLATE' if getattr(self.config,
-                               'compress_output', True) else None)
+                                                             'compress_output',
+                                                             True) else None)
             return pred, profile, self.stem_path
 
         if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
@@ -234,7 +235,7 @@ class ImageProcessing:
                 result = subprocess.run(
                     ["nvidia-smi", "--query-gpu=driver_version",
                      "--format=csv,noheader"], stdout=subprocess.PIPE,
-                     stderr=subprocess.PIPE, text=True)
+                    stderr=subprocess.PIPE, text=True)
                 if result.returncode == 0:
                     print(
                         f"NVIDIA GPU Driver Version: {result.stdout.strip()}")

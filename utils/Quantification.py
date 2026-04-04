@@ -229,12 +229,15 @@ def clean_diameter(stem):
                     Point(stem.path.coords[i + 1])))
                 if d12 > epsilon:
                     stem.segment_diameter_list[i] = (wd1 + wd2) / d12
-        if stem.segment_diameter_list[0] > uw \
-            or stem.segment_diameter_list[0] < lw:
-                stem.segment_diameter_list[0] = stem.segment_diameter_list[1]
-        if stem.segment_diameter_list[-1] > uw \
-            or stem.segment_diameter_list[-1] < lw:
-                stem.segment_diameter_list[-1] = stem.segment_diameter_list[-2]
+        if (stem.segment_diameter_list[0] > uw
+            or stem.segment_diameter_list[0] < lw
+        ):
+            stem.segment_diameter_list[0] = stem.segment_diameter_list[1]
+
+        if (stem.segment_diameter_list[-1] > uw
+        or stem.segment_diameter_list[-1] < lw
+        ):
+            stem.segment_diameter_list[-1] = stem.segment_diameter_list[-2]
     return stem
 
 

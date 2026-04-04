@@ -178,8 +178,7 @@ def _prediction_batch_candidates(config, initial_batch: int) -> list[int]:
 
 class TileBatchProducer(threading.Thread):
     def __init__(self, uav_path, chunk_size, jobs, n_channels,
-                 out_queue, producer_id=0
-    ):
+                 out_queue, producer_id=0):
         super().__init__(daemon=True)
         self.uav_path = uav_path
         self.chunk_size = max(1, int(chunk_size))
@@ -197,7 +196,7 @@ class TileBatchProducer(threading.Thread):
                 indexes = list(range(1, min(self.n_channels, src.count) + 1))
                 for job in self.jobs:
                     t0 = time.perf_counter()
-                    window = Window(job['src_col'], job['src_row'], 
+                    window = Window(job['src_col'], job['src_row'],
                                     job['src_width'], job['src_height'])
                     tile = src.read(
                         indexes,
@@ -215,7 +214,7 @@ class TileBatchProducer(threading.Thread):
                     pixel_mask = np.any(tile != 0, axis=2)
 
                     # If GDAL mask is effectively all valid, it is not helping.
-                    # Fall back to pixel-based validity for 
+                    # Fall back to pixel-based validity for
                     # black background suppression.
                     if np.all(gdal_mask):
                         valid_mask = pixel_mask
@@ -360,9 +359,10 @@ def predict_stream_to_raster(
     initial_batch_size = max(1, int(getattr(
         config, 'prediction_batch_size', None) or getattr(
             config, 'prediction_batch_gpu', 1)))
-    chunk_size = max(initial_batch_size, int(getattr(
-        config, 'prediction_batch_max_gpu', initial_batch_size)
-                                            or initial_batch_size))
+    chunk_size = \
+        max(initial_batch_size,
+            int(getattr(config, 'prediction_batch_max_gpu', initial_batch_size)
+                or initial_batch_size))
     queue_depth = max(2, int(getattr(
         config, 'producer_queue_batches', getattr(
             config, 'prediction_prefetch', 2))))
@@ -405,10 +405,13 @@ def predict_stream_to_raster(
 
     with rasterio.open(tmp_path, 'w', **out_profile) as dst:
         while finished_producers < len(producers) or pending_items:
-            while finished_producers < len(producers) \
-                and len(pending_items) < chunk_size:
+            while(finished_producers < len(producers)
+                  and len(pending_items) < chunk_size
+            ):
                     payload = q.get()
-                    if isinstance(payload, dict) and payload.get('producer_done'):
+                    if( isinstance(payload, dict)
+                       and payload.get('producer_done')
+                    ):
                         finished_producers += 1
                         continue
                     if payload is None:
@@ -461,8 +464,9 @@ def predict_stream_to_raster(
             total_write_s += write_batch_s
 
             now = time.monotonic()
-            if done == 1 or done == total_tiles \
-                or (now - last_report) >= progress_interval_s:
+            if(done == 1 or done == total_tiles
+               or (now - last_report) >= progress_interval_s
+            ):
                 elapsed = max(now - start, 1e-9)
                 rate = done / elapsed
                 eta_s = (total_tiles - done) / rate if rate > 0 \
@@ -568,18 +572,18 @@ def predict(img, model, config):
                 shape=[1, config.img_width, config.img_width, 3]
             )
             pred = model.predict_on_batch(tile)
-            pred2 = pred[0, (config.overlap_pred // 2) :
+            pred2 = pred[0, (config.overlap_pred // 2):
                          (config.img_width - config.overlap_pred // 2),
-                         (config.overlap_pred // 2) :
+                         (config.overlap_pred // 2):
                          (config.img_width - config.overlap_pred // 2), 0
-            ]
-            prediction[(config.overlap_pred // 2 + (i) * img_width_) :
+                         ]
+            prediction[(config.overlap_pred // 2 + (i) * img_width_):
                        ((config.img_width - config.overlap_pred // 2)
                        + i * img_width_),
-                       (config.overlap_pred // 2 + (j) * img_width_) :
+                       (config.overlap_pred // 2 + (j) * img_width_):
                        ((config.img_width - config.overlap_pred // 2)
                         + j * img_width_)
-            ] = pred2
+                       ] = pred2
 
     prediction = prediction[0:img.shape[0], 0:img.shape[1]]
     prediction = prediction * mask
@@ -598,10 +602,12 @@ def predict_with_resampling_per_tile(img, profile, model, config):
     print("Resampling tiles while analyzing")
 
     layout = _resampling_layout(img.shape[:2], profile, config)
-    sy = int(np.ceil(layout['y_tiles'] * (layout['px_per_tile_y']
-                                          - layout['overlap_img_y']) + layout['overlap_img_y']))
-    sx = int(np.ceil(layout['x_tiles'] * (layout['px_per_tile_x']
-                                          - layout['overlap_img_x']) + layout['overlap_img_x']))
+    sy = int(np.ceil(layout['y_tiles']
+                     * (layout['px_per_tile_y'] - layout['overlap_img_y'])
+                     + layout['overlap_img_y']))
+    sx = int(np.ceil(layout['x_tiles']
+                     * (layout['px_per_tile_x'] - layout['overlap_img_x'])
+                     + layout['overlap_img_x']))
     img_pd = np.full(
         (sy, sx, config.n_channels),
         fill_value=0,
@@ -610,10 +616,10 @@ def predict_with_resampling_per_tile(img, profile, model, config):
     img_pd[0:img.shape[0], 0:img.shape[1], ] = img
 
     img_width_ = layout['img_width_inner']
-    prediction = np.zeros((layout['out_height'], layout['out_width']), 
+    prediction = np.zeros((layout['out_height'], layout['out_width']),
                           dtype=np.float32)
     mask = np.where(img_pd[:, :, 0:3] == (0, 0, 0), False, True)[:, :, 0]
-    mask = resize(mask, prediction.shape, order=0, preserve_range=True, 
+    mask = resize(mask, prediction.shape, order=0, preserve_range=True,
                   anti_aliasing=False).astype(np.float32)
 
     for i in range(layout['y_tiles']):
@@ -625,13 +631,13 @@ def predict_with_resampling_per_tile(img, profile, model, config):
             tile = img_pd[x:x + layout['px_per_tile_x'] - 1, y:
                           y + layout['px_per_tile_y'] - 1, 0:3]
             pred2 = predict_tile_array(tile, model, config)
-            prediction[(config.overlap_pred // 2 + i * img_width_) :
+            prediction[(config.overlap_pred // 2 + i * img_width_):
                        ((config.img_width - config.overlap_pred // 2)
                        + i * img_width_),
-                       (config.overlap_pred // 2 + j * img_width_) :
+                       (config.overlap_pred // 2 + j * img_width_):
                        ((config.img_width - config.overlap_pred // 2)
                        + j * img_width_),
-            ] = pred2
+                       ] = pred2
     prediction = prediction * mask
 
     profile['transform'] = layout['out_transform']

@@ -64,7 +64,8 @@ def process_prediction_tiles(
     requested_tile_workers = \
         max(1,int(getattr(config, 'vector_tile_workers', 1) or 1))
     tile_workers = \
-        max(1, min(requested_tile_workers, len(pred_tile_paths), total_workers))
+        max(1, min(requested_tile_workers,
+                   len(pred_tile_paths), total_workers))
     inner_workers = max(1, total_workers // tile_workers)
     progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
 
@@ -99,11 +100,14 @@ def process_prediction_tiles(
             _process_prediction_tile_star, tasks), start=1):
                 results.append(result)
                 now = time.monotonic()
-                if idx == len(tasks) or (now - last_report) >= progress_interval_s:
-                    rate = idx / max(now - start, 1e-9)
-                    eta = (len(tasks) - idx) / rate if rate > 0 else float('inf')
-                    print(f"Vector tiles {idx}/{len(tasks)} | "
-                          f"{idx / len(tasks):.1%} | {rate * 60:.2f} tiles/min | "
-                          f"ETA {eta / 60:.1f} min", flush=True)
-                    last_report = now
+                if idx == len(tasks) or (now - last_report) \
+                    >= progress_interval_s:
+                        rate = idx / max(now - start, 1e-9)
+                        eta = (len(tasks) - idx) / rate \
+                            if rate > 0 else float('inf')
+                        print(f"Vector tiles {idx}/{len(tasks)} | "
+                              f"{idx / len(tasks):.1%} | {rate * 60:.2f}"
+                              f" tiles/min | ETA {eta / 60:.1f} min",
+                              flush=True)
+                        last_report = now
     return results

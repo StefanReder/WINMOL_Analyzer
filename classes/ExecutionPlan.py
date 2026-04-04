@@ -241,7 +241,7 @@ def build_execution_plan(
                     and not medium_raster) else 'cpu_stream'
         elif scen == SINGLE_GPU:
             prediction_mode = 'full' \
-                if (process_type == 'Stems' 
+                if (process_type == 'Stems'
                     and not medium_raster) else 'stream'
         else:
             prediction_mode = 'multi_gpu_stream' \

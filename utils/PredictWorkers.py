@@ -190,15 +190,17 @@ def run_multi_gpu_prediction(
             write_w = min(arr.shape[1], layout['out_width'] - col_off)
             t0 = time.perf_counter()
             dst.write(
-                np.ascontiguousarray(arr[:write_h, :write_w],dtype=np.float32),
-                1, window=Window(col_off, row_off, write_w, write_h))
+                np.ascontiguousarray(arr[:write_h, :write_w],
+                                     dtype=np.float32), 1,
+               window=Window(col_off, row_off, write_w, write_h))
             total_write_s += time.perf_counter() - t0
             total_read_s += float(result.get('read_s', 0.0))
             total_infer_s += float(result.get('infer_s', 0.0))
             done += 1
             now = time.monotonic()
-            if done == 1 or done == total_tiles \
-                or (now - last_report) >= progress_interval_s:
+            if(done == 1 or done == total_tiles
+               or (now - last_report) >= progress_interval_s
+            ):
                     elapsed = max(now - start, 1e-9)
                     rate = done / elapsed
                     eta_s = (total_tiles - done) / rate if rate > 0 \
