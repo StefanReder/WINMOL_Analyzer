@@ -166,14 +166,12 @@ def _format_eta(seconds: float) -> str:
 
 def _prediction_batch_candidates(config, initial_batch: int) -> list[int]:
     initial = max(1, int(initial_batch))
-    max_batch = max(initial, int(getattr(
-        config, 'prediction_batch_max_gpu', initial) or initial))
-    values = [max(1, initial // 2), initial, max_batch]
-    out = []
-    for v in values:
-        if v not in out:
-            out.append(v)
-    return out
+    max_batch_attr = getattr(config, 'prediction_batch_max_gpu', initial)
+    max_batch = max(
+        initial,
+        int(max_batch_attr if max_batch_attr is not None else initial),
+    )
+    return list(range(initial, max_batch + 1))
 
 
 class TileBatchProducer(threading.Thread):
@@ -277,47 +275,154 @@ def _predict_batch_adaptive(
 
 
 def _autotune_batch_size(
-    sample_tiles, sample_masks, model, config, initial_batch
+    sample_tiles,
+    sample_masks,
+    model,
+    config,
+    initial_batch,
+    label='Prediction micro-batch',
 ):
     autotune = bool(getattr(config, 'prediction_batch_autotune', True))
+    initial = max(1, int(initial_batch))
     if not autotune:
-        return max(1, int(initial_batch))
+        return initial
     if len(sample_tiles) < 2:
-        return max(1, int(initial_batch))
+        return initial
 
-    candidates = [c for c in _prediction_batch_candidates(
-        config, initial_batch) if c <= len(sample_tiles)]
+    raw_patience = getattr(config, 'prediction_batch_autotune_patience', 2)
+    patience = max(1, int(raw_patience))
+
+    raw_min_improve = getattr(
+        config, 'prediction_batch_autotune_min_improve', 0.02,
+    )
+    min_improve = max(0.0, float(raw_min_improve))
+
+    stop_on_oom = bool(getattr(
+        config, 'prediction_batch_autotune_stop_on_oom', True,
+    ))
+
+    candidates = [
+        c for c in _prediction_batch_candidates(config, initial)
+        if c <= len(sample_tiles)
+    ]
     if len(candidates) <= 1:
-        return max(1, int(initial_batch))
+        return initial
 
-    # Warm up compiled graph once before timing comparisons.
     warmup_n = min(candidates[0], len(sample_tiles))
-    _ = _predict_batch_adaptive(sample_tiles[:warmup_n],
-                                sample_masks[:warmup_n]
-                                if sample_masks is not None
-                                else None, model, config, warmup_n)
+    _ = _predict_batch_adaptive(
+        sample_tiles[:warmup_n],
+        sample_masks[:warmup_n] if sample_masks is not None else None,
+        model,
+        config,
+        warmup_n,
+    )
 
-    best_batch = max(1, int(initial_batch))
+    best_batch = candidates[0]
     best_per_tile = float('inf')
+    stale_steps = 0
     results = []
+    stop_reason = None
+
     for cand in candidates:
         t0 = time.perf_counter()
-        _, used = _predict_batch_adaptive(sample_tiles[:cand],
-                                          sample_masks[:cand]
-                                          if sample_masks is not None
-                                          else None, model, config, cand)
+        _, used = _predict_batch_adaptive(
+            sample_tiles[:cand],
+            sample_masks[:cand] if sample_masks is not None else None,
+            model,
+            config,
+            cand,
+        )
         elapsed = time.perf_counter() - t0
         per_tile = elapsed / max(used, 1)
-        results.append((used, per_tile))
-        if per_tile < best_per_tile:
+        oomed = used < cand
+
+        results.append((cand, used, per_tile, oomed))
+
+        improved = (
+            not np.isfinite(best_per_tile)
+            or per_tile < best_per_tile * (1.0 - min_improve)
+        )
+        if improved:
             best_per_tile = per_tile
             best_batch = used
+            stale_steps = 0
+        else:
+            stale_steps += 1
+
+        if oomed and stop_on_oom:
+            stop_reason = (
+                f"stopped after OOM fallback at candidate {cand}"
+            )
+            break
+
+        if stale_steps >= patience and cand > best_batch:
+            stop_reason = (
+                f"stopped after {stale_steps} non-improving step(s)"
+            )
+            break
 
     if results:
-        summary = ', '.join(f"b{b}={pt:.3f}s/tile" for b, pt in results)
-        print(f"Prediction micro-batch autotune: {summary} -> "
-              f"selected {best_batch}", flush=True)
+        summary_parts = []
+        for cand, used, per_tile, oomed in results:
+            if used == cand:
+                part = f"b{used}={per_tile:.3f}s/tile"
+            else:
+                part = f"b{cand}->b{used}={per_tile:.3f}s/tile"
+            if oomed:
+                part += " OOM"
+            summary_parts.append(part)
+
+        summary = ', '.join(summary_parts)
+        msg = f"{label} autotune: {summary} -> selected {best_batch}"
+        if stop_reason is not None:
+            msg = f"{msg} ({stop_reason})"
+        print(msg, flush=True)
+
     return best_batch
+
+
+# def _autotune_batch_size(
+#     sample_tiles, sample_masks, model, config, initial_batch
+# ):
+#     autotune = bool(getattr(config, 'prediction_batch_autotune', True))
+#     if not autotune:
+#         return max(1, int(initial_batch))
+#     if len(sample_tiles) < 2:
+#         return max(1, int(initial_batch))
+
+#     candidates = [c for c in _prediction_batch_candidates(
+#         config, initial_batch) if c <= len(sample_tiles)]
+#     if len(candidates) <= 1:
+#         return max(1, int(initial_batch))
+
+#     # Warm up compiled graph once before timing comparisons.
+#     warmup_n = min(candidates[0], len(sample_tiles))
+#     _ = _predict_batch_adaptive(sample_tiles[:warmup_n],
+#                                 sample_masks[:warmup_n]
+#                                 if sample_masks is not None
+#                                 else None, model, config, warmup_n)
+
+#     best_batch = max(1, int(initial_batch))
+#     best_per_tile = float('inf')
+#     results = []
+#     for cand in candidates:
+#         t0 = time.perf_counter()
+#         _, used = _predict_batch_adaptive(sample_tiles[:cand],
+#                                           sample_masks[:cand]
+#                                           if sample_masks is not None
+#                                           else None, model, config, cand)
+#         elapsed = time.perf_counter() - t0
+#         per_tile = elapsed / max(used, 1)
+#         results.append((used, per_tile))
+#         if per_tile < best_per_tile:
+#             best_per_tile = per_tile
+#             best_batch = used
+
+#     if results:
+#         summary = ', '.join(f"b{b}={pt:.3f}s/tile" for b, pt in results)
+#         print(f"Prediction micro-batch autotune: {summary} -> "
+#               f"selected {best_batch}", flush=True)
+#     return best_batch
 
 
 def _split_jobs_for_producers(jobs, producer_workers: int):
@@ -429,9 +534,17 @@ def predict_stream_to_raster(
                                 pending_items[:chunk_size]]
                 sample_masks = [mask for _, _, mask in
                                 pending_items[:chunk_size]]
+                # active_batch_size = _autotune_batch_size(
+                #     sample_tiles, sample_masks, model,
+                #     config, initial_batch_size)
                 active_batch_size = _autotune_batch_size(
-                    sample_tiles, sample_masks, model,
-                    config, initial_batch_size)
+                    sample_tiles,
+                    sample_masks,
+                    model,
+                    config,
+                    initial_batch_size,
+                    label='Prediction micro-batch',
+                )
 
             current_n = min(active_batch_size, len(pending_items))
             items = pending_items[:current_n]
