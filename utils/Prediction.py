@@ -274,6 +274,51 @@ def _predict_batch_adaptive(
                                        else None, model, config, reduced)
 
 
+def _time_batch_candidate(
+    sample_tiles,
+    sample_masks,
+    model,
+    config,
+    candidate_batch: int,
+    repeats: int = 2,
+):
+    repeats = max(1, int(repeats))
+    cand = max(1, int(candidate_batch))
+
+    tiles = sample_tiles[:cand]
+    masks = sample_masks[:cand] if sample_masks is not None else None
+
+    # Warm this exact candidate once so graph/kernel setup is not charged
+    # to the measured run.
+    _, warm_used = _predict_batch_adaptive(
+        tiles,
+        masks,
+        model,
+        config,
+        cand,
+    )
+    oomed = warm_used < cand
+
+    measure_batch = warm_used
+    timings = []
+
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        _, used = _predict_batch_adaptive(
+            sample_tiles[:measure_batch],
+            sample_masks[:measure_batch] if sample_masks is not None else None,
+            model,
+            config,
+            measure_batch,
+        )
+        elapsed = time.perf_counter() - t0
+        timings.append(elapsed / max(used, 1))
+        measure_batch = used
+
+    per_tile = min(timings)
+    return warm_used, per_tile, oomed
+
+
 def _autotune_batch_size(
     sample_tiles,
     sample_masks,
@@ -289,17 +334,21 @@ def _autotune_batch_size(
     if len(sample_tiles) < 2:
         return initial
 
-    raw_patience = getattr(config, 'prediction_batch_autotune_patience', 2)
-    patience = max(1, int(raw_patience))
-
-    raw_min_improve = getattr(
-        config, 'prediction_batch_autotune_min_improve', 0.02,
+    patience = max(
+        1,
+        int(getattr(config, 'prediction_batch_autotune_patience', 2)),
     )
-    min_improve = max(0.0, float(raw_min_improve))
-
+    min_improve = max(
+        0.0,
+        float(getattr(config, 'prediction_batch_autotune_min_improve', 0.02)),
+    )
     stop_on_oom = bool(getattr(
         config, 'prediction_batch_autotune_stop_on_oom', True,
     ))
+    repeats = max(
+        1,
+        int(getattr(config, 'prediction_batch_autotune_repeats', 2)),
+    )
 
     candidates = [
         c for c in _prediction_batch_candidates(config, initial)
@@ -308,15 +357,6 @@ def _autotune_batch_size(
     if len(candidates) <= 1:
         return initial
 
-    warmup_n = min(candidates[0], len(sample_tiles))
-    _ = _predict_batch_adaptive(
-        sample_tiles[:warmup_n],
-        sample_masks[:warmup_n] if sample_masks is not None else None,
-        model,
-        config,
-        warmup_n,
-    )
-
     best_batch = candidates[0]
     best_per_tile = float('inf')
     stale_steps = 0
@@ -324,17 +364,14 @@ def _autotune_batch_size(
     stop_reason = None
 
     for cand in candidates:
-        t0 = time.perf_counter()
-        _, used = _predict_batch_adaptive(
-            sample_tiles[:cand],
-            sample_masks[:cand] if sample_masks is not None else None,
+        used, per_tile, oomed = _time_batch_candidate(
+            sample_tiles,
+            sample_masks,
             model,
             config,
             cand,
+            repeats=repeats,
         )
-        elapsed = time.perf_counter() - t0
-        per_tile = elapsed / max(used, 1)
-        oomed = used < cand
 
         results.append((cand, used, per_tile, oomed))
 
@@ -342,6 +379,7 @@ def _autotune_batch_size(
             not np.isfinite(best_per_tile)
             or per_tile < best_per_tile * (1.0 - min_improve)
         )
+
         if improved:
             best_per_tile = per_tile
             best_batch = used
@@ -365,12 +403,12 @@ def _autotune_batch_size(
         summary_parts = []
         for cand, used, per_tile, oomed in results:
             if used == cand:
-                part = f"b{used}={per_tile:.3f}s/tile"
+                txt = f"b{used}={per_tile:.3f}s/tile"
             else:
-                part = f"b{cand}->b{used}={per_tile:.3f}s/tile"
+                txt = f"b{cand}->b{used}={per_tile:.3f}s/tile"
             if oomed:
-                part += " OOM"
-            summary_parts.append(part)
+                txt += " OOM"
+            summary_parts.append(txt)
 
         summary = ', '.join(summary_parts)
         msg = f"{label} autotune: {summary} -> selected {best_batch}"
@@ -379,50 +417,6 @@ def _autotune_batch_size(
         print(msg, flush=True)
 
     return best_batch
-
-
-# def _autotune_batch_size(
-#     sample_tiles, sample_masks, model, config, initial_batch
-# ):
-#     autotune = bool(getattr(config, 'prediction_batch_autotune', True))
-#     if not autotune:
-#         return max(1, int(initial_batch))
-#     if len(sample_tiles) < 2:
-#         return max(1, int(initial_batch))
-
-#     candidates = [c for c in _prediction_batch_candidates(
-#         config, initial_batch) if c <= len(sample_tiles)]
-#     if len(candidates) <= 1:
-#         return max(1, int(initial_batch))
-
-#     # Warm up compiled graph once before timing comparisons.
-#     warmup_n = min(candidates[0], len(sample_tiles))
-#     _ = _predict_batch_adaptive(sample_tiles[:warmup_n],
-#                                 sample_masks[:warmup_n]
-#                                 if sample_masks is not None
-#                                 else None, model, config, warmup_n)
-
-#     best_batch = max(1, int(initial_batch))
-#     best_per_tile = float('inf')
-#     results = []
-#     for cand in candidates:
-#         t0 = time.perf_counter()
-#         _, used = _predict_batch_adaptive(sample_tiles[:cand],
-#                                           sample_masks[:cand]
-#                                           if sample_masks is not None
-#                                           else None, model, config, cand)
-#         elapsed = time.perf_counter() - t0
-#         per_tile = elapsed / max(used, 1)
-#         results.append((used, per_tile))
-#         if per_tile < best_per_tile:
-#             best_per_tile = per_tile
-#             best_batch = used
-
-#     if results:
-#         summary = ', '.join(f"b{b}={pt:.3f}s/tile" for b, pt in results)
-#         print(f"Prediction micro-batch autotune: {summary} -> "
-#               f"selected {best_batch}", flush=True)
-#     return best_batch
 
 
 def _split_jobs_for_producers(jobs, producer_workers: int):
