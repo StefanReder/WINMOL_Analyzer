@@ -315,7 +315,7 @@ def _time_batch_candidate(
         timings.append(elapsed / max(used, 1))
         measure_batch = used
 
-    per_tile = min(timings)
+    per_tile = float(np.median(timings))
     return warm_used, per_tile, oomed
 
 
@@ -405,7 +405,7 @@ def _autotune_batch_size(
             if used == cand:
                 txt = f"b{used}={per_tile:.3f}s/tile"
             else:
-                txt = f"b{cand}->b{used}={per_tile:.3f}s/tile"
+                txt = f"b{cand}->b{used}={per_tile:.4f}s/tile"
             if oomed:
                 txt += " OOM"
             summary_parts.append(txt)

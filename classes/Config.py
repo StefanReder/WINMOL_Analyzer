@@ -23,8 +23,9 @@ class Config(object):
     prediction_batch_gpu = 2
     prediction_batch_max_gpu = 16
     prediction_batch_autotune = True
-    prediction_batch_autotune_patience = 2
-    prediction_batch_autotune_min_improve = 0.02
+    prediction_batch_autotune_patience = 4
+    prediction_batch_autotune_repeats = 5
+    prediction_batch_autotune_min_improve = 0.005
     prediction_batch_autotune_stop_on_oom = True
     progress_interval_s_cpu = 45.0
     progress_interval_s_gpu = 60.0
