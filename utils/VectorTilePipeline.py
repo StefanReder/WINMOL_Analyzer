@@ -54,9 +54,7 @@ def process_prediction_tile(
     pred, profile = load_raster_window_with_profile(
         pred_raster_path, tile_job.halo_window)
     print(f"Processing prediction tile: {tile_job.tile_id}", flush=True)
-<<<<<<< Updated upstream
-    segments = Skel.find_segments(pred, config, profile)
-=======
+
 
     pred_arr = np.asarray(pred)
     if pred_arr.size == 0 or not np.any(pred_arr >= 0.5):
@@ -68,7 +66,7 @@ def process_prediction_tile(
         print(f"No segments found in tile: {tile_job.tile_id}", flush=True)
         return tile_job, None
 
->>>>>>> Stashed changes
+
     segments = Vec.restore_geoinformation(segments, config, profile)
     stems = Vec.build_stem_parts(segments)
     stems = Vec.connect_stems(stems, config)
@@ -77,15 +75,13 @@ def process_prediction_tile(
         return tile_job, None
 
     Vec.rebuild_endnodes_from_stems(stems)
-<<<<<<< Updated upstream
-    stems = Quant.quantify_stems(stems, pred, profile, config=config)
-=======
+
     stems = Quant.quantify_stems(stems, pred_arr, profile, config=config)
     if not stems:
         print(f"No quantified stems in tile: {tile_job.tile_id}", flush=True)
         return tile_job, None
 
->>>>>>> Stashed changes
+
     gpkg_path = export_tile_results(stems, profile, process_type, output_prefix)
     return tile_job, gpkg_path
 
@@ -179,14 +175,13 @@ class TileVectorExecutor:
     def _handle_result(self, fut):
         tile_job = self.pending.pop(fut)
         tile_job, gpkg_path = fut.result()
-<<<<<<< Updated upstream
-=======
+
 
         if gpkg_path is None:
             self.completed += 1
             return
 
->>>>>>> Stashed changes
+
         processed, self.target_crs = process_tile_gpkg(
             tile_job, gpkg_path, self.raster_profile, self.target_crs)
         if processed is not None:
