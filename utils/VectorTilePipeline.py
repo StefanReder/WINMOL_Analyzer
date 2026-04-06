@@ -252,7 +252,10 @@ class TileVectorExecutor:
         print(f'Total stems written:   {self.total_stems}')
         print(f'Total nodes written:   {self.total_nodes}')
         print(f'Total vectors written: {self.total_vectors}')
-        print(f'Output saved to: {self.output_gpkg}')
+        if os.path.exists(self.output_gpkg):
+            print(f'Output saved to: {self.output_gpkg}')
+        else:
+            print(f'No output GPKG created: {self.output_gpkg} (0 features written)')
 
 
 def process_prediction_tiles(
