@@ -282,10 +282,25 @@ class ImageProcessing:
     def run_stem_pipeline(self, plan):
         self.run_prediction_phase(plan)
     def run_tree_pipeline(self, plan):
+<<<<<<< Updated upstream
         if plan.vector_mode == 'tiled' and plan.prediction_mode in {
             'stream', 'cpu_stream', 'multi_gpu_stream'
         }:
             return self.run_pipelined_tree_pipeline(plan)
+=======
+        overlap_tiled_vector = os.environ.get(
+            'WINMOL_OVERLAP_TILED_VECTOR', ''
+        ).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+        if (
+            overlap_tiled_vector
+            and plan.vector_mode == 'tiled'
+            and plan.prediction_mode in {'stream', 'cpu_stream', 'multi_gpu_stream'}
+        ):
+            print('Using experimental overlapped tiled vector pipeline.')
+            return self.run_pipelined_tree_pipeline(plan)
+
+>>>>>>> Stashed changes
         pred, profile, pred_path = self.run_prediction_phase(plan)
         return self.run_vector_phase(
             plan, pred_path=pred_path, pred=pred, profile=profile)
