@@ -12,7 +12,8 @@ from rasterio.windows import Window
 from classes.Config import Config
 from utils import IO
 from utils.Prediction import _iter_tile_jobs, _prepare_inference_batch, \
-    _resampling_layout, _format_eta
+    _resampling_layout, _format_eta, _split_jobs_for_producers, \
+    describe_prediction_output
 
 
 def _config_from_dict(config_dict: dict) -> Config:
@@ -116,6 +117,7 @@ def prediction_worker(
                 results.put({
                     'row_off': job['dst_row'],
                     'col_off': job['dst_col'],
+                    'pred_row': int(job.get('pred_row', 0)),
                     'array': pred_core,
                     'read_s': read_s / max(len(batch_jobs), 1),
                     'infer_s': infer_s / max(len(batch_jobs), 1),
@@ -130,6 +132,9 @@ def run_multi_gpu_prediction(
     tile_jobs,
     gpu_ids: list[int],
     config,
+    row_ready_callback=None,
+    finalize_output: bool = True,
+    return_tmp_path: bool = False,
 ):
     if not gpu_ids:
         raise ValueError('multi_gpu_prediction requires at least one GPU id')
@@ -143,18 +148,11 @@ def run_multi_gpu_prediction(
         all_jobs = list(_iter_tile_jobs(layout, config)) \
             if tile_jobs is None else list(tile_jobs)
 
-    shards = [[] for _ in gpu_ids]
-    for idx, job in enumerate(all_jobs):
-        shards[idx % len(gpu_ids)].append(job)
+    shards = _split_jobs_for_producers(all_jobs, len(gpu_ids))
+    if len(shards) < len(gpu_ids):
+        shards.extend([[] for _ in range(len(gpu_ids) - len(shards))])
 
-    out_profile = IO.build_safe_prediction_profile(
-        src_profile=profile,
-        width=layout['out_width'],
-        height=layout['out_height'],
-        transform=layout['out_transform'],
-        compress='DEFLATE' if getattr(config, 'compress_output', True)
-        else None,
-    )
+    out_profile, _ = describe_prediction_output(input_raster, config)
     tmp_path = IO.atomic_tmp_path(output_raster)
 
     cfg_dict = dict(getattr(config, 'to_dict', lambda: {})())
@@ -176,6 +174,10 @@ def run_multi_gpu_prediction(
     total_infer_s = 0.0
     total_write_s = 0.0
     progress_interval_s = float(getattr(config, 'progress_interval_s', 20.0))
+    tiles_per_pred_row = max(1, int(layout['x_tiles']))
+    row_counts = np.zeros(int(layout['y_tiles']), dtype=np.int32)
+    ready_pred_row = -1
+    notified_bottom_px = -1
 
     with rasterio.open(tmp_path, 'w', **out_profile) as dst:
         while finished < len(workers):
@@ -196,6 +198,23 @@ def run_multi_gpu_prediction(
             total_write_s += time.perf_counter() - t0
             total_read_s += float(result.get('read_s', 0.0))
             total_infer_s += float(result.get('infer_s', 0.0))
+            pred_row = int(result.get('pred_row', 0))
+            if pred_row < row_counts.shape[0]:
+                row_counts[pred_row] += 1
+            while (
+                ready_pred_row + 1 < row_counts.shape[0]
+                and row_counts[ready_pred_row + 1] >= tiles_per_pred_row
+            ):
+                ready_pred_row += 1
+            if row_ready_callback is not None and ready_pred_row >= 0:
+                ready_bottom_px = min(
+                    int(layout['out_height']),
+                    int(config.overlap_pred // 2
+                        + (ready_pred_row + 1) * layout['img_width_inner']),
+                )
+                if ready_bottom_px > notified_bottom_px:
+                    row_ready_callback(ready_bottom_px, tmp_path, out_profile)
+                    notified_bottom_px = ready_bottom_px
             done += 1
             now = time.monotonic()
             if (
@@ -218,5 +237,10 @@ def run_multi_gpu_prediction(
 
     for p in workers:
         p.join()
-    IO.finalize_raster(tmp_path, output_raster)
+    if row_ready_callback is not None and notified_bottom_px < int(layout['out_height']):
+        row_ready_callback(int(layout['out_height']), tmp_path, out_profile)
+    if finalize_output:
+        IO.finalize_raster(tmp_path, output_raster)
+    if return_tmp_path:
+        return out_profile, tmp_path
     return out_profile

@@ -1,14 +1,11 @@
 #!/usr/bin/env python
 from __future__ import annotations
-
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-
 import tensorflow as tf
-
 from classes.Config import Config
 from classes.ExecutionPlan import build_execution_plan
 from classes.HardwareInfo import HardwareInfo
@@ -20,12 +17,9 @@ from utils import Vectorization as Vec
 from utils import Quantification as Quant
 from utils.PredictWorkers import run_multi_gpu_prediction
 from utils.Tiling import build_tile_grid
-from utils.VectorTilePipeline import process_prediction_tiles
-
+from utils.VectorTilePipeline import TileVectorExecutor, process_prediction_tiles
 print("imports finished")
-
 VALID_PROCESS_TYPES = {'Stems', 'Trees', 'Nodes'}
-
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
@@ -36,8 +30,6 @@ if gpus:
         print(f"Memory growth setup failed: {e}")
 else:
     print("No GPUs found. Running on CPU.")
-
-
 class ImageProcessing:
     def __init__(self, model_path, uav_path, stem_path,
                  trees_path, process_type):
@@ -48,7 +40,6 @@ class ImageProcessing:
         self.trees_path = trees_path
         self.process_type = process_type
         self.config = Config()
-
     def detect_hardware(self):
         hardware = HardwareInfo.detect()
         print(
@@ -59,14 +50,12 @@ class ImageProcessing:
         if hardware.gpu_names:
             print("Visible GPUs:", hardware.gpu_names)
         return hardware
-
     def build_plan(self, hardware=None):
         if hardware is None:
             hardware = self.detect_hardware()
         raster_info = IO.get_raster_info(self.uav_path)
         plan = build_execution_plan(self.config, hardware, raster_info,
                                     self.process_type)
-
         env_stream = os.environ.get('WINMOL_STREAM_PREDICTION', '')\
             .strip().lower() in {'1', 'true', 'yes', 'on'}
         env_tiled_vec = os.environ.get('WINMOL_TILED_VECTOR_PROCESSING', '')\
@@ -76,7 +65,6 @@ class ImageProcessing:
                 else 'cpu_stream'
         if env_tiled_vec and self.process_type != 'Stems':
             plan.vector_mode = 'tiled'
-
         print('Execution plan:')
         print(f"  process_type     = {plan.process_type}")
         print(f"  prediction_mode  = {plan.prediction_mode}")
@@ -95,7 +83,6 @@ class ImageProcessing:
         print(f"  est_pred_tiles   = {plan.estimated_prediction_tiles}")
         self._apply_plan_to_config(plan)
         return plan
-
     def _apply_plan_to_config(self, plan):
         self.config.cpu_workers = plan.vector_inner_workers \
             if plan.vector_mode == 'tiled' \
@@ -106,7 +93,6 @@ class ImageProcessing:
         self.config.producer_queue_batches = plan.producer_queue_batches
         self.config.prediction_producer_workers = plan.producer_workers
         self.config.progress_interval_s = plan.progress_interval_s
-
     def run_prediction_phase(self, plan):
         if plan.prediction_mode == 'full':
             print("\nLoading Model...")
@@ -125,7 +111,6 @@ class ImageProcessing:
                                                              'compress_output',
                                                              True) else None)
             return pred, profile, self.stem_path
-
         if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
             print("\nPerforming multi-GPU streamed prediction...")
             profile = run_multi_gpu_prediction(
@@ -137,7 +122,6 @@ class ImageProcessing:
                 config=self.config,
             )
             return (None, profile, self.stem_path)
-
         print("\nLoading Model...")
         model = IO.load_model_from_path(self.model_path)
         print("\nPerforming Prediction with Resampling in stream mode...")
@@ -148,7 +132,6 @@ class ImageProcessing:
             self.config,
         )
         return (None, profile, self.stem_path)
-
     def trees_processing(self, pred, profile):
         print("\nFinding Stem Segments...")
         segments = Skel.find_segments(pred, self.config, profile)
@@ -163,7 +146,90 @@ class ImageProcessing:
         print("\nQuantifying Stems...")
         stems = Quant.quantify_stems(stems, pred, profile, config=self.config)
         return stems
-
+    def run_pipelined_tree_pipeline(self, plan):
+        print("\nRunning overlapped streamed prediction + tiled vector processing...")
+        work_dir = tempfile.mkdtemp(
+            prefix='winmol_tiles_',
+            dir=os.path.dirname(self.trees_path) or None)
+        output_gpkg = self.trees_path if self.trees_path.lower().endswith(
+            '.gpkg') else f"{self.trees_path}.gpkg"
+        tmp_pred_path = IO.atomic_tmp_path(self.stem_path)
+        out_profile, _ = Pred.describe_prediction_output(self.uav_path, self.config)
+        jobs = build_tile_grid(
+            out_profile['width'],
+            out_profile['height'],
+            plan.tile_inner_px,
+            plan.halo_px,
+        )
+        ordered_jobs = sorted(jobs, key=lambda job: (job.hy1, job.hy0, job.hx0))
+        release_idx = 0
+        executor = TileVectorExecutor(
+            pred_raster_path=tmp_pred_path,
+            raster_profile=out_profile,
+            config=self.config,
+            process_type=self.process_type,
+            output_dir=work_dir,
+            output_gpkg=output_gpkg,
+            tile_workers=max(1, int(plan.vector_tile_workers or 1)),
+            keep_temp=plan.keep_temp,
+        )
+        def release_ready_jobs(ready_bottom_px, pred_raster_path, raster_profile):
+            nonlocal release_idx
+            executor.pred_raster_path = pred_raster_path
+            executor.raster_profile = raster_profile
+            while (
+                release_idx < len(ordered_jobs)
+                and int(ordered_jobs[release_idx].hy1) <= int(ready_bottom_px)
+            ):
+                executor.submit(ordered_jobs[release_idx])
+                release_idx += 1
+            executor.poll(block=False)
+        try:
+            if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
+                _, pred_tmp_path = run_multi_gpu_prediction(
+                    self.model_path,
+                    self.uav_path,
+                    self.stem_path,
+                    tile_jobs=None,
+                    gpu_ids=list(range(plan.gpu_workers)),
+                    config=self.config,
+                    row_ready_callback=release_ready_jobs,
+                    finalize_output=False,
+                    return_tmp_path=True,
+                )
+            else:
+                print("\nLoading Model...")
+                model = IO.load_model_from_path(self.model_path)
+                print("\nPerforming Prediction with Resampling in stream mode...")
+                _, pred_tmp_path = Pred.predict_stream_to_raster(
+                    self.uav_path,
+                    self.stem_path,
+                    model,
+                    self.config,
+                    row_ready_callback=release_ready_jobs,
+                    finalize_output=False,
+                    return_tmp_path=True,
+                )
+            executor.pred_raster_path = pred_tmp_path
+            while release_idx < len(ordered_jobs):
+                executor.submit(ordered_jobs[release_idx])
+                release_idx += 1
+            executor.drain()
+            IO.finalize_raster(pred_tmp_path, self.stem_path)
+            return output_gpkg
+        except Exception:
+            try:
+                if os.path.exists(tmp_pred_path):
+                    os.remove(tmp_pred_path)
+            except Exception:
+                pass
+            raise
+        finally:
+            executor.close()
+            if plan.keep_temp:
+                print(f"Keeping tile work directory: {work_dir}")
+            else:
+                shutil.rmtree(work_dir, ignore_errors=True)
     def run_vector_phase(self, plan, pred_path=None, pred=None, profile=None):
         if plan.vector_mode == 'global':
             if pred is None or profile is None:
@@ -186,31 +252,24 @@ class ImageProcessing:
                                    raster_info['height'],
                                    plan.tile_inner_px,
                                    plan.halo_px)
-            tile_paths = []
-            for job in jobs:
-                pred_tile, tile_profile = IO.load_raster_window_with_profile(
-                    pred_path or self.stem_path, job.halo_window)
-                tile_path = os.path.join(
-                    work_dir, f"{job.tile_id}_roi_stem_map.tif")
-                IO.write_tile_raster(pred_tile, tile_profile, tile_path)
-                tile_paths.append(tile_path)
-            process_prediction_tiles(
-                tile_paths,
-                self.config,
-                self.process_type,
-                work_dir,
-                plan.cpu_workers,
+            output_gpkg = self.trees_path if self.trees_path.lower().endswith(
+                '.gpkg') else f"{self.trees_path}.gpkg"
+            return process_prediction_tiles(
+                pred_raster_path=pred_path or self.stem_path,
+                tile_jobs=jobs,
+                raster_profile=raster_info,
+                config=self.config,
+                process_type=self.process_type,
+                output_dir=work_dir,
+                output_gpkg=output_gpkg,
+                cpu_workers=plan.cpu_workers,
+                keep_temp=plan.keep_temp,
             )
-            merged = self.run_merge_phase(plan, work_dir)
+        finally:
             if plan.keep_temp:
                 print(f"Keeping tile work directory: {work_dir}")
             else:
                 shutil.rmtree(work_dir, ignore_errors=True)
-            return merged
-        except Exception:
-            if not plan.keep_temp:
-                shutil.rmtree(work_dir, ignore_errors=True)
-            raise
 
     def run_merge_phase(self, plan, work_dir):
         out_path = self.trees_path if self.trees_path.lower().endswith(
@@ -220,15 +279,16 @@ class ImageProcessing:
             output_gpkg=out_path,
             edge_buffer_m=plan.tile_overlap_m,
         )
-
     def run_stem_pipeline(self, plan):
         self.run_prediction_phase(plan)
-
     def run_tree_pipeline(self, plan):
+        if plan.vector_mode == 'tiled' and plan.prediction_mode in {
+            'stream', 'cpu_stream', 'multi_gpu_stream'
+        }:
+            return self.run_pipelined_tree_pipeline(plan)
         pred, profile, pred_path = self.run_prediction_phase(plan)
         return self.run_vector_phase(
             plan, pred_path=pred_path, pred=pred, profile=profile)
-
     def check_DL_env(self):
         def get_nvidia_driver_version():
             try:
@@ -243,7 +303,6 @@ class ImageProcessing:
                     print("Failed to retrieve NVIDIA driver version.")
             except FileNotFoundError:
                 print("No NVIDIA GPU available or drivers not installed.")
-
         get_nvidia_driver_version()
         try:
             physical_devices = tf.config.list_physical_devices('GPU')
@@ -258,7 +317,6 @@ class ImageProcessing:
             print("Keras version:", tf.keras.__version__)
         except Exception as e:
             print("Tensorflow error: ", e)
-
     def display_starting_text(self):
         print("Check CUDA environment")
         self.check_DL_env()
@@ -270,7 +328,6 @@ class ImageProcessing:
         if self.trees_path:
             print("Detected Wind-thrown Trees Path:", self.trees_path)
         self.config.display()
-
     def main(self):
         hardware = self.detect_hardware()
         plan = self.build_plan(hardware)
@@ -278,8 +335,6 @@ class ImageProcessing:
             self.run_stem_pipeline(plan)
         else:
             self.run_tree_pipeline(plan)
-
-
 if __name__ == '__main__':
     if len(sys.argv) != 6:
         print("""Usage:
@@ -287,7 +342,6 @@ if __name__ == '__main__':
                                      <output_prefix> <Stems|Trees|Nodes>""")
         print(f"Received {len(sys.argv) - 1} arguments: {sys.argv[1:]}")
         sys.exit(2)
-
     tt = Timer()
     tt.start()
     print("Start timer")
@@ -296,17 +350,14 @@ if __name__ == '__main__':
     stem_path = str(sys.argv[3])
     trees_path = str(sys.argv[4])
     process_type = str(sys.argv[5])
-
     valid_process_types = {"Stems", "Trees", "Nodes"}
     if process_type not in valid_process_types:
         print(f"Invalid process type: {process_type}")
         print(f"Allowed values: {sorted(valid_process_types)}")
         sys.exit(2)
-
     image_processor = ImageProcessing(
         model_path, uav_path, stem_path, trees_path, process_type)
     image_processor.display_starting_text()
     image_processor.main()
-
     print("Stop timer")
     tt.stop()

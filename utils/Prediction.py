@@ -77,6 +77,8 @@ def _iter_tile_jobs(layout, config):
             dst_col = config.overlap_pred // 2 + j * core
             yield {
                 'tile_index': tile_index,
+                'pred_row': i,
+                'pred_col': j,
                 'src_row': src_row,
                 'src_col': src_col,
                 'src_width': src_width,
@@ -423,7 +425,48 @@ def _split_jobs_for_producers(jobs, producer_workers: int):
     workers = max(1, int(producer_workers))
     if workers <= 1 or len(jobs) <= 1:
         return [jobs]
-    return [jobs[idx::workers] for idx in range(workers) if jobs[idx::workers]]
+
+    rows = []
+    current_row = None
+    current_jobs = []
+    for job in jobs:
+        pred_row = int(job.get('pred_row', 0))
+        if current_row is None or pred_row == current_row:
+            current_jobs.append(job)
+            current_row = pred_row
+            continue
+        rows.append(current_jobs)
+        current_jobs = [job]
+        current_row = pred_row
+    if current_jobs:
+        rows.append(current_jobs)
+
+    if workers >= len(rows):
+        return rows
+
+    rows_per_worker = max(1, int(np.ceil(len(rows) / workers)))
+    out = []
+    for idx in range(0, len(rows), rows_per_worker):
+        shard = []
+        for row_jobs in rows[idx:idx + rows_per_worker]:
+            shard.extend(row_jobs)
+        if shard:
+            out.append(shard)
+    return out
+
+
+def describe_prediction_output(uav_path: str, config):
+    with rasterio.open(uav_path) as src:
+        profile = src.profile.copy()
+        layout = _resampling_layout((src.height, src.width), profile, config)
+    out_profile = IO.build_safe_prediction_profile(
+        src_profile=profile,
+        width=layout['out_width'],
+        height=layout['out_height'],
+        transform=layout['out_transform'],
+        compress='DEFLATE' if getattr(config, 'compress_output', True) else None,
+    )
+    return out_profile, layout
 
 
 def predict_stream_to_raster(
@@ -432,6 +475,9 @@ def predict_stream_to_raster(
     model,
     config,
     tile_jobs=None,
+    row_ready_callback=None,
+    finalize_output: bool = True,
+    return_tmp_path: bool = False,
 ):
     t = Timer()
     t.start()
@@ -441,18 +487,8 @@ def predict_stream_to_raster(
 
     os.makedirs(os.path.dirname(output_stem_map) or '.', exist_ok=True)
 
-    with rasterio.open(uav_path) as src:
-        profile = src.profile.copy()
-        layout = _resampling_layout((src.height, src.width), profile, config)
-
-    out_profile = IO.build_safe_prediction_profile(
-        src_profile=profile,
-        width=layout['out_width'],
-        height=layout['out_height'],
-        transform=layout['out_transform'],
-        compress='DEFLATE' if getattr(
-            config, 'compress_output', True) else None,
-    )
+    out_profile, layout = describe_prediction_output(uav_path, config)
+    profile = out_profile
 
     total_tiles = layout['x_tiles'] * layout['y_tiles']
     initial_batch_size = max(1, int(getattr(
@@ -498,6 +534,10 @@ def predict_stream_to_raster(
     active_batch_size = initial_batch_size
     pending_items = []
     finished_producers = 0
+    tiles_per_pred_row = max(1, int(layout['x_tiles']))
+    row_counts = np.zeros(int(layout['y_tiles']), dtype=np.int32)
+    ready_pred_row = -1
+    notified_bottom_px = -1
 
     for producer in producers:
         producer.start()
@@ -571,6 +611,27 @@ def predict_stream_to_raster(
                 done += 1
             total_write_s += write_batch_s
 
+            for job, _, _ in items:
+                pred_row = int(job.get('pred_row', 0))
+                if pred_row < row_counts.shape[0]:
+                    row_counts[pred_row] += 1
+
+            while (
+                ready_pred_row + 1 < row_counts.shape[0]
+                and row_counts[ready_pred_row + 1] >= tiles_per_pred_row
+            ):
+                ready_pred_row += 1
+
+            if row_ready_callback is not None and ready_pred_row >= 0:
+                ready_bottom_px = min(
+                    int(layout['out_height']),
+                    int(config.overlap_pred // 2
+                        + (ready_pred_row + 1) * layout['img_width_inner']),
+                )
+                if ready_bottom_px > notified_bottom_px:
+                    row_ready_callback(ready_bottom_px, tmp_path, out_profile)
+                    notified_bottom_px = ready_bottom_px
+
             now = time.monotonic()
             if (
                 done == 1
@@ -606,12 +667,19 @@ def predict_stream_to_raster(
         producer.join()
         if producer.error is not None:
             raise producer.error
-    IO.finalize_raster(tmp_path, output_stem_map)
+
+    if row_ready_callback is not None and notified_bottom_px < int(layout['out_height']):
+        row_ready_callback(int(layout['out_height']), tmp_path, out_profile)
+
+    if finalize_output:
+        IO.finalize_raster(tmp_path, output_stem_map)
 
     print(total_tiles, " tiles analyzed")
     t.stop()
     print("#######################################################")
     print("")
+    if return_tmp_path:
+        return out_profile, tmp_path
     return out_profile
 
 

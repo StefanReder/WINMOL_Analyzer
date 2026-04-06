@@ -149,7 +149,7 @@ def write_tile_raster(pred_tile, tile_profile, output_path: str):
         width=pred_tile.shape[1],
         height=pred_tile.shape[0],
         transform=tile_profile['transform'],
-        compress=None,
+        compress='DEFLATE',
     )
     with rasterio.open(output_path, 'w', **prof) as dst:
         dst.write(pred_tile.astype(np.float32), 1)
@@ -709,7 +709,7 @@ def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
 def _write_layers_to_temp_gpkg(  # noqa: C901
     layers, crs, final_path: str) \
         -> str:
-    tmp_dir = tempfile.mkdtemp(prefix="winmol_gpkg_")
+    tmp_dir = tempfile.mkdtemp(prefix="winmol_gpkg_", dir=str(Path(final_path).parent or '.'))
     tmp_path = str(Path(tmp_dir) / (Path(final_path).stem + ".gpkg"))
 
     def _prep(name, gdf):
@@ -816,6 +816,84 @@ def write_all_layers_to_gpkg(stems, profile, path_prefix):
     )
     print("Geopackage written to temporary file:", tmp_path)
     return _safe_finalize_gpkg(tmp_path, final_path)
+
+
+def append_layers_to_gpkg(layers, crs, final_path: str) -> str:
+    prepared = []
+    for name, gdf in layers:
+        if gdf is None:
+            continue
+        gdf = _drop_bad_geoms(_normalize_dtypes(gdf))
+        if gdf is None or gdf.empty:
+            continue
+        if crs is not None:
+            try:
+                if gdf.crs is None or gdf.crs != crs:
+                    gdf = gdf.set_crs(crs, allow_override=True)
+            except Exception:
+                try:
+                    gdf = gdf.set_crs(crs, allow_override=True)
+                except Exception:
+                    pass
+        prepared.append((name, gdf))
+
+    if not prepared:
+        return final_path
+
+    os.makedirs(os.path.dirname(final_path) or '.', exist_ok=True)
+    exists = os.path.exists(final_path)
+
+    if _HAVE_PYOGRIO:
+        for idx, (name, gdf) in enumerate(prepared):
+            pyogrio.write_dataframe(
+                gdf,
+                final_path,
+                layer=name,
+                driver='GPKG',
+                append=(exists or idx > 0),
+            )
+        return final_path
+
+    for idx, (name, gdf) in enumerate(prepared):
+        _fiona_write_layer(
+            final_path,
+            name,
+            gdf,
+            crs=crs,
+            append=(exists or idx > 0),
+        )
+    return final_path
+
+
+def tile_filter_geom_from_job(tile_job, raster_profile):
+    bounds = rasterio.windows.bounds(tile_job.inner_window,
+                                     raster_profile['transform'])
+    return box(*bounds), raster_profile.get('crs')
+
+
+def process_tile_gpkg(tile_job, gpkg_path, raster_profile, target_crs=None):
+    tile_id = _tile_id_from_prefix(tile_job.tile_id)
+    filter_geom, raster_crs = tile_filter_geom_from_job(tile_job, raster_profile)
+
+    stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
+    if stems is None or stems.empty:
+        return None, (target_crs or raster_crs)
+
+    if target_crs is None:
+        target_crs = stems.crs or raster_crs
+
+    stems = _ensure_crs(stems, target_crs)
+    nodes = _ensure_crs(nodes, target_crs)
+    vectors = _ensure_crs(vectors, target_crs)
+
+    stems, kept_local = _globalize_stems(stems, tile_id, filter_geom)
+    if stems.empty:
+        return None, target_crs
+
+    nodes_sel = _select_child(nodes, tile_id, kept_local)
+    vectors_sel = _select_child(vectors, tile_id, kept_local)
+    counts = (len(stems), len(nodes_sel), len(vectors_sel))
+    return (stems, nodes_sel, vectors_sel, counts), target_crs
 
 
 def save_image(data, output_name, size=(15, 15), dpi=300):
