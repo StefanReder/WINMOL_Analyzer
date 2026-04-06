@@ -228,7 +228,8 @@ class TileVectorExecutor:
             or (now - self.last_report) >= self.progress_interval_s
         ):
             rate = self.completed / max(now - self.start, 1e-9)
-            eta = ((self.submitted - self.completed) / rate) if rate > 0 else float('inf')
+            eta = ((self.submitted - self.completed) / rate) \
+                if rate > 0 else float('inf')
             print(
                 f"Vector tiles {self.completed}/{self.submitted} | "
                 f"{rate * 60:.2f} tiles/min | ETA {eta / 60:.1f} min",
@@ -255,7 +256,9 @@ class TileVectorExecutor:
         if os.path.exists(self.output_gpkg):
             print(f'Output saved to: {self.output_gpkg}')
         else:
-            print(f'No output GPKG created: {self.output_gpkg} (0 features written)')
+            print(
+                f'No output GPKG created: {self.output_gpkg}'
+                f' (0 features written)')
 
 
 def process_prediction_tiles(
