@@ -8,37 +8,38 @@ import subprocess
 import sys
 import tempfile
 
-import tensorflow as tf
-
 from classes.Config import Config
 from classes.ExecutionPlan import build_execution_plan
 from classes.HardwareInfo import HardwareInfo
 from classes.Timer import Timer
 from utils import IO
-from utils import Prediction as Pred
 from utils import Skeletonization as Skel
 from utils import Vectorization as Vec
 from utils import Quantification as Quant
-from utils.PredictWorkers import run_multi_gpu_prediction
 from utils.Tiling import build_tile_grid, meters_to_pixels
-from utils.VectorTilePipeline import process_prediction_tiles
-from utils.GridVectorPipeline import run_binary_grid_pipeline
-from utils.StripePredictionPipeline import run_stripe_binary_pipeline
-
-print("imports finished")
 
 VALID_PROCESS_TYPES = {'Stems', 'Trees', 'Nodes'}
 
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        print(f"Enabled memory growth for {len(gpus)} GPU(s).")
-    except RuntimeError as e:
-        print(f"Memory growth setup failed: {e}")
-else:
-    print("No GPUs found. Running on CPU.")
+
+def _import_tensorflow():
+    import tensorflow as tf
+    return tf
+
+
+def _configure_tensorflow_runtime():
+    tf = _import_tensorflow()
+    print("imports finished")
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"Enabled memory growth for {len(gpus)} GPU(s).")
+        except RuntimeError as e:
+            print(f"Memory growth setup failed: {e}")
+    else:
+        print("No GPUs found. Running on CPU.")
+    return tf
 
 
 class ImageProcessing:
@@ -136,6 +137,7 @@ class ImageProcessing:
 
     def run_prediction_phase(self, plan):
         if plan.prediction_mode == 'full':
+            from utils import Prediction as Pred
             print("\nLoading Model...")
             model = IO.load_model_from_path(self.model_path)
             print("\nLoading Orthomosaic Image...")
@@ -154,6 +156,8 @@ class ImageProcessing:
             return pred, profile, self.stem_path
 
         if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
+            from utils.PredictWorkers import run_multi_gpu_prediction
+
             print("\nPerforming multi-GPU streamed prediction...")
             profile = run_multi_gpu_prediction(
                 self.model_path,
@@ -164,6 +168,8 @@ class ImageProcessing:
                 config=self.config,
             )
             return (None, profile, self.stem_path)
+
+        from utils import Prediction as Pred
 
         print("\nLoading Model...")
         model = IO.load_model_from_path(self.model_path)
@@ -192,6 +198,8 @@ class ImageProcessing:
         return stems
 
     def run_grid_binary_tree_pipeline(self, plan):
+        from utils.GridVectorPipeline import run_binary_grid_pipeline
+
         print("\nLoading Model...")
         model = IO.load_model_from_path(self.model_path)
         print("\nRunning binary coarse-grid prediction/vector pipeline...")
@@ -205,6 +213,8 @@ class ImageProcessing:
         )
 
     def run_stripe_binary_tree_pipeline(self, plan):
+        from utils.StripePredictionPipeline import run_stripe_binary_pipeline
+
         print("\nLoading Model...")
         model = IO.load_model_from_path(self.model_path)
         print("\nRunning binary stripe prediction/vector pipeline...")
@@ -252,6 +262,8 @@ class ImageProcessing:
                     work_dir, f"{job.tile_id}_roi_stem_map.tif")
                 IO.write_tile_raster(pred_tile, tile_profile, tile_path)
                 tile_paths.append(tile_path)
+            from utils.VectorTilePipeline import process_prediction_tiles
+
             process_prediction_tiles(
                 tile_paths,
                 self.config,
@@ -302,6 +314,8 @@ class ImageProcessing:
             plan, pred_path=pred_path, pred=pred, profile=profile)
 
     def check_DL_env(self):
+        tf = _import_tensorflow()
+
         def get_nvidia_driver_version():
             try:
                 result = subprocess.run(
@@ -360,6 +374,7 @@ if __name__ == '__main__':
         print(f"Received {len(sys.argv) - 1} arguments: {sys.argv[1:]}")
         sys.exit(2)
 
+    _configure_tensorflow_runtime()
     tt = Timer()
     tt.start()
     print("Start timer")

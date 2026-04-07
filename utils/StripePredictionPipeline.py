@@ -120,6 +120,46 @@ def _job_row_range(job):
 
 
 
+def _read_prediction_row_strip(src, row_jobs, indexes):
+    if not row_jobs:
+        return None
+    src_row0 = min(int(job['src_row']) for job in row_jobs)
+    src_row1 = max(int(job['src_row']) + int(job['src_height']) for job in row_jobs)
+    src_col0 = min(int(job['src_col']) for job in row_jobs)
+    src_col1 = max(int(job['src_col']) + int(job['src_width']) for job in row_jobs)
+    window = Window(
+        col_off=src_col0,
+        row_off=src_row0,
+        width=max(1, src_col1 - src_col0),
+        height=max(1, src_row1 - src_row0),
+    )
+    t0 = time.perf_counter()
+    arr = src.read(indexes, window=window, boundless=True, fill_value=0).transpose(1, 2, 0)
+    gdal_mask = src.read_masks(1, window=window, boundless=True) > 0
+    read_s = time.perf_counter() - t0
+    return {
+        'src_row0': int(src_row0),
+        'src_col0': int(src_col0),
+        'arr': arr,
+        'gdal_mask': gdal_mask,
+        'read_s': read_s,
+    }
+
+
+
+def _slice_prediction_job_from_row_strip(row_strip, job):
+    r0 = int(job['src_row']) - int(row_strip['src_row0'])
+    c0 = int(job['src_col']) - int(row_strip['src_col0'])
+    h = int(job['src_height'])
+    w = int(job['src_width'])
+    tile = row_strip['arr'][r0:r0 + h, c0:c0 + w, :]
+    gdal_mask = row_strip['gdal_mask'][r0:r0 + h, c0:c0 + w]
+    pixel_mask = np.any(tile != 0, axis=2)
+    valid_mask = pixel_mask if np.all(gdal_mask) else (gdal_mask & pixel_mask)
+    return tile, valid_mask
+
+
+
 def _paste_core_to_stripe(stripe, pred_job, pred_core, out_width):
     job_r0 = int(pred_job['dst_row'])
     job_c0 = int(pred_job['dst_col'])
@@ -306,25 +346,19 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
         indexes = list(range(1, min(config.n_channels, src.count) + 1))
         for dst_row, row_jobs in _row_groups(pred_jobs):
             row_t0 = time.monotonic()
+            row_strip = _read_prediction_row_strip(src, row_jobs, indexes)
+            total_read_s += float(row_strip['read_s'])
             for start_idx in range(0, len(row_jobs), batch_size):
                 batch_jobs = row_jobs[start_idx:start_idx + batch_size]
                 raw_tiles = []
                 raw_masks = []
-                read_s = 0.0
                 for job in batch_jobs:
-                    t0 = time.perf_counter()
-                    window = Window(job['src_col'], job['src_row'], job['src_width'], job['src_height'])
-                    tile = src.read(indexes, window=window, boundless=True, fill_value=0).transpose(1, 2, 0)
-                    gdal_mask = src.read_masks(1, window=window, boundless=True) > 0
-                    pixel_mask = np.any(tile != 0, axis=2)
-                    valid_mask = pixel_mask if np.all(gdal_mask) else (gdal_mask & pixel_mask)
-                    read_s += time.perf_counter() - t0
+                    tile, valid_mask = _slice_prediction_job_from_row_strip(row_strip, job)
                     raw_tiles.append(tile)
                     raw_masks.append(valid_mask)
                 infer0 = time.perf_counter()
                 pred_cores = Pred._predict_batch_core(raw_tiles, raw_masks, model, config)
                 infer_s = time.perf_counter() - infer0
-                total_read_s += read_s
                 total_infer_s += infer_s
                 for job, pred_core in zip(batch_jobs, pred_cores):
                     # keep at most current and next stripe active; activate one look-ahead when needed
@@ -333,6 +367,7 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                         if stripe['arr'] is None:
                             _activate_stripe(stripe, out_profile)
                         _paste_core_to_stripe(stripe, job, pred_core, int(out_profile['width']))
+            row_strip = None
             row_elapsed = time.monotonic() - row_t0
             pending_pred_s += row_elapsed
             rows_done += 1

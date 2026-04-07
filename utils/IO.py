@@ -20,9 +20,6 @@ try:
 except Exception:
     pyogrio = None
     _HAVE_PYOGRIO = False
-from tensorflow import keras
-from tensorflow.keras import layers
-from tensorflow.keras.utils import get_custom_objects
 from matplotlib import pyplot as plt
 from rasterio.enums import Resampling
 from shapely.geometry import LineString, Point, box
@@ -185,6 +182,10 @@ def load_raster_window_with_profile(path: str, window):
 
 
 def load_model_from_path(model_path):
+    from tensorflow import keras
+    from tensorflow.keras import layers
+    from tensorflow.keras.utils import get_custom_objects
+
     # Function to open the model with a fallback mechanism
     def custom_dropout(**kwargs):
         if 'seed' in kwargs and isinstance(kwargs['seed'], float):
