@@ -53,23 +53,13 @@ def quantify_stems(stems: List[Stem], pred, profile, config=None):
 
     print("#######################################################")
     print("Quantifying stems")
-<<<<<<< Updated upstream
-
-    if not stems:
-        print("0  measurements of diameters where conducted")
-=======
     if not stems:
         print("0 measurements of diameters where conducted")
->>>>>>> Stashed changes
         print("Volume of  0  stems calculated")
         t.stop()
         print("#######################################################")
         print("")
         return []
-<<<<<<< Updated upstream
-
-=======
->>>>>>> Stashed changes
     stems = get_diameters(stems, pred, profile, config=config)
     workers = min(_worker_count(config), max(len(stems), 1))
     if workers <= 1 or len(stems) <= 1:
