@@ -1,19 +1,13 @@
 from __future__ import annotations
 
 import concurrent.futures as cf
-<<<<<<< Updated upstream
-=======
 import heapq
->>>>>>> Stashed changes
 import math
 import multiprocessing as mp
 import os
 import tempfile
 import time
-<<<<<<< Updated upstream
-=======
 from statistics import median
->>>>>>> Stashed changes
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -23,25 +17,6 @@ from rasterio.windows import Window
 from classes.Config import Config
 from utils import IO
 from utils import Prediction as Pred
-<<<<<<< Updated upstream
-import utils.Quantification as Quant
-import utils.Skeletonization as Skel
-import utils.Vectorization as Vec
-from utils.Tiling import build_tile_grid, meters_to_pixels, tile_profile_from_parent
-from utils.VectorTilePipeline import process_prediction_array_to_gpkg
-
-
-def _config_from_dict(config_dict: dict) -> Config:
-    cfg = Config()
-    for key, value in config_dict.items():
-        try:
-            setattr(cfg, key, value)
-        except Exception:
-            pass
-    return cfg
-
-
-=======
 from utils.Tiling import (
     TileJob,
     build_tile_grid,
@@ -51,7 +26,6 @@ from utils.Tiling import (
 from utils.VectorTilePipeline import process_prediction_array_to_gpkg
 
 
->>>>>>> Stashed changes
 def _prediction_core_step(config) -> int:
     return int(config.img_width - config.overlap_pred)
 
@@ -229,23 +203,6 @@ def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config):
     return tile_arr, tile_profile, stats
 
 
-<<<<<<< Updated upstream
-
-
-def _wait_one(pending):
-    done, _ = cf.wait([f for _, f in pending], return_when=cf.FIRST_COMPLETED)
-    completed = []
-    remaining = []
-    for item in pending:
-        if item[1] in done:
-            completed.append(item)
-        else:
-            remaining.append(item)
-    return completed, remaining
-
-
-=======
->>>>>>> Stashed changes
 def _inner_slice(tile_job):
     row0 = int(tile_job.y0 - tile_job.hy0)
     col0 = int(tile_job.x0 - tile_job.hx0)
@@ -254,8 +211,6 @@ def _inner_slice(tile_job):
     return row0, row1, col0, col1
 
 
-<<<<<<< Updated upstream
-=======
 def _ema(prev, value, alpha):
     value = float(value)
     if prev is None:
@@ -470,7 +425,6 @@ def _current_queue_limit(config, worker_target):
     return max(base, int(math.ceil(mult * max(1, worker_target))))
 
 
->>>>>>> Stashed changes
 def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_type, config):
     if process_type == 'Stems':
         raise ValueError('Grid vector pipeline is only for Trees/Nodes')
@@ -511,16 +465,6 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     tmp_stem_path = IO.atomic_tmp_path(stem_path)
     keep_temp = bool(getattr(config, 'keep_temp_tiles', False))
 
-<<<<<<< Updated upstream
-    vector_workers = max(1, int(getattr(config, 'grid_vector_workers', 1) or 1))
-    inflight_limit = max(vector_workers, int(getattr(config, 'grid_inflight_tiles', 2) or 2))
-    progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
-    cfg_dict = dict(getattr(config, 'to_dict', lambda: {})())
-    spawn_ctx = mp.get_context('spawn')
-
-    pending = []
-    tile_outputs = []
-=======
     min_workers = max(1, int(getattr(config, 'grid_vector_workers_min', 1) or 1))
     max_workers = max(min_workers, int(getattr(config, 'grid_vector_workers_max', getattr(config, 'grid_vector_workers', 2)) or 2))
     progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
@@ -533,24 +477,12 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     tile_outputs = []
     nonzero_history: List[int] = []
     target_crs_box = [None]
->>>>>>> Stashed changes
     start = time.monotonic()
     last_report = start
     total_read_s = 0.0
     total_infer_s = 0.0
     predicted_tiles = 0
     submitted_tiles = 0
-<<<<<<< Updated upstream
-
-    with rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
-            cf.ProcessPoolExecutor(max_workers=vector_workers,
-                                   mp_context=spawn_ctx) as pool:
-        for idx, grid_job in enumerate(grid_jobs, start=1):
-            tile_arr, tile_profile, stats = _predict_binary_grid_tile(
-                uav_path, model, grid_job, jobs_by_grid.get(grid_job.tile_id, []), config)
-            total_read_s += float(stats.get('read_s', 0.0))
-            total_infer_s += float(stats.get('infer_s', 0.0))
-=======
     submitted_jobs = 0
     split_tiles = 0
     sequence = 0
@@ -570,34 +502,11 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 uav_path, model, grid_job, jobs_by_grid.get(grid_job.tile_id, []), config)
             total_read_s += float(pred_stats.get('read_s', 0.0))
             total_infer_s += float(pred_stats.get('infer_s', 0.0))
->>>>>>> Stashed changes
 
             r0, r1, c0, c1 = _inner_slice(grid_job)
             inner_arr = np.ascontiguousarray(tile_arr[r0:r1, c0:c1], dtype=np.uint8)
             dst.write(inner_arr, 1, window=grid_job.inner_window)
             predicted_tiles += 1
-<<<<<<< Updated upstream
-
-            if np.any(tile_arr):
-                output_prefix = os.path.join(work_dir, grid_job.tile_id)
-                future = pool.submit(
-                    process_prediction_array_to_gpkg,
-                    tile_arr,
-                    tile_profile,
-                    cfg_dict,
-                    process_type,
-                    output_prefix,
-                )
-                pending.append((grid_job, future))
-                submitted_tiles += 1
-
-            while len(pending) >= inflight_limit:
-                completed, pending = _wait_one(pending)
-                for done_job, fut in completed:
-                    gpkg_path = fut.result()
-                    if gpkg_path is not None:
-                        tile_outputs.append((done_job, gpkg_path))
-=======
             stats['pred_tile_ema'] = _ema(stats['pred_tile_ema'], time.monotonic() - tile_t0, alpha)
 
             fg_count, _ = _tile_complexity(tile_arr, grid_job, use_inner=True)
@@ -642,39 +551,23 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 )
                 worker_target = _current_worker_target(config, stats)
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
->>>>>>> Stashed changes
 
             now = time.monotonic()
             if idx == 1 or idx == len(grid_jobs) or (now - last_report) >= progress_interval_s:
                 elapsed = max(now - start, 1e-9)
                 rate = idx / elapsed
                 eta_s = (len(grid_jobs) - idx) / rate if rate > 0 else float('inf')
-<<<<<<< Updated upstream
-=======
                 dense_cutoff = _dense_threshold(nonzero_history, config)
->>>>>>> Stashed changes
                 print(
                     f'Grid tiles predicted {idx}/{len(grid_jobs)} | {idx / len(grid_jobs):.1%} | '
                     f'{rate * 60:.2f} tiles/min | ETA {Pred._format_eta(eta_s)} | '
                     f'avg read {total_read_s / max(idx, 1):.3f}s infer {total_infer_s / max(idx, 1):.3f}s | '
-<<<<<<< Updated upstream
-                    f'pending vector {len(pending)}',
-=======
                     f'workers {worker_target}/{max_workers} | pending {len(pending)} | queued {len(waiting_heap)} | '
                     f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles}',
->>>>>>> Stashed changes
                     flush=True,
                 )
                 last_report = now
 
-<<<<<<< Updated upstream
-        while pending:
-            completed, pending = _wait_one(pending)
-            for done_job, fut in completed:
-                gpkg_path = fut.result()
-                if gpkg_path is not None:
-                    tile_outputs.append((done_job, gpkg_path))
-=======
         while waiting_heap or pending:
             worker_target = _current_worker_target(config, stats)
             _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
@@ -692,7 +585,6 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 )
             elif waiting_heap:
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
->>>>>>> Stashed changes
 
     IO.finalize_raster(tmp_stem_path, stem_path)
 
@@ -719,11 +611,8 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     print('GRID PIPELINE SUMMARY')
     print(f'Grid tiles predicted:  {predicted_tiles}')
     print(f'Grid tiles submitted:  {submitted_tiles}')
-<<<<<<< Updated upstream
-=======
     print(f'Vector jobs completed: {stats["completed_jobs"]}')
     print(f'Dense tiles split:     {split_tiles}')
->>>>>>> Stashed changes
     print(f'Tile temp directory:   {work_dir}')
 
     if not keep_temp:

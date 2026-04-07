@@ -111,8 +111,6 @@ class ImageProcessing:
         self.config.producer_queue_batches = plan.producer_queue_batches
         self.config.prediction_producer_workers = plan.producer_workers
         self.config.progress_interval_s = plan.progress_interval_s
-        self.config.grid_vector_workers = max(1, int(plan.vector_tile_workers or 1))
-        self.config.grid_inflight_tiles = max(2, self.config.grid_vector_workers)
 
         cpu_total = max(1, int(plan.cpu_workers or 1))
         grid_min = max(1, int(getattr(self.config, 'grid_vector_workers_min', 1) or 1))

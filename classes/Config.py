@@ -53,10 +53,6 @@ class Config(object):
     grid_pipeline = True
     grid_inner_m = 250.0
     grid_halo_m = 12.0
-<<<<<<< Updated upstream
-    grid_inflight_tiles = 2
-    grid_vector_workers = 1
-=======
     grid_inflight_tiles = 6
     grid_vector_workers = 2
     grid_vector_workers_min = 1
@@ -72,7 +68,6 @@ class Config(object):
     grid_dense_split_min_fg = 12000
     grid_dense_split_min_samples = 4
     grid_dense_split_max_depth = 1
->>>>>>> Stashed changes
 
     # semantic segmentation
     tile_size = 15
