@@ -47,9 +47,11 @@ class Config(object):
     legacy_full_array_threshold_gb = 8.0
     compress_output = True
 
-    # binary stem-map / coarse grid pipeline
+    # binary stem-map / stripe + coarse-grid vector pipeline
     stem_map_binary = True
     stem_binary_threshold = 0.5
+    stripe_pipeline = True
+    stripe_inner_steps = 16
     grid_pipeline = True
     grid_inner_m = 250.0
     grid_halo_m = 12.0

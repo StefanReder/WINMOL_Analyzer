@@ -23,6 +23,7 @@ from utils.PredictWorkers import run_multi_gpu_prediction
 from utils.Tiling import build_tile_grid, meters_to_pixels
 from utils.VectorTilePipeline import process_prediction_tiles
 from utils.GridVectorPipeline import run_binary_grid_pipeline
+from utils.StripePredictionPipeline import run_stripe_binary_pipeline
 
 print("imports finished")
 
@@ -203,6 +204,19 @@ class ImageProcessing:
             config=self.config,
         )
 
+    def run_stripe_binary_tree_pipeline(self, plan):
+        print("\nLoading Model...")
+        model = IO.load_model_from_path(self.model_path)
+        print("\nRunning binary stripe prediction/vector pipeline...")
+        return run_stripe_binary_pipeline(
+            model=model,
+            uav_path=self.uav_path,
+            stem_path=self.stem_path,
+            trees_path=self.trees_path,
+            process_type=self.process_type,
+            config=self.config,
+        )
+
     def run_vector_phase(self, plan, pred_path=None, pred=None, profile=None):
         if plan.vector_mode == 'global':
             if pred is None or profile is None:
@@ -269,6 +283,13 @@ class ImageProcessing:
         self.run_prediction_phase(plan)
 
     def run_tree_pipeline(self, plan):
+        use_stripe = bool(getattr(self.config, 'stripe_pipeline', False))
+        env_disable_stripe = os.environ.get('WINMOL_DISABLE_STRIPE_PIPELINE', '')
+        env_disable_stripe = env_disable_stripe.strip().lower() in {
+            '1', 'true', 'yes', 'on'}
+        if use_stripe and not env_disable_stripe:
+            return self.run_stripe_binary_tree_pipeline(plan)
+
         use_grid = bool(getattr(self.config, 'grid_pipeline', False))
         env_disable_grid = os.environ.get('WINMOL_DISABLE_GRID_PIPELINE', '')
         env_disable_grid = env_disable_grid.strip().lower() in {
