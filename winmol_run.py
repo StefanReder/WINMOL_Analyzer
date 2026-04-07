@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
@@ -112,6 +113,27 @@ class ImageProcessing:
         self.config.progress_interval_s = plan.progress_interval_s
         self.config.grid_vector_workers = max(1, int(plan.vector_tile_workers or 1))
         self.config.grid_inflight_tiles = max(2, self.config.grid_vector_workers)
+
+        cpu_total = max(1, int(plan.cpu_workers or 1))
+        grid_min = max(1, int(getattr(self.config, 'grid_vector_workers_min', 1) or 1))
+        default_grid_max = max(2, min(6, cpu_total // 3 if cpu_total >= 3 else 1))
+        grid_max = max(grid_min, int(getattr(
+            self.config, 'grid_vector_workers_max', default_grid_max
+        ) or default_grid_max))
+        grid_max = min(grid_max, max(1, cpu_total))
+
+        if getattr(self.config, 'grid_pipeline', False):
+            self.config.grid_vector_workers_min = grid_min
+            self.config.grid_vector_workers_max = grid_max
+            self.config.grid_vector_workers = max(
+                grid_min,
+                min(grid_max, int(getattr(self.config, 'grid_vector_workers', 2) or 2)),
+            )
+            queue_mult = float(getattr(self.config, 'grid_queue_multiplier', 3.0) or 3.0)
+            self.config.grid_inflight_tiles = max(
+                int(getattr(self.config, 'grid_inflight_tiles', 0) or 0),
+                int(max(6, math.ceil(queue_mult * self.config.grid_vector_workers_max))),
+            )
 
     def run_prediction_phase(self, plan):
         if plan.prediction_mode == 'full':

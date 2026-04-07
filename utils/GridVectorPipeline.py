@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import concurrent.futures as cf
+<<<<<<< Updated upstream
+=======
+import heapq
+>>>>>>> Stashed changes
 import math
 import multiprocessing as mp
 import os
 import tempfile
 import time
+<<<<<<< Updated upstream
+=======
+from statistics import median
+>>>>>>> Stashed changes
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -15,6 +23,7 @@ from rasterio.windows import Window
 from classes.Config import Config
 from utils import IO
 from utils import Prediction as Pred
+<<<<<<< Updated upstream
 import utils.Quantification as Quant
 import utils.Skeletonization as Skel
 import utils.Vectorization as Vec
@@ -32,6 +41,17 @@ def _config_from_dict(config_dict: dict) -> Config:
     return cfg
 
 
+=======
+from utils.Tiling import (
+    TileJob,
+    build_tile_grid,
+    meters_to_pixels,
+    tile_profile_from_parent,
+)
+from utils.VectorTilePipeline import process_prediction_array_to_gpkg
+
+
+>>>>>>> Stashed changes
 def _prediction_core_step(config) -> int:
     return int(config.img_width - config.overlap_pred)
 
@@ -209,6 +229,7 @@ def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config):
     return tile_arr, tile_profile, stats
 
 
+<<<<<<< Updated upstream
 
 
 def _wait_one(pending):
@@ -223,6 +244,8 @@ def _wait_one(pending):
     return completed, remaining
 
 
+=======
+>>>>>>> Stashed changes
 def _inner_slice(tile_job):
     row0 = int(tile_job.y0 - tile_job.hy0)
     col0 = int(tile_job.x0 - tile_job.hx0)
@@ -231,6 +254,223 @@ def _inner_slice(tile_job):
     return row0, row1, col0, col1
 
 
+<<<<<<< Updated upstream
+=======
+def _ema(prev, value, alpha):
+    value = float(value)
+    if prev is None:
+        return value
+    return (1.0 - alpha) * float(prev) + alpha * value
+
+
+def _tile_complexity(tile_arr, tile_job, use_inner=True):
+    arr = np.asarray(tile_arr)
+    if arr.size == 0:
+        return 0, 0.0
+    if use_inner:
+        r0, r1, c0, c1 = _inner_slice(tile_job)
+        arr = arr[r0:r1, c0:c1]
+    fg_count = int(np.count_nonzero(arr))
+    fg_frac = fg_count / max(int(arr.size), 1)
+    return fg_count, fg_frac
+
+
+def _dense_threshold(history, config):
+    factor = float(getattr(config, 'grid_dense_split_factor', 2.5) or 2.5)
+    min_fg = int(getattr(config, 'grid_dense_split_min_fg', 12000) or 12000)
+    min_samples = int(getattr(config, 'grid_dense_split_min_samples', 4) or 4)
+    if len(history) < min_samples:
+        return float('inf')
+    return max(float(min_fg), float(median(history)) * factor)
+
+
+def _make_child_tile(parent_job, parent_arr, parent_profile, local_inner_bounds, halo_px, suffix):
+    r0, r1, c0, c1 = [int(v) for v in local_inner_bounds]
+    if r1 <= r0 or c1 <= c0:
+        return None
+
+    local_hy0 = max(0, r0 - halo_px)
+    local_hx0 = max(0, c0 - halo_px)
+    local_hy1 = min(parent_arr.shape[0], r1 + halo_px)
+    local_hx1 = min(parent_arr.shape[1], c1 + halo_px)
+
+    child_arr = np.ascontiguousarray(parent_arr[local_hy0:local_hy1, local_hx0:local_hx1], dtype=np.uint8)
+    child_profile = tile_profile_from_parent(
+        parent_profile,
+        Window(local_hx0, local_hy0, local_hx1 - local_hx0, local_hy1 - local_hy0),
+    )
+
+    gx0 = int(parent_job.hx0 + c0)
+    gy0 = int(parent_job.hy0 + r0)
+    gx1 = int(parent_job.hx0 + c1)
+    gy1 = int(parent_job.hy0 + r1)
+    ghx0 = int(parent_job.hx0 + local_hx0)
+    ghy0 = int(parent_job.hy0 + local_hy0)
+    ghx1 = int(parent_job.hx0 + local_hx1)
+    ghy1 = int(parent_job.hy0 + local_hy1)
+    child_job = TileJob(
+        tile_id=f'{parent_job.tile_id}_{suffix}',
+        x0=gx0,
+        y0=gy0,
+        x1=gx1,
+        y1=gy1,
+        hx0=ghx0,
+        hy0=ghy0,
+        hx1=ghx1,
+        hy1=ghy1,
+    )
+    return child_job, child_arr, child_profile
+
+
+def _split_tile_into_quadrants(tile_job, tile_arr, tile_profile, halo_px):
+    r0, r1, c0, c1 = _inner_slice(tile_job)
+    rm = r0 + max(1, (r1 - r0) // 2)
+    cm = c0 + max(1, (c1 - c0) // 2)
+    bounds = [
+        (r0, rm, c0, cm, 'q00'),
+        (r0, rm, cm, c1, 'q01'),
+        (rm, r1, c0, cm, 'q10'),
+        (rm, r1, cm, c1, 'q11'),
+    ]
+    out = []
+    for br0, br1, bc0, bc1, suffix in bounds:
+        item = _make_child_tile(tile_job, tile_arr, tile_profile, (br0, br1, bc0, bc1), halo_px, suffix)
+        if item is not None:
+            out.append(item)
+    return out
+
+
+def _build_vector_items(
+    tile_job,
+    tile_arr,
+    tile_profile,
+    halo_px,
+    config,
+    output_dir,
+    score_history,
+    depth=0,
+):
+    fg_count, fg_frac = _tile_complexity(
+        tile_arr,
+        tile_job,
+        use_inner=bool(getattr(config, 'grid_priority_use_inner', True)),
+    )
+    if fg_count <= 0:
+        return [], 0
+
+    max_depth = int(getattr(config, 'grid_dense_split_max_depth', 1) or 1)
+    allow_split = bool(getattr(config, 'grid_dense_split', True)) and depth < max_depth
+    split_threshold = _dense_threshold(score_history, config)
+    should_split = allow_split and fg_count >= split_threshold
+
+    if should_split:
+        out = []
+        split_count = 0
+        for child_job, child_arr, child_profile in _split_tile_into_quadrants(tile_job, tile_arr, tile_profile, halo_px):
+            child_items, child_splits = _build_vector_items(
+                child_job,
+                child_arr,
+                child_profile,
+                halo_px,
+                config,
+                output_dir,
+                score_history,
+                depth=depth + 1,
+            )
+            out.extend(child_items)
+            split_count += child_splits
+        if out:
+            return out, split_count + 1
+
+    prefix = os.path.join(output_dir, tile_job.tile_id)
+    return [{
+        'tile_job': tile_job,
+        'arr': np.ascontiguousarray(tile_arr, dtype=np.uint8),
+        'profile': tile_profile,
+        'output_prefix': prefix,
+        'score': fg_count,
+        'fg_fraction': fg_frac,
+    }], 0
+
+
+def _submit_available(waiting_heap, pending, pool, active_limit, cfg_dict, process_type):
+    while waiting_heap and len(pending) < active_limit:
+        _, _, item = heapq.heappop(waiting_heap)
+        fut = pool.submit(
+            process_prediction_array_to_gpkg,
+            item['arr'],
+            item['profile'],
+            cfg_dict,
+            process_type,
+            item['output_prefix'],
+        )
+        pending.append({
+            'future': fut,
+            'item': item,
+            'started': time.monotonic(),
+        })
+
+
+def _wait_one(pending):
+    done, _ = cf.wait([rec['future'] for rec in pending], return_when=cf.FIRST_COMPLETED)
+    completed = []
+    remaining = []
+    for rec in pending:
+        if rec['future'] in done:
+            completed.append(rec)
+        else:
+            remaining.append(rec)
+    return completed, remaining
+
+
+def _pop_completed(pending, tile_outputs, keep_temp, raster_profile, target_crs_box, stats, alpha, dense_cutoff):
+    completed, remaining = _wait_one(pending)
+    pending[:] = remaining
+    target_crs = target_crs_box[0]
+    for rec in completed:
+        item = rec['item']
+        elapsed = max(time.monotonic() - rec['started'], 1e-6)
+        is_dense = item['score'] >= dense_cutoff if dense_cutoff < float('inf') else item['score'] > 0
+        stats['vec_job_ema'] = _ema(stats['vec_job_ema'], elapsed, alpha)
+        if is_dense:
+            stats['vec_dense_ema'] = _ema(stats['vec_dense_ema'], elapsed, alpha)
+        gpkg_path = rec['future'].result()
+        if gpkg_path is not None:
+            tile_outputs.append((item['tile_job'], gpkg_path))
+            stats['completed_jobs'] += 1
+        elif not keep_temp:
+            try:
+                os.remove(item['output_prefix'])
+            except Exception:
+                pass
+    target_crs_box[0] = target_crs
+    return completed
+
+
+def _current_worker_target(config, stats):
+    min_workers = max(1, int(getattr(config, 'grid_vector_workers_min', 1) or 1))
+    max_workers = max(min_workers, int(getattr(config, 'grid_vector_workers_max', getattr(config, 'grid_vector_workers', min_workers)) or min_workers))
+    if not bool(getattr(config, 'grid_adaptive_workers', True)):
+        return max(min_workers, min(max_workers, int(getattr(config, 'grid_vector_workers', min_workers) or min_workers)))
+
+    pred_ema = stats.get('pred_tile_ema')
+    jobs_per_tile_ema = max(1.0, float(stats.get('jobs_per_tile_ema') or 1.0))
+    vec_ema = stats.get('vec_dense_ema') or stats.get('vec_job_ema')
+    if pred_ema is None or vec_ema is None:
+        return max(min_workers, min(max_workers, int(getattr(config, 'grid_vector_workers', min_workers) or min_workers)))
+
+    margin = float(getattr(config, 'grid_adaptive_margin', 1.15) or 1.15)
+    target = int(math.ceil(margin * float(vec_ema) * jobs_per_tile_ema / max(float(pred_ema), 1e-6)))
+    return max(min_workers, min(max_workers, target))
+
+
+def _current_queue_limit(config, worker_target):
+    base = int(getattr(config, 'grid_inflight_tiles', 6) or 6)
+    mult = float(getattr(config, 'grid_queue_multiplier', 3.0) or 3.0)
+    return max(base, int(math.ceil(mult * max(1, worker_target))))
+
+
+>>>>>>> Stashed changes
 def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_type, config):
     if process_type == 'Stems':
         raise ValueError('Grid vector pipeline is only for Trees/Nodes')
@@ -271,6 +511,7 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     tmp_stem_path = IO.atomic_tmp_path(stem_path)
     keep_temp = bool(getattr(config, 'keep_temp_tiles', False))
 
+<<<<<<< Updated upstream
     vector_workers = max(1, int(getattr(config, 'grid_vector_workers', 1) or 1))
     inflight_limit = max(vector_workers, int(getattr(config, 'grid_inflight_tiles', 2) or 2))
     progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
@@ -279,12 +520,27 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
 
     pending = []
     tile_outputs = []
+=======
+    min_workers = max(1, int(getattr(config, 'grid_vector_workers_min', 1) or 1))
+    max_workers = max(min_workers, int(getattr(config, 'grid_vector_workers_max', getattr(config, 'grid_vector_workers', 2)) or 2))
+    progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
+    cfg_dict = dict(getattr(config, 'to_dict', lambda: {})())
+    spawn_ctx = mp.get_context('spawn')
+    alpha = float(getattr(config, 'grid_adaptive_ema', 0.2) or 0.2)
+
+    pending = []
+    waiting_heap = []
+    tile_outputs = []
+    nonzero_history: List[int] = []
+    target_crs_box = [None]
+>>>>>>> Stashed changes
     start = time.monotonic()
     last_report = start
     total_read_s = 0.0
     total_infer_s = 0.0
     predicted_tiles = 0
     submitted_tiles = 0
+<<<<<<< Updated upstream
 
     with rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
             cf.ProcessPoolExecutor(max_workers=vector_workers,
@@ -294,11 +550,33 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 uav_path, model, grid_job, jobs_by_grid.get(grid_job.tile_id, []), config)
             total_read_s += float(stats.get('read_s', 0.0))
             total_infer_s += float(stats.get('infer_s', 0.0))
+=======
+    submitted_jobs = 0
+    split_tiles = 0
+    sequence = 0
+    stats = {
+        'pred_tile_ema': None,
+        'vec_job_ema': None,
+        'vec_dense_ema': None,
+        'jobs_per_tile_ema': None,
+        'completed_jobs': 0,
+    }
+
+    with rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
+            cf.ProcessPoolExecutor(max_workers=max_workers, mp_context=spawn_ctx) as pool:
+        for idx, grid_job in enumerate(grid_jobs, start=1):
+            tile_t0 = time.monotonic()
+            tile_arr, tile_profile, pred_stats = _predict_binary_grid_tile(
+                uav_path, model, grid_job, jobs_by_grid.get(grid_job.tile_id, []), config)
+            total_read_s += float(pred_stats.get('read_s', 0.0))
+            total_infer_s += float(pred_stats.get('infer_s', 0.0))
+>>>>>>> Stashed changes
 
             r0, r1, c0, c1 = _inner_slice(grid_job)
             inner_arr = np.ascontiguousarray(tile_arr[r0:r1, c0:c1], dtype=np.uint8)
             dst.write(inner_arr, 1, window=grid_job.inner_window)
             predicted_tiles += 1
+<<<<<<< Updated upstream
 
             if np.any(tile_arr):
                 output_prefix = os.path.join(work_dir, grid_job.tile_id)
@@ -319,27 +597,102 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                     gpkg_path = fut.result()
                     if gpkg_path is not None:
                         tile_outputs.append((done_job, gpkg_path))
+=======
+            stats['pred_tile_ema'] = _ema(stats['pred_tile_ema'], time.monotonic() - tile_t0, alpha)
+
+            fg_count, _ = _tile_complexity(tile_arr, grid_job, use_inner=True)
+            if fg_count > 0:
+                nonzero_history.append(fg_count)
+                vector_items, split_count = _build_vector_items(
+                    grid_job,
+                    tile_arr,
+                    tile_profile,
+                    halo_px,
+                    config,
+                    work_dir,
+                    nonzero_history,
+                    depth=0,
+                )
+                if vector_items:
+                    submitted_tiles += 1
+                    split_tiles += split_count
+                    stats['jobs_per_tile_ema'] = _ema(
+                        stats['jobs_per_tile_ema'], len(vector_items), alpha)
+                    for item in vector_items:
+                        score = int(item['score']) if bool(getattr(config, 'grid_priority_dense_first', True)) else 0
+                        heapq.heappush(waiting_heap, (-score, sequence, item))
+                        sequence += 1
+
+            worker_target = _current_worker_target(config, stats)
+            queue_limit = _current_queue_limit(config, worker_target)
+            _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+            submitted_jobs = max(submitted_jobs, len(pending) + len(waiting_heap))
+
+            while len(pending) + len(waiting_heap) > queue_limit and pending:
+                dense_cutoff = _dense_threshold(nonzero_history, config)
+                _pop_completed(
+                    pending,
+                    tile_outputs,
+                    keep_temp,
+                    out_profile,
+                    target_crs_box,
+                    stats,
+                    alpha,
+                    dense_cutoff,
+                )
+                worker_target = _current_worker_target(config, stats)
+                _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+>>>>>>> Stashed changes
 
             now = time.monotonic()
             if idx == 1 or idx == len(grid_jobs) or (now - last_report) >= progress_interval_s:
                 elapsed = max(now - start, 1e-9)
                 rate = idx / elapsed
                 eta_s = (len(grid_jobs) - idx) / rate if rate > 0 else float('inf')
+<<<<<<< Updated upstream
+=======
+                dense_cutoff = _dense_threshold(nonzero_history, config)
+>>>>>>> Stashed changes
                 print(
                     f'Grid tiles predicted {idx}/{len(grid_jobs)} | {idx / len(grid_jobs):.1%} | '
                     f'{rate * 60:.2f} tiles/min | ETA {Pred._format_eta(eta_s)} | '
                     f'avg read {total_read_s / max(idx, 1):.3f}s infer {total_infer_s / max(idx, 1):.3f}s | '
+<<<<<<< Updated upstream
                     f'pending vector {len(pending)}',
+=======
+                    f'workers {worker_target}/{max_workers} | pending {len(pending)} | queued {len(waiting_heap)} | '
+                    f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles}',
+>>>>>>> Stashed changes
                     flush=True,
                 )
                 last_report = now
 
+<<<<<<< Updated upstream
         while pending:
             completed, pending = _wait_one(pending)
             for done_job, fut in completed:
                 gpkg_path = fut.result()
                 if gpkg_path is not None:
                     tile_outputs.append((done_job, gpkg_path))
+=======
+        while waiting_heap or pending:
+            worker_target = _current_worker_target(config, stats)
+            _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+            if pending:
+                dense_cutoff = _dense_threshold(nonzero_history, config)
+                _pop_completed(
+                    pending,
+                    tile_outputs,
+                    keep_temp,
+                    out_profile,
+                    target_crs_box,
+                    stats,
+                    alpha,
+                    dense_cutoff,
+                )
+            elif waiting_heap:
+                _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+>>>>>>> Stashed changes
 
     IO.finalize_raster(tmp_stem_path, stem_path)
 
@@ -366,6 +719,11 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     print('GRID PIPELINE SUMMARY')
     print(f'Grid tiles predicted:  {predicted_tiles}')
     print(f'Grid tiles submitted:  {submitted_tiles}')
+<<<<<<< Updated upstream
+=======
+    print(f'Vector jobs completed: {stats["completed_jobs"]}')
+    print(f'Dense tiles split:     {split_tiles}')
+>>>>>>> Stashed changes
     print(f'Tile temp directory:   {work_dir}')
 
     if not keep_temp:
