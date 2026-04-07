@@ -47,6 +47,15 @@ class Config(object):
     legacy_full_array_threshold_gb = 8.0
     compress_output = True
 
+    # binary stem-map / coarse grid pipeline
+    stem_map_binary = True
+    stem_binary_threshold = 0.5
+    grid_pipeline = True
+    grid_inner_m = 250.0
+    grid_halo_m = 12.0
+    grid_inflight_tiles = 2
+    grid_vector_workers = 1
+
     # semantic segmentation
     tile_size = 15
     img_width = 512

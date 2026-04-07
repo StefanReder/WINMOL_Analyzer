@@ -133,19 +133,26 @@ def _prepare_inference_batch(raw_tiles, raw_masks, config):
     return tile_tensor, mask_tensor.numpy()
 
 
+def _binarize_prediction_core(pred_core, mask_core, threshold: float = 0.5):
+    return np.ascontiguousarray(
+        ((pred_core >= threshold) & mask_core).astype(np.uint8)
+    )
+
+
 def _predict_batch_core(raw_tiles, raw_masks, model, config):
     tile_tensor, mask_resized = _prepare_inference_batch(
         raw_tiles, raw_masks, config)
     pred = model.predict_on_batch(tile_tensor)
     crop = config.overlap_pred // 2
+    threshold = float(getattr(config, 'stem_binary_threshold', 0.5))
     pred_cores = []
     for idx in range(pred.shape[0]):
         pred_core = pred[idx, crop:(
             config.img_width - crop), crop:(config.img_width - crop), 0]
         mask_core = mask_resized[idx, crop:(
             config.img_width - crop), crop:(config.img_width - crop), 0] > 0.5
-        pred_cores.append(np.ascontiguousarray(
-            (pred_core * mask_core).astype(np.float32)))
+        pred_cores.append(_binarize_prediction_core(
+            pred_core, mask_core, threshold=threshold))
     return pred_cores
 
 
@@ -248,7 +255,7 @@ def _write_prediction_core(dst, pred_core, job, layout):
     if write_h <= 0 or write_w <= 0:
         return 0.0
     pred_write = np.ascontiguousarray(
-        pred_core[:write_h, :write_w], dtype=np.float32)
+        pred_core[:write_h, :write_w], dtype=np.uint8)
     out_window = Window(
         col_off=out_col, row_off=out_row, width=write_w, height=write_h)
     t0 = time.perf_counter()
@@ -425,6 +432,7 @@ def _split_jobs_for_producers(jobs, producer_workers: int):
     workers = max(1, int(producer_workers))
     if workers <= 1 or len(jobs) <= 1:
         return [jobs]
+<<<<<<< Updated upstream
 
     rows = []
     current_row = None
@@ -467,6 +475,18 @@ def describe_prediction_output(uav_path: str, config):
         compress='DEFLATE' if getattr(config, 'compress_output', True) else None,
     )
     return out_profile, layout
+=======
+    total = len(jobs)
+    out = []
+    start = 0
+    for worker_idx in range(workers):
+        end = int(round((worker_idx + 1) * total / workers))
+        shard = jobs[start:end]
+        if shard:
+            out.append(shard)
+        start = end
+    return out or [jobs]
+>>>>>>> Stashed changes
 
 
 def predict_stream_to_raster(
@@ -487,8 +507,24 @@ def predict_stream_to_raster(
 
     os.makedirs(os.path.dirname(output_stem_map) or '.', exist_ok=True)
 
+<<<<<<< Updated upstream
     out_profile, layout = describe_prediction_output(uav_path, config)
     profile = out_profile
+=======
+    with rasterio.open(uav_path) as src:
+        profile = src.profile.copy()
+        layout = _resampling_layout((src.height, src.width), profile, config)
+
+    out_profile = IO.build_safe_prediction_profile(
+        src_profile=profile,
+        width=layout['out_width'],
+        height=layout['out_height'],
+        transform=layout['out_transform'],
+        compress='DEFLATE' if getattr(
+            config, 'compress_output', True) else None,
+        dtype='uint8',
+    )
+>>>>>>> Stashed changes
 
     total_tiles = layout['x_tiles'] * layout['y_tiles']
     initial_batch_size = max(1, int(getattr(
@@ -604,8 +640,12 @@ def predict_stream_to_raster(
                 mask_core = mask_resized[idx, crop:(
                     config.img_width - crop), crop:(
                         config.img_width - crop), 0] > 0.5
-                pred_core = np.ascontiguousarray((
-                    pred_core * mask_core).astype(np.float32))
+                pred_core = _binarize_prediction_core(
+                    pred_core,
+                    mask_core,
+                    threshold=float(getattr(
+                        config, 'stem_binary_threshold', 0.5)),
+                )
                 write_batch_s += _write_prediction_core(
                     dst, pred_core, job, layout)
                 done += 1
@@ -736,7 +776,7 @@ def predict(img, model, config):
 
     img_width_ = config.img_width - config.overlap_pred
     prediction = np.zeros((
-        img_pad.shape[0], img_pad.shape[1]), dtype=np.float32)
+        img_pad.shape[0], img_pad.shape[1]), dtype=np.uint8)
     mask = np.where(img[:, :, 0:3] == (0, 0, 0), False, True)[:, :, 0]
 
     for i in range(y_tiles):
@@ -764,7 +804,7 @@ def predict(img, model, config):
                        ] = pred2
 
     prediction = prediction[0:img.shape[0], 0:img.shape[1]]
-    prediction = prediction * mask
+    prediction = np.ascontiguousarray((prediction > 0) & mask, dtype=np.uint8)
     print(x_tiles * y_tiles, " tiles analyzed")
     t.stop()
     print("#######################################################")
@@ -795,10 +835,10 @@ def predict_with_resampling_per_tile(img, profile, model, config):
 
     img_width_ = layout['img_width_inner']
     prediction = np.zeros((layout['out_height'], layout['out_width']),
-                          dtype=np.float32)
+                          dtype=np.uint8)
     mask = np.where(img_pd[:, :, 0:3] == (0, 0, 0), False, True)[:, :, 0]
     mask = resize(mask, prediction.shape, order=0, preserve_range=True,
-                  anti_aliasing=False).astype(np.float32)
+                  anti_aliasing=False).astype(bool)
 
     for i in range(layout['y_tiles']):
         x = int(np.floor(i * (layout['px_per_tile_y'] -
@@ -816,7 +856,7 @@ def predict_with_resampling_per_tile(img, profile, model, config):
                        ((config.img_width - config.overlap_pred // 2)
                        + j * img_width_),
                        ] = pred2
-    prediction = prediction * mask
+    prediction = np.ascontiguousarray((prediction > 0) & mask, dtype=np.uint8)
 
     profile['transform'] = layout['out_transform']
     print(layout['x_tiles'] * layout['y_tiles'], " tiles analyzed")

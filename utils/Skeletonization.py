@@ -20,6 +20,14 @@ from utils.Geometry import ang
 # System epsilon
 epsilon = np.finfo(float).eps
 
+def _as_binary_mask(pred):
+    arr = np.asarray(pred)
+    if arr.dtype == np.bool_:
+        return arr
+    if arr.dtype == np.uint8 and arr.size and arr.max() <= 1:
+        return arr.astype(bool, copy=False)
+    return arr >= 0.5
+
 
 def _worker_count(config=None):
     value = getattr(config, 'cpu_workers', None) \
@@ -53,9 +61,7 @@ def find_segments(pred, config, profile) -> (List[Part], List[Tuple[int]]):
         constant_values=False
     )
 
-    pred = pred.copy()
-    pred[np.where(pred < 0.5)] = 0
-    pred[np.where(pred >= 0.5)] = 1
+    pred = _as_binary_mask(pred)
 
     skel = morphology.skeletonize(pred)
 

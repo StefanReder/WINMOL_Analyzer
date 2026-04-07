@@ -67,11 +67,12 @@ def finalize_raster(tmp_path: str, final_path: str) -> str:
 
 def build_safe_prediction_profile(
     src_profile, width: int, height: int,
-    transform, compress: str | None = 'DEFLATE'
+    transform, compress: str | None = 'DEFLATE',
+    dtype: str = 'float32'
 ):
     profile = {
         'driver': 'GTiff',
-        'dtype': 'float32',
+        'dtype': dtype,
         'count': 1,
         'width': int(width),
         'height': int(height),
@@ -273,9 +274,10 @@ def export_stem_map(pred, profile, pred_dir, pred_name, compress="DEFLATE"):
         height=height,
         transform=profile['transform'],
         compress=compress,
+        dtype=str(pred.dtype),
     )
     with rasterio.open(tmp_path, 'w', **safe_profile) as dst:
-        dst.write(pred.astype(rasterio.float32), 1)
+        dst.write(pred.astype(pred.dtype, copy=False), 1)
     finalize_raster(tmp_path, final_path)
 
 
@@ -709,7 +711,13 @@ def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
 def _write_layers_to_temp_gpkg(  # noqa: C901
     layers, crs, final_path: str) \
         -> str:
+<<<<<<< Updated upstream
     tmp_dir = tempfile.mkdtemp(prefix="winmol_gpkg_", dir=str(Path(final_path).parent or '.'))
+=======
+    final_parent = Path(final_path).parent
+    final_parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="winmol_gpkg_", dir=str(final_parent))
+>>>>>>> Stashed changes
     tmp_path = str(Path(tmp_dir) / (Path(final_path).stem + ".gpkg"))
 
     def _prep(name, gdf):
@@ -1072,6 +1080,93 @@ def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
 
     counts = (len(stems), len(nodes_sel), len(vectors_sel))
     return (stems, nodes_sel, vectors_sel, counts), target_crs
+
+
+def _window_geom_from_profile(profile, window):
+    bounds = rasterio.windows.bounds(window, profile['transform'])
+    return box(*bounds)
+
+
+def process_tile_gpkg(tile_job, gpkg_path, raster_profile, target_crs=None):
+    stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
+    if stems is None or stems.empty:
+        return None, target_crs
+
+    raster_crs = raster_profile.get('crs') if raster_profile else None
+    if target_crs is None:
+        target_crs = stems.crs or raster_crs
+
+    stems = _ensure_crs(stems, target_crs)
+    nodes = _ensure_crs(nodes, target_crs)
+    vectors = _ensure_crs(vectors, target_crs)
+
+    filter_geom = _window_geom_from_profile(raster_profile, tile_job.inner_window)
+    stems, kept_local = _globalize_stems(stems, tile_job.tile_id, filter_geom)
+    if stems.empty:
+        return None, target_crs
+
+    nodes_sel = _select_child(nodes, tile_job.tile_id, kept_local)
+    vectors_sel = _select_child(vectors, tile_job.tile_id, kept_local)
+    counts = (len(stems), len(nodes_sel), len(vectors_sel))
+    return (stems, nodes_sel, vectors_sel, counts), target_crs
+
+
+def merge_selected_tile_results(
+    tile_records,
+    output_gpkg: str,
+    raster_profile,
+    keep_temp: bool = False,
+):
+    if os.path.exists(output_gpkg):
+        os.remove(output_gpkg)
+
+    merged_stems = []
+    merged_nodes = []
+    merged_vectors = []
+    target_crs = None
+    total_stems = 0
+    total_nodes = 0
+    total_vectors = 0
+    tile_count = 0
+
+    for tile_job, gpkg_path in tile_records:
+        out, target_crs = process_tile_gpkg(
+            tile_job, gpkg_path, raster_profile, target_crs=target_crs)
+        if out is not None:
+            stems, nodes, vectors, (n_s, n_n, n_v) = out
+            merged_stems.append(stems)
+            if not nodes.empty:
+                merged_nodes.append(nodes)
+            if not vectors.empty:
+                merged_vectors.append(vectors)
+            tile_count += 1
+            total_stems += n_s
+            total_nodes += n_n
+            total_vectors += n_v
+        if not keep_temp:
+            try:
+                os.remove(gpkg_path)
+            except Exception:
+                pass
+
+    if merged_stems or merged_nodes or merged_vectors:
+        _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
+        print("")
+        print("MERGE SUMMARY")
+        print(f"Tiles processed:       {tile_count}")
+        print(f"Total stems written:   {total_stems}")
+        print(f"Total nodes written:   {total_nodes}")
+        print(f"Total vectors written: {total_vectors}")
+        print(f"Output saved to: {output_gpkg}")
+    else:
+        print("")
+        print("MERGE SUMMARY")
+        print("Tiles processed:       0")
+        print("Total stems written:   0")
+        print("Total nodes written:   0")
+        print("Total vectors written: 0")
+        print(f"No output GPKG created: {output_gpkg} (0 features written)")
+    return output_gpkg
 
 
 def _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors):

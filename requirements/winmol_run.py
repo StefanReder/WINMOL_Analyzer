@@ -16,15 +16,8 @@ from utils import Skeletonization as Skel
 from utils import Vectorization as Vec
 from utils import Quantification as Quant
 from utils.PredictWorkers import run_multi_gpu_prediction
-<<<<<<< Updated upstream
 from utils.Tiling import build_tile_grid
 from utils.VectorTilePipeline import TileVectorExecutor, process_prediction_tiles
-=======
-from utils.Tiling import build_tile_grid, meters_to_pixels
-from utils.VectorTilePipeline import process_prediction_tiles
-from utils.GridVectorPipeline import run_binary_grid_pipeline
-
->>>>>>> Stashed changes
 print("imports finished")
 VALID_PROCESS_TYPES = {'Stems', 'Trees', 'Nodes'}
 gpus = tf.config.list_physical_devices('GPU')
@@ -88,9 +81,6 @@ class ImageProcessing:
         print(f"  producer_workers = {plan.producer_workers}")
         print(f"  progress_interval_s = {plan.progress_interval_s}")
         print(f"  est_pred_tiles   = {plan.estimated_prediction_tiles}")
-        print(f"  grid_pipeline    = {getattr(self.config, 'grid_pipeline', False)}")
-        print(f"  grid_inner_m     = {getattr(self.config, 'grid_inner_m', None)}")
-        print(f"  grid_halo_m      = {getattr(self.config, 'grid_halo_m', None)}")
         self._apply_plan_to_config(plan)
         return plan
     def _apply_plan_to_config(self, plan):
@@ -103,12 +93,6 @@ class ImageProcessing:
         self.config.producer_queue_batches = plan.producer_queue_batches
         self.config.prediction_producer_workers = plan.producer_workers
         self.config.progress_interval_s = plan.progress_interval_s
-<<<<<<< Updated upstream
-=======
-        self.config.grid_vector_workers = max(1, int(plan.vector_tile_workers or 1))
-        self.config.grid_inflight_tiles = max(2, self.config.grid_vector_workers)
-
->>>>>>> Stashed changes
     def run_prediction_phase(self, plan):
         if plan.prediction_mode == 'full':
             print("\nLoading Model...")
@@ -162,7 +146,6 @@ class ImageProcessing:
         print("\nQuantifying Stems...")
         stems = Quant.quantify_stems(stems, pred, profile, config=self.config)
         return stems
-<<<<<<< Updated upstream
     def run_pipelined_tree_pipeline(self, plan):
         print("\nRunning overlapped streamed prediction + tiled vector processing...")
         work_dir = tempfile.mkdtemp(
@@ -247,22 +230,6 @@ class ImageProcessing:
                 print(f"Keeping tile work directory: {work_dir}")
             else:
                 shutil.rmtree(work_dir, ignore_errors=True)
-=======
-
-    def run_grid_binary_tree_pipeline(self, plan):
-        print("\nLoading Model...")
-        model = IO.load_model_from_path(self.model_path)
-        print("\nRunning binary coarse-grid prediction/vector pipeline...")
-        return run_binary_grid_pipeline(
-            model=model,
-            uav_path=self.uav_path,
-            stem_path=self.stem_path,
-            trees_path=self.trees_path,
-            process_type=self.process_type,
-            config=self.config,
-        )
-
->>>>>>> Stashed changes
     def run_vector_phase(self, plan, pred_path=None, pred=None, profile=None):
         if plan.vector_mode == 'global':
             if pred is None or profile is None:
@@ -281,15 +248,9 @@ class ImageProcessing:
             dir=os.path.dirname(self.trees_path) or None)
         try:
             raster_info = IO.get_raster_info(pred_path or self.stem_path)
-            halo_px = meters_to_pixels(
-                plan.tile_overlap_m,
-                raster_info['pixel_size_x'],
-                raster_info['pixel_size_y'],
-            )
             jobs = build_tile_grid(raster_info['width'],
                                    raster_info['height'],
                                    plan.tile_inner_px,
-<<<<<<< Updated upstream
                                    plan.halo_px)
             output_gpkg = self.trees_path if self.trees_path.lower().endswith(
                 '.gpkg') else f"{self.trees_path}.gpkg"
@@ -303,23 +264,6 @@ class ImageProcessing:
                 output_gpkg=output_gpkg,
                 cpu_workers=plan.cpu_workers,
                 keep_temp=plan.keep_temp,
-=======
-                                   halo_px)
-            tile_paths = []
-            for job in jobs:
-                pred_tile, tile_profile = IO.load_raster_window_with_profile(
-                    pred_path or self.stem_path, job.halo_window)
-                tile_path = os.path.join(
-                    work_dir, f"{job.tile_id}_roi_stem_map.tif")
-                IO.write_tile_raster(pred_tile, tile_profile, tile_path)
-                tile_paths.append(tile_path)
-            process_prediction_tiles(
-                tile_paths,
-                self.config,
-                self.process_type,
-                work_dir,
-                plan.cpu_workers,
->>>>>>> Stashed changes
             )
         finally:
             if plan.keep_temp:
@@ -338,8 +282,6 @@ class ImageProcessing:
     def run_stem_pipeline(self, plan):
         self.run_prediction_phase(plan)
     def run_tree_pipeline(self, plan):
-<<<<<<< Updated upstream
-
         overlap_tiled_vector = os.environ.get(
             'WINMOL_OVERLAP_TILED_VECTOR', ''
         ).strip().lower() in {'1', 'true', 'yes', 'on'}
@@ -351,15 +293,6 @@ class ImageProcessing:
         ):
             print('Using experimental overlapped tiled vector pipeline.')
             return self.run_pipelined_tree_pipeline(plan)
-
-=======
-        use_grid = bool(getattr(self.config, 'grid_pipeline', False))
-        env_disable_grid = os.environ.get('WINMOL_DISABLE_GRID_PIPELINE', '')
-        env_disable_grid = env_disable_grid.strip().lower() in {
-            '1', 'true', 'yes', 'on'}
-        if use_grid and not env_disable_grid:
-            return self.run_grid_binary_tree_pipeline(plan)
->>>>>>> Stashed changes
 
         pred, profile, pred_path = self.run_prediction_phase(plan)
         return self.run_vector_phase(

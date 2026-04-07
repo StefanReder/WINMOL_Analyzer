@@ -20,6 +20,14 @@ from utils.Geometry import create_vector
 # System epsilon
 epsilon = np.finfo(float).eps
 
+def _as_binary_mask(pred):
+    arr = np.asarray(pred)
+    if arr.dtype == np.bool_:
+        return arr
+    if arr.dtype == np.uint8 and arr.size and arr.max() <= 1:
+        return arr.astype(bool, copy=False)
+    return arr >= 0.5
+
 
 def _worker_count(config=None):
     value = getattr(config, 'cpu_workers', None) \
@@ -45,15 +53,23 @@ def quantify_stems(stems: List[Stem], pred, profile, config=None):
 
     print("#######################################################")
     print("Quantifying stems")
+<<<<<<< Updated upstream
 
     if not stems:
         print("0  measurements of diameters where conducted")
+=======
+    if not stems:
+        print("0 measurements of diameters where conducted")
+>>>>>>> Stashed changes
         print("Volume of  0  stems calculated")
         t.stop()
         print("#######################################################")
         print("")
         return []
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
     stems = get_diameters(stems, pred, profile, config=config)
     workers = min(_worker_count(config), max(len(stems), 1))
     if workers <= 1 or len(stems) <= 1:
@@ -77,10 +93,7 @@ def quantify_stems(stems: List[Stem], pred, profile, config=None):
 
 def get_diameters(stems: List[Stem], pred, profile, config=None):
     transform = profile['transform']
-    pred_bin = np.asarray(pred).copy()
-    pred_bin[np.where(pred_bin < 0.5)] = 0
-    pred_bin[np.where(pred_bin >= 0.5)] = 1
-    pred_bin = pred_bin.astype(np.int16)
+    pred_bin = _as_binary_mask(pred).astype(np.int16, copy=False)
 
     diameter_method = str(getattr(config, 'diameter_method', 'contour'))\
         .lower() if config is not None else 'contour'

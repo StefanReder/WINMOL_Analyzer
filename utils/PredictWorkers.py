@@ -31,14 +31,15 @@ def _predict_batch(raw_tiles, raw_masks, model, config):
         raw_tiles, raw_masks, config)
     pred = model.predict_on_batch(tile_tensor)
     crop = config.overlap_pred // 2
+    threshold = float(getattr(config, 'stem_binary_threshold', 0.5))
     cores = []
     for idx in range(pred.shape[0]):
         pred_core = pred[idx, crop:(config.img_width - crop),
                          crop:(config.img_width - crop), 0]
         mask_core = mask_resized[idx, crop:(config.img_width - crop),
                                  crop:(config.img_width - crop), 0] > 0.5
-        cores.append(np.ascontiguousarray((pred_core * mask_core)
-                                          .astype(np.float32)))
+        cores.append(np.ascontiguousarray(
+            ((pred_core >= threshold) & mask_core).astype(np.uint8)))
     return cores
 
 
@@ -148,11 +149,30 @@ def run_multi_gpu_prediction(
         all_jobs = list(_iter_tile_jobs(layout, config)) \
             if tile_jobs is None else list(tile_jobs)
 
+<<<<<<< Updated upstream
     shards = _split_jobs_for_producers(all_jobs, len(gpu_ids))
     if len(shards) < len(gpu_ids):
         shards.extend([[] for _ in range(len(gpu_ids) - len(shards))])
 
     out_profile, _ = describe_prediction_output(input_raster, config)
+=======
+    shards = []
+    start = 0
+    for idx in range(len(gpu_ids)):
+        end = int(round((idx + 1) * len(all_jobs) / len(gpu_ids)))
+        shards.append(all_jobs[start:end])
+        start = end
+
+    out_profile = IO.build_safe_prediction_profile(
+        src_profile=profile,
+        width=layout['out_width'],
+        height=layout['out_height'],
+        transform=layout['out_transform'],
+        compress='DEFLATE' if getattr(config, 'compress_output', True)
+        else None,
+        dtype='uint8',
+    )
+>>>>>>> Stashed changes
     tmp_path = IO.atomic_tmp_path(output_raster)
 
     cfg_dict = dict(getattr(config, 'to_dict', lambda: {})())
@@ -193,7 +213,7 @@ def run_multi_gpu_prediction(
             t0 = time.perf_counter()
             dst.write(
                 np.ascontiguousarray(arr[:write_h, :write_w],
-                                     dtype=np.float32), 1,
+                                     dtype=np.uint8), 1,
                 window=Window(col_off, row_off, write_w, write_h))
             total_write_s += time.perf_counter() - t0
             total_read_s += float(result.get('read_s', 0.0))

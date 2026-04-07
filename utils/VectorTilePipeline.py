@@ -43,6 +43,41 @@ def export_tile_results(stems, profile, process_type: str, output_prefix: str):
     return write_all_layers_to_gpkg(stems, profile, output_prefix)
 
 
+def process_prediction_array_to_gpkg(
+    pred_arr,
+    profile,
+    config_dict,
+    process_type: str,
+    output_prefix: str,
+):
+    config = Config()
+    for key, value in (config_dict or {}).items():
+        try:
+            setattr(config, key, value)
+        except Exception:
+            pass
+    config.cpu_workers = 1
+    config.vector_tile_workers = 1
+
+    pred = np.asarray(pred_arr)
+    if pred.size == 0 or not np.any(pred >= 1):
+        return None
+
+    segments = Skel.find_segments(pred, config, profile)
+    if not segments:
+        return None
+    segments = Vec.restore_geoinformation(segments, config, profile)
+    stems = Vec.build_stem_parts(segments)
+    stems = Vec.connect_stems(stems, config)
+    if not stems:
+        return None
+    Vec.rebuild_endnodes_from_stems(stems)
+    stems = Quant.quantify_stems(stems, pred, profile, config=config)
+    if not stems:
+        return None
+    return export_tile_results(stems, profile, process_type, output_prefix)
+
+
 def process_prediction_tile(
     pred_raster_path: str,
     tile_job,
@@ -50,6 +85,7 @@ def process_prediction_tile(
     process_type: str,
     output_prefix: str,
 ):
+<<<<<<< Updated upstream
     config = _config_from_dict(config_dict)
     pred, profile = load_raster_window_with_profile(
         pred_raster_path, tile_job.halo_window)
@@ -67,10 +103,22 @@ def process_prediction_tile(
         return tile_job, None
 
 
+=======
+    pred, profile = load_stem_map(pred_tile_path)
+    print(f"Processing prediction tile: {pred_tile_path}", flush=True)
+    pred_arr = np.asarray(pred)
+    if pred_arr.size == 0 or not np.any(pred_arr >= 1):
+        print(f"Skipping empty prediction tile: {pred_tile_path}", flush=True)
+        return None
+    segments = Skel.find_segments(pred, config, profile)
+    if not segments:
+        return None
+>>>>>>> Stashed changes
     segments = Vec.restore_geoinformation(segments, config, profile)
     stems = Vec.build_stem_parts(segments)
     stems = Vec.connect_stems(stems, config)
     if not stems:
+<<<<<<< Updated upstream
         print(f"No stems found in tile: {tile_job.tile_id}", flush=True)
         return tile_job, None
 
@@ -80,6 +128,14 @@ def process_prediction_tile(
     if not stems:
         print(f"No quantified stems in tile: {tile_job.tile_id}", flush=True)
         return tile_job, None
+=======
+        return None
+    Vec.rebuild_endnodes_from_stems(stems)
+    stems = Quant.quantify_stems(stems, pred, profile, config=config)
+    if not stems:
+        return None
+    return export_tile_results(stems, profile, process_type, output_prefix)
+>>>>>>> Stashed changes
 
 
     gpkg_path = export_tile_results(stems, profile, process_type, output_prefix)
