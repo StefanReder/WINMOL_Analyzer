@@ -109,6 +109,7 @@ class ImageProcessing:
             else plan.cpu_workers
         self.config.gpu_workers = plan.gpu_workers
         self.config.vector_tile_workers = plan.vector_tile_workers
+        self.config.grid_vector_workers = plan.vector_tile_workers
         self.config.prediction_batch_size = plan.prediction_batch_size
         self.config.producer_queue_batches = plan.producer_queue_batches
         self.config.prediction_producer_workers = plan.producer_workers
@@ -123,11 +124,12 @@ class ImageProcessing:
         grid_max = min(grid_max, max(1, cpu_total))
 
         if getattr(self.config, 'grid_pipeline', False):
+            planned_workers = max(1, int(plan.vector_tile_workers or 1))
             self.config.grid_vector_workers_min = grid_min
-            self.config.grid_vector_workers_max = grid_max
+            self.config.grid_vector_workers_max = max(planned_workers, grid_max)
             self.config.grid_vector_workers = max(
                 grid_min,
-                min(grid_max, int(getattr(self.config, 'grid_vector_workers', 2) or 2)),
+                min(self.config.grid_vector_workers_max, planned_workers),
             )
             queue_mult = float(getattr(self.config, 'grid_queue_multiplier', 3.0) or 3.0)
             self.config.grid_inflight_tiles = max(

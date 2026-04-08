@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import multiprocessing as mp
 import os
 import time
@@ -32,6 +34,96 @@ def export_tile_results(stems, profile, process_type: str, output_prefix: str):
     return write_all_layers_to_gpkg(stems, profile, output_prefix)
 
 
+def _vector_summary(tile_label, fg_count, segment_count, stem_count, timings, output_path):
+    print(
+        f'VECTOR TILE {tile_label} | fg {fg_count} | segments {segment_count} '
+        f'| stems {stem_count} | '
+        f'skel {timings["skel_s"]:.3f}s restore {timings["restore_s"]:.3f}s '
+        f'build {timings["build_s"]:.3f}s connect {timings["connect_s"]:.3f}s '
+        f'quant {timings["quant_s"]:.3f}s write {timings["write_s"]:.3f}s '
+        f'| total {timings["total_s"]:.3f}s | output {os.path.basename(output_path) if output_path else "none"}',
+        flush=True,
+    )
+
+
+def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix: str, tile_label: str):
+    fg_count = int(np.count_nonzero(pred))
+    if fg_count <= 0:
+        return None
+
+    timings = {
+        'skel_s': 0.0,
+        'restore_s': 0.0,
+        'build_s': 0.0,
+        'connect_s': 0.0,
+        'quant_s': 0.0,
+        'write_s': 0.0,
+        'total_s': 0.0,
+    }
+    total_t0 = time.perf_counter()
+
+    t0 = time.perf_counter()
+    segments = Skel.find_segments(pred, config, profile)
+    timings['skel_s'] = time.perf_counter() - t0
+    if not segments:
+        timings['total_s'] = time.perf_counter() - total_t0
+        if bool(getattr(config, 'vector_summary_log', True)):
+            _vector_summary(tile_label, fg_count, 0, 0, timings, None)
+        return None
+    segment_count = len(segments)
+
+    t0 = time.perf_counter()
+    segments = Vec.restore_geoinformation(segments, config, profile)
+    timings['restore_s'] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    stems = Vec.build_stem_parts(segments)
+    timings['build_s'] = time.perf_counter() - t0
+    if not stems:
+        timings['total_s'] = time.perf_counter() - total_t0
+        if bool(getattr(config, 'vector_summary_log', True)):
+            _vector_summary(tile_label, fg_count, segment_count, 0, timings, None)
+        return None
+
+    t0 = time.perf_counter()
+    stems = Vec.connect_stems(stems, config)
+    timings['connect_s'] = time.perf_counter() - t0
+    if not stems:
+        timings['total_s'] = time.perf_counter() - total_t0
+        if bool(getattr(config, 'vector_summary_log', True)):
+            _vector_summary(tile_label, fg_count, segment_count, 0, timings, None)
+        return None
+
+    Vec.rebuild_endnodes_from_stems(stems)
+
+    t0 = time.perf_counter()
+    stems = Quant.quantify_stems(stems, pred, profile, config=config)
+    timings['quant_s'] = time.perf_counter() - t0
+    if not stems:
+        timings['total_s'] = time.perf_counter() - total_t0
+        if bool(getattr(config, 'vector_summary_log', True)):
+            _vector_summary(tile_label, fg_count, segment_count, 0, timings, None)
+        return None
+    stem_count = len(stems)
+
+    t0 = time.perf_counter()
+    output_path = export_tile_results(stems, profile, process_type, output_prefix)
+    timings['write_s'] = time.perf_counter() - t0
+    timings['total_s'] = time.perf_counter() - total_t0
+
+    if bool(getattr(config, 'vector_summary_log', True)):
+        _vector_summary(tile_label, fg_count, segment_count, stem_count, timings, output_path)
+    return output_path
+
+
+def _run_with_debug_control(fn, config, *args, **kwargs):
+    if bool(getattr(config, 'vector_debug', False)):
+        return fn(*args, **kwargs)
+    sink = io.StringIO()
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        return fn(*args, **kwargs)
+
+
 def process_prediction_array_to_gpkg(
     pred_arr,
     profile,
@@ -45,26 +137,24 @@ def process_prediction_array_to_gpkg(
             setattr(config, key, value)
         except Exception:
             pass
-    config.cpu_workers = 1
+    config.cpu_workers = max(1, int(getattr(config, 'cpu_workers', 1) or 1))
     config.vector_tile_workers = 1
 
     pred = np.asarray(pred_arr)
     if pred.size == 0 or not np.any(pred >= 1):
         return None
 
-    segments = Skel.find_segments(pred, config, profile)
-    if not segments:
-        return None
-    segments = Vec.restore_geoinformation(segments, config, profile)
-    stems = Vec.build_stem_parts(segments)
-    stems = Vec.connect_stems(stems, config)
-    if not stems:
-        return None
-    Vec.rebuild_endnodes_from_stems(stems)
-    stems = Quant.quantify_stems(stems, pred, profile, config=config)
-    if not stems:
-        return None
-    return export_tile_results(stems, profile, process_type, output_prefix)
+    tile_label = os.path.basename(output_prefix)
+    return _run_with_debug_control(
+        _run_vector_pipeline,
+        config,
+        pred,
+        profile,
+        config,
+        process_type,
+        output_prefix,
+        tile_label,
+    )
 
 
 def process_prediction_tile(
@@ -74,24 +164,20 @@ def process_prediction_tile(
     output_prefix: str,
 ):
     pred, profile = load_stem_map(pred_tile_path)
-    print(f"Processing prediction tile: {pred_tile_path}", flush=True)
     pred_arr = np.asarray(pred)
     if pred_arr.size == 0 or not np.any(pred_arr >= 1):
-        print(f"Skipping empty prediction tile: {pred_tile_path}", flush=True)
         return None
-    segments = Skel.find_segments(pred, config, profile)
-    if not segments:
-        return None
-    segments = Vec.restore_geoinformation(segments, config, profile)
-    stems = Vec.build_stem_parts(segments)
-    stems = Vec.connect_stems(stems, config)
-    if not stems:
-        return None
-    Vec.rebuild_endnodes_from_stems(stems)
-    stems = Quant.quantify_stems(stems, pred, profile, config=config)
-    if not stems:
-        return None
-    return export_tile_results(stems, profile, process_type, output_prefix)
+    tile_label = os.path.splitext(os.path.basename(pred_tile_path))[0]
+    return _run_with_debug_control(
+        _run_vector_pipeline,
+        config,
+        pred,
+        profile,
+        config,
+        process_type,
+        output_prefix,
+        tile_label,
+    )
 
 
 def _process_prediction_tile_star(args):

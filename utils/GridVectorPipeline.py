@@ -11,6 +11,7 @@ from statistics import median
 from typing import Dict, List, Tuple
 
 import numpy as np
+import psutil
 import rasterio
 from rasterio.windows import Window
 
@@ -239,6 +240,90 @@ def _dense_threshold(history, config):
     return max(float(min_fg), float(median(history)) * factor)
 
 
+def _enqueue_vector_item(waiting_heap, sequence, item):
+    heapq.heappush(waiting_heap, (int(sequence), item))
+    return int(sequence) + 1
+
+
+def _read_memory_state(config):
+    state = {
+        'memory_pressure': False,
+        'memory_used_pct': None,
+        'memory_available_gb': None,
+    }
+    if not bool(getattr(config, 'grid_memory_pressure_enabled', True)):
+        return state
+    try:
+        vm = psutil.virtual_memory()
+    except Exception:
+        return state
+    used_pct = float(vm.percent)
+    avail_gb = float(vm.available) / (1024.0 ** 3)
+    used_threshold = float(getattr(config, 'grid_memory_pressure_threshold_pct', 92.0) or 92.0)
+    min_avail_gb = float(getattr(config, 'grid_memory_available_min_gb', 4.0) or 4.0)
+    state.update({
+        'memory_pressure': used_pct >= used_threshold or avail_gb <= min_avail_gb,
+        'memory_used_pct': used_pct,
+        'memory_available_gb': avail_gb,
+    })
+    return state
+
+
+def _classify_worker_exception(exc):
+    message = f'{type(exc).__name__}: {exc}'.lower()
+    oom_markers = (
+        'out of memory', 'oom', 'memoryerror', 'std::bad_alloc',
+        'cuda_error_out_of_memory', 'resource exhausted',
+    )
+    return {
+        'is_oom': any(marker in message for marker in oom_markers),
+        'message': f'{type(exc).__name__}: {exc}',
+    }
+
+
+def _queue_state_string(max_workers, worker_target, pending, waiting_heap, stats, queue_limit):
+    busy = len(pending)
+    idle = max(int(worker_target) - busy, 0)
+    cooldown_s = max(0.0, float(stats.get('oom_cooldown_until', 0.0) or 0.0) - time.monotonic())
+    mem_used = stats.get('memory_used_pct')
+    mem_avail = stats.get('memory_available_gb')
+    mem_txt = 'n/a'
+    if mem_used is not None and mem_avail is not None:
+        mem_txt = f'{mem_used:.1f}%/{mem_avail:.1f}GiB'
+    return (
+        f'lifecycle alive {max_workers} target {worker_target} busy {busy} idle {idle} '
+        f'completed {int(stats.get("completed_jobs", 0) or 0)} '
+        f'failed {int(stats.get("failed_jobs", 0) or 0)} | '
+        f'queue ready {len(waiting_heap)} running {busy} limit {queue_limit} | '
+        f'reason {stats.get("worker_target_reason", "steady")} '
+        f'failure_streak {int(stats.get("failure_streak", 0) or 0)} '
+        f'oom_cooldown {cooldown_s:.1f}s mem {mem_txt}'
+    )
+
+
+def _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit, force=False):
+    if not bool(getattr(config, 'grid_log_schedule_events', True)):
+        return
+    snapshot = (
+        int(worker_target),
+        int(queue_limit),
+        str(stats.get('worker_target_reason', 'steady')),
+        int(stats.get('failure_streak', 0) or 0),
+        bool(stats.get('memory_pressure', False)),
+        int(len(pending)),
+        int(len(waiting_heap)),
+    )
+    if not force and stats.get('last_schedule_snapshot') == snapshot:
+        return
+    stats['last_schedule_snapshot'] = snapshot
+    print(
+        'SCHED EVENT | ' + _queue_state_string(
+            max_workers, worker_target, pending, waiting_heap, stats, queue_limit,
+        ),
+        flush=True,
+    )
+
+
 def _make_child_tile(parent_job, parent_arr, parent_profile, local_inner_bounds, halo_px, suffix):
     r0, r1, c0, c1 = [int(v) for v in local_inner_bounds]
     if r1 <= r0 or c1 <= c0:
@@ -350,7 +435,7 @@ def _build_vector_items(
 
 def _submit_available(waiting_heap, pending, pool, active_limit, cfg_dict, process_type):
     while waiting_heap and len(pending) < active_limit:
-        _, _, item = heapq.heappop(waiting_heap)
+        _, item = heapq.heappop(waiting_heap)
         fut = pool.submit(
             process_prediction_array_to_gpkg,
             item['arr'],
@@ -378,7 +463,7 @@ def _wait_one(pending):
     return completed, remaining
 
 
-def _pop_completed(pending, tile_outputs, keep_temp, raster_profile, target_crs_box, stats, alpha, dense_cutoff):
+def _pop_completed(pending, tile_outputs, keep_temp, raster_profile, target_crs_box, stats, alpha, dense_cutoff, config):
     completed, remaining = _wait_one(pending)
     pending[:] = remaining
     target_crs = target_crs_box[0]
@@ -389,7 +474,27 @@ def _pop_completed(pending, tile_outputs, keep_temp, raster_profile, target_crs_
         stats['vec_job_ema'] = _ema(stats['vec_job_ema'], elapsed, alpha)
         if is_dense:
             stats['vec_dense_ema'] = _ema(stats['vec_dense_ema'], elapsed, alpha)
-        gpkg_path = rec['future'].result()
+        try:
+            gpkg_path = rec['future'].result()
+        except Exception as exc:
+            failure = _classify_worker_exception(exc)
+            stats['failed_jobs'] = int(stats.get('failed_jobs', 0) or 0) + 1
+            stats['failure_streak'] = int(stats.get('failure_streak', 0) or 0) + 1
+            if failure['is_oom']:
+                cooldown_s = float(getattr(config, 'grid_oom_cooldown_s', 120.0) or 120.0)
+                stats['oom_events'] = int(stats.get('oom_events', 0) or 0) + 1
+                stats['oom_cooldown_until'] = max(
+                    float(stats.get('oom_cooldown_until', 0.0) or 0.0),
+                    time.monotonic() + cooldown_s,
+                )
+            if bool(getattr(config, 'grid_log_schedule_events', True)):
+                print(
+                    f'VECTOR FAILURE | tile {item["tile_job"].tile_id} | elapsed {elapsed:.3f}s | '
+                    f'message {failure["message"]}',
+                    flush=True,
+                )
+            continue
+        stats['failure_streak'] = 0
         if gpkg_path is not None:
             tile_outputs.append((item['tile_job'], gpkg_path))
             stats['completed_jobs'] += 1
@@ -402,27 +507,47 @@ def _pop_completed(pending, tile_outputs, keep_temp, raster_profile, target_crs_
     return completed
 
 
-def _current_worker_target(config, stats):
+def _current_worker_target(config, stats, now=None):
     min_workers = max(1, int(getattr(config, 'grid_vector_workers_min', 1) or 1))
     max_workers = max(min_workers, int(getattr(config, 'grid_vector_workers_max', getattr(config, 'grid_vector_workers', min_workers)) or min_workers))
+    base_workers = max(min_workers, min(max_workers, int(getattr(config, 'grid_vector_workers', max_workers) or max_workers)))
+    if now is None:
+        now = time.monotonic()
+
+    mem_state = _read_memory_state(config)
+    stats.update(mem_state)
+    stats['worker_target_base'] = base_workers
     if not bool(getattr(config, 'grid_adaptive_workers', True)):
-        return max(min_workers, min(max_workers, int(getattr(config, 'grid_vector_workers', min_workers) or min_workers)))
+        stats['worker_target_reason'] = 'fixed'
+        return base_workers
 
-    pred_ema = stats.get('pred_tile_ema')
-    jobs_per_tile_ema = max(1.0, float(stats.get('jobs_per_tile_ema') or 1.0))
-    vec_ema = stats.get('vec_dense_ema') or stats.get('vec_job_ema')
-    if pred_ema is None or vec_ema is None:
-        return max(min_workers, min(max_workers, int(getattr(config, 'grid_vector_workers', min_workers) or min_workers)))
+    target = base_workers
+    reasons = []
+    if bool(mem_state.get('memory_pressure', False)):
+        target = max(min_workers, min(target, base_workers - 1 if base_workers > min_workers else min_workers))
+        reasons.append('memory_pressure')
 
-    margin = float(getattr(config, 'grid_adaptive_margin', 1.15) or 1.15)
-    target = int(math.ceil(margin * float(vec_ema) * jobs_per_tile_ema / max(float(pred_ema), 1e-6)))
-    return max(min_workers, min(max_workers, target))
+    failure_streak = int(stats.get('failure_streak', 0) or 0)
+    failure_reduce_after = max(1, int(getattr(config, 'grid_failure_reduce_after', 3) or 3))
+    if failure_streak >= failure_reduce_after:
+        reduction = min(failure_streak - failure_reduce_after + 1, max(0, base_workers - min_workers))
+        target = max(min_workers, min(target, base_workers - reduction))
+        reasons.append('repeated_failures')
+
+    oom_cooldown_until = float(stats.get('oom_cooldown_until', 0.0) or 0.0)
+    if oom_cooldown_until > now:
+        target = max(min_workers, min(target, 1))
+        reasons.append('oom_cooldown')
+
+    stats['worker_target_reason'] = '+'.join(reasons) if reasons else 'steady'
+    return target
 
 
 def _current_queue_limit(config, worker_target):
     base = int(getattr(config, 'grid_inflight_tiles', 6) or 6)
     mult = float(getattr(config, 'grid_queue_multiplier', 3.0) or 3.0)
-    return max(base, int(math.ceil(mult * max(1, worker_target))))
+    configured_workers = max(1, int(getattr(config, 'grid_vector_workers_max', worker_target) or worker_target))
+    return max(base, int(math.ceil(mult * configured_workers)))
 
 
 def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_type, config):
@@ -492,6 +617,10 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
         'vec_dense_ema': None,
         'jobs_per_tile_ema': None,
         'completed_jobs': 0,
+        'failed_jobs': 0,
+        'failure_streak': 0,
+        'oom_events': 0,
+        'oom_cooldown_until': 0.0,
     }
 
     with rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
@@ -500,16 +629,20 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
             tile_t0 = time.monotonic()
             tile_arr, tile_profile, pred_stats = _predict_binary_grid_tile(
                 uav_path, model, grid_job, jobs_by_grid.get(grid_job.tile_id, []), config)
-            total_read_s += float(pred_stats.get('read_s', 0.0))
-            total_infer_s += float(pred_stats.get('infer_s', 0.0))
+            tile_elapsed = max(time.monotonic() - tile_t0, 1e-6)
+            tile_read_s = float(pred_stats.get('read_s', 0.0))
+            tile_infer_s = float(pred_stats.get('infer_s', 0.0))
+            total_read_s += tile_read_s
+            total_infer_s += tile_infer_s
 
             r0, r1, c0, c1 = _inner_slice(grid_job)
             inner_arr = np.ascontiguousarray(tile_arr[r0:r1, c0:c1], dtype=np.uint8)
             dst.write(inner_arr, 1, window=grid_job.inner_window)
             predicted_tiles += 1
-            stats['pred_tile_ema'] = _ema(stats['pred_tile_ema'], time.monotonic() - tile_t0, alpha)
+            stats['pred_tile_ema'] = _ema(stats['pred_tile_ema'], tile_read_s + tile_infer_s, alpha)
 
             fg_count, _ = _tile_complexity(tile_arr, grid_job, use_inner=True)
+            vector_jobs_created = 0
             if fg_count > 0:
                 nonzero_history.append(fg_count)
                 vector_items, split_count = _build_vector_items(
@@ -525,16 +658,24 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 if vector_items:
                     submitted_tiles += 1
                     split_tiles += split_count
+                    vector_jobs_created = len(vector_items)
                     stats['jobs_per_tile_ema'] = _ema(
                         stats['jobs_per_tile_ema'], len(vector_items), alpha)
                     for item in vector_items:
-                        score = int(item['score']) if bool(getattr(config, 'grid_priority_dense_first', True)) else 0
-                        heapq.heappush(waiting_heap, (-score, sequence, item))
-                        sequence += 1
+                        sequence = _enqueue_vector_item(waiting_heap, sequence, item)
+
+            if bool(getattr(config, 'prediction_tile_log', True)):
+                print(
+                    f'PRED TILE {grid_job.tile_id} | pred_jobs {len(jobs_by_grid.get(grid_job.tile_id, []))} | '
+                    f'fg {fg_count} | vec_jobs {vector_jobs_created} | '
+                    f'read {tile_read_s:.3f}s | infer {tile_infer_s:.3f}s | total {tile_elapsed:.3f}s',
+                    flush=True,
+                )
 
             worker_target = _current_worker_target(config, stats)
             queue_limit = _current_queue_limit(config, worker_target)
             _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+            _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
             submitted_jobs = max(submitted_jobs, len(pending) + len(waiting_heap))
 
             while len(pending) + len(waiting_heap) > queue_limit and pending:
@@ -548,9 +689,12 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                     stats,
                     alpha,
                     dense_cutoff,
+                    config,
                 )
                 worker_target = _current_worker_target(config, stats)
+                queue_limit = _current_queue_limit(config, worker_target)
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+                _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
 
             now = time.monotonic()
             if idx == 1 or idx == len(grid_jobs) or (now - last_report) >= progress_interval_s:
@@ -558,19 +702,23 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 rate = idx / elapsed
                 eta_s = (len(grid_jobs) - idx) / rate if rate > 0 else float('inf')
                 dense_cutoff = _dense_threshold(nonzero_history, config)
+                queue_limit = _current_queue_limit(config, worker_target)
                 print(
                     f'Grid tiles predicted {idx}/{len(grid_jobs)} | {idx / len(grid_jobs):.1%} | '
                     f'{rate * 60:.2f} tiles/min | ETA {Pred._format_eta(eta_s)} | '
                     f'avg read {total_read_s / max(idx, 1):.3f}s infer {total_infer_s / max(idx, 1):.3f}s | '
-                    f'workers {worker_target}/{max_workers} | pending {len(pending)} | queued {len(waiting_heap)} | '
-                    f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles}',
+                    f'last read {tile_read_s:.3f}s infer {tile_infer_s:.3f}s total {tile_elapsed:.3f}s | '
+                    f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles} | '
+                    f'{_queue_state_string(max_workers, worker_target, pending, waiting_heap, stats, queue_limit)}',
                     flush=True,
                 )
                 last_report = now
 
         while waiting_heap or pending:
             worker_target = _current_worker_target(config, stats)
+            queue_limit = _current_queue_limit(config, worker_target)
             _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+            _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
             if pending:
                 dense_cutoff = _dense_threshold(nonzero_history, config)
                 _pop_completed(
@@ -582,6 +730,7 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                     stats,
                     alpha,
                     dense_cutoff,
+                    config,
                 )
             elif waiting_heap:
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
@@ -612,6 +761,8 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     print(f'Grid tiles predicted:  {predicted_tiles}')
     print(f'Grid tiles submitted:  {submitted_tiles}')
     print(f'Vector jobs completed: {stats["completed_jobs"]}')
+    print(f'Vector jobs failed:    {stats["failed_jobs"]}')
+    print(f'OOM cooldown events:   {stats["oom_events"]}')
     print(f'Dense tiles split:     {split_tiles}')
     print(f'Tile temp directory:   {work_dir}')
 

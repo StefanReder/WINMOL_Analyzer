@@ -21,8 +21,11 @@ from utils.GridVectorPipeline import (
     _current_worker_target,
     _dense_threshold,
     _ema,
+    _enqueue_vector_item,
+    _log_schedule_event,
     _pop_completed,
     _prediction_core_step,
+    _queue_state_string,
     _submit_available,
     build_aligned_grid,
 )
@@ -240,9 +243,9 @@ def _release_ready_tiles(
                 stats['jobs_per_tile_ema'] = _ema(
                     stats.get('jobs_per_tile_ema'), len(vector_items), alpha)
                 for item in vector_items:
-                    score = int(item['score']) if bool(getattr(config, 'grid_priority_dense_first', True)) else 0
-                    heapq.heappush(waiting_heap, (-score, sequence_box[0], item))
-                    sequence_box[0] += 1
+                    sequence_box[0] = _enqueue_vector_item(
+                        waiting_heap, sequence_box[0], item,
+                    )
         stripe['release_index'] += 1
     return released_tiles, split_tiles
 
@@ -331,6 +334,10 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
         'vec_dense_ema': None,
         'jobs_per_tile_ema': None,
         'completed_jobs': 0,
+        'failed_jobs': 0,
+        'failure_streak': 0,
+        'oom_events': 0,
+        'oom_cooldown_until': 0.0,
     }
     pending_pred_s = 0.0
     active_idx = 0
@@ -347,7 +354,9 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
         for dst_row, row_jobs in _row_groups(pred_jobs):
             row_t0 = time.monotonic()
             row_strip = _read_prediction_row_strip(src, row_jobs, indexes)
-            total_read_s += float(row_strip['read_s'])
+            row_read_s = float(row_strip['read_s'])
+            row_infer_s = 0.0
+            total_read_s += row_read_s
             for start_idx in range(0, len(row_jobs), batch_size):
                 batch_jobs = row_jobs[start_idx:start_idx + batch_size]
                 raw_tiles = []
@@ -359,17 +368,17 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                 infer0 = time.perf_counter()
                 pred_cores = Pred._predict_batch_core(raw_tiles, raw_masks, model, config)
                 infer_s = time.perf_counter() - infer0
+                row_infer_s += infer_s
                 total_infer_s += infer_s
                 for job, pred_core in zip(batch_jobs, pred_cores):
-                    # keep at most current and next stripe active; activate one look-ahead when needed
                     for idx in range(active_idx, min(active_idx + 2, len(stripes))):
                         stripe = stripes[idx]
                         if stripe['arr'] is None:
                             _activate_stripe(stripe, out_profile)
                         _paste_core_to_stripe(stripe, job, pred_core, int(out_profile['width']))
             row_strip = None
-            row_elapsed = time.monotonic() - row_t0
-            pending_pred_s += row_elapsed
+            row_elapsed = max(time.monotonic() - row_t0, 1e-6)
+            pending_pred_s += row_read_s + row_infer_s
             rows_done += 1
             row_ready = int(dst_row) + core_h
 
@@ -412,9 +421,18 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                 pending_pred_s = 0.0
             released_tiles_total += released_now
 
+            if bool(getattr(config, 'prediction_tile_log', True)):
+                print(
+                    f'PRED ROW {rows_done}/{layout["y_tiles"]} | pred_jobs {len(row_jobs)} | '
+                    f'released {released_now} | read {row_read_s:.3f}s | '
+                    f'infer {row_infer_s:.3f}s | total {row_elapsed:.3f}s',
+                    flush=True,
+                )
+
             worker_target = _current_worker_target(config, stats)
             queue_limit = _current_queue_limit(config, worker_target)
             _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+            _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
             while len(pending) + len(waiting_heap) > queue_limit and pending:
                 dense_cutoff = _dense_threshold(nonzero_history, config)
                 _pop_completed(
@@ -426,9 +444,12 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                     stats,
                     alpha,
                     dense_cutoff,
+                    config,
                 )
                 worker_target = _current_worker_target(config, stats)
+                queue_limit = _current_queue_limit(config, worker_target)
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+                _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
 
             now = time.monotonic()
             if rows_done == 1 or rows_done == layout['y_tiles'] or (now - last_report) >= progress_interval_s:
@@ -440,9 +461,10 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                     f'Prediction rows completed {rows_done}/{layout["y_tiles"]} | {rows_done / layout["y_tiles"]:.1%} | '
                     f'{rate * 60:.2f} rows/min | ETA {Pred._format_eta(eta_s)} | '
                     f'avg read {total_read_s / max(rows_done, 1):.3f}s infer {total_infer_s / max(rows_done, 1):.3f}s | '
+                    f'last read {row_read_s:.3f}s infer {row_infer_s:.3f}s total {row_elapsed:.3f}s | '
                     f'vector tiles released {released_tiles_total}/{len(grid_jobs)} | '
-                    f'workers {worker_target}/{max_workers} | pending {len(pending)} | queued {len(waiting_heap)} | '
-                    f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles}',
+                    f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles} | '
+                    f'{_queue_state_string(max_workers, worker_target, pending, waiting_heap, stats, queue_limit)}',
                     flush=True,
                 )
                 last_report = now
@@ -472,7 +494,9 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
             stats['pred_tile_ema'] = _ema(stats.get('pred_tile_ema'), pending_pred_s / max(1, released_tiles_total), alpha)
         while waiting_heap or pending:
             worker_target = _current_worker_target(config, stats)
+            queue_limit = _current_queue_limit(config, worker_target)
             _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+            _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
             if pending:
                 dense_cutoff = _dense_threshold(nonzero_history, config)
                 _pop_completed(
@@ -484,6 +508,7 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                     stats,
                     alpha,
                     dense_cutoff,
+                    config,
                 )
             elif waiting_heap:
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
@@ -514,6 +539,8 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
     print(f'Prediction row groups: {layout["y_tiles"]}')
     print(f'Grid tiles released:   {released_tiles_total}')
     print(f'Vector jobs completed: {stats["completed_jobs"]}')
+    print(f'Vector jobs failed:    {stats["failed_jobs"]}')
+    print(f'OOM cooldown events:   {stats["oom_events"]}')
     print(f'Dense tiles split:     {split_tiles}')
     print(f'Stripe temp directory: {work_dir}')
 
