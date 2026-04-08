@@ -108,6 +108,7 @@ class ImageProcessing:
             if plan.vector_mode == 'tiled' \
             else plan.cpu_workers
         self.config.gpu_workers = plan.gpu_workers
+        self.config.vector_mode = plan.vector_mode
         self.config.vector_tile_workers = plan.vector_tile_workers
         self.config.grid_vector_workers = plan.vector_tile_workers
         self.config.prediction_batch_size = plan.prediction_batch_size

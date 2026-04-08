@@ -117,7 +117,8 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
 
 
 def _run_with_debug_control(fn, config, *args, **kwargs):
-    if bool(getattr(config, 'vector_debug', False)):
+    vector_mode = str(getattr(config, 'vector_mode', 'tiled') or 'tiled').lower()
+    if vector_mode != 'tiled' or bool(getattr(config, 'vector_debug', False)):
         return fn(*args, **kwargs)
     sink = io.StringIO()
     with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
