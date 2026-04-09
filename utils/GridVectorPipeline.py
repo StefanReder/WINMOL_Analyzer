@@ -15,7 +15,6 @@ import psutil
 import rasterio
 from rasterio.windows import Window
 
-from classes.Config import Config
 from utils import IO
 from utils import Prediction as Pred
 from utils.Tiling import (

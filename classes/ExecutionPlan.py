@@ -159,8 +159,6 @@ def build_execution_plan(  # noqa: C901
             max(1, int(_cfg(config, 'prediction_producer_workers_cpu', 1)))
         progress_interval_s = \
             float(_cfg(config, 'progress_interval_s_cpu', 45.0))
-        vector_tile_workers = 1 if not huge_nodes_job \
-            else max(1, min(2, cpu_workers // 4 or 1))
     elif scen == SINGLE_GPU:
         cpu_workers = max(1, min(
             max_cpu_workers,
@@ -188,8 +186,6 @@ def build_execution_plan(  # noqa: C901
             max(1, min(producer_workers, max(1, cpu_workers // 3)))
         progress_interval_s = \
             float(_cfg(config, 'progress_interval_s_gpu', 60.0))
-        vector_tile_workers = 1 if not huge_nodes_job \
-            else max(1, min(3, cpu_workers // 4 or 1))
     else:
         gpu_available = int(getattr(hardware, 'gpu_count', 0) or 0)
         gpu_workers = max(1, min(max_gpu_workers, gpu_available))
@@ -216,8 +212,6 @@ def build_execution_plan(  # noqa: C901
             _cfg(config, 'prediction_producer_workers_multi_gpu', 2)))
         progress_interval_s = float(
             _cfg(config, 'progress_interval_s_multi_gpu', 20.0))
-        vector_tile_workers = 1 if not huge_nodes_job else max(
-            1, min(6, cpu_workers // 8 or 1))
 
     if huge_nodes_job:
         vector_tile_workers = max(1, min(4, cpu_workers, max(hw_cpu - 1, 1)))

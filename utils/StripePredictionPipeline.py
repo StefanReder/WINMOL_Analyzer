@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures as cf
-import heapq
 import math
 import multiprocessing as mp
 import os
@@ -30,7 +29,6 @@ from utils.GridVectorPipeline import (
     build_aligned_grid,
 )
 from utils.Tiling import tile_profile_from_parent
-from utils.VectorTilePipeline import process_prediction_array_to_gpkg
 
 
 def _aligned_stripe_inner_rows_px(grid_inner_px: int, step_px: int, config) -> int:
@@ -126,28 +124,39 @@ def _job_row_range(job):
 def _read_prediction_row_strip(src, row_jobs, indexes):
     if not row_jobs:
         return None
+
     src_row0 = min(int(job['src_row']) for job in row_jobs)
     src_row1 = max(int(job['src_row']) + int(job['src_height']) for job in row_jobs)
     src_col0 = min(int(job['src_col']) for job in row_jobs)
     src_col1 = max(int(job['src_col']) + int(job['src_width']) for job in row_jobs)
+
     window = Window(
         col_off=src_col0,
         row_off=src_row0,
         width=max(1, src_col1 - src_col0),
         height=max(1, src_row1 - src_row0),
     )
+
     t0 = time.perf_counter()
-    arr = src.read(indexes, window=window, boundless=True, fill_value=0).transpose(1, 2, 0)
+    data = src.read(indexes, window=window, boundless=True, fill_value=0)
+    t1 = time.perf_counter()
     gdal_mask = src.read_masks(1, window=window, boundless=True) > 0
-    read_s = time.perf_counter() - t0
+    t2 = time.perf_counter()
+    arr = data.transpose(1, 2, 0)
+    t3 = time.perf_counter()
+
     return {
         'src_row0': int(src_row0),
         'src_col0': int(src_col0),
         'arr': arr,
         'gdal_mask': gdal_mask,
-        'read_s': read_s,
+        'read_s': float(t3 - t0),
+        'read_data_s': float(t1 - t0),
+        'read_mask_s': float(t2 - t1),
+        'transpose_s': float(t3 - t2),
+        'window_height': int(window.height),
+        'window_width': int(window.width),
     }
-
 
 
 def _slice_prediction_job_from_row_strip(row_strip, job):

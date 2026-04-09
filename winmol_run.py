@@ -324,18 +324,28 @@ class ImageProcessing:
 
     def run_tree_pipeline(self, plan):
         use_stripe = bool(getattr(self.config, 'stripe_pipeline', False))
-        env_disable_stripe = os.environ.get('WINMOL_DISABLE_STRIPE_PIPELINE', '')
+        env_disable_stripe = os.environ.get(
+            'WINMOL_DISABLE_STRIPE_PIPELINE', '')
         env_disable_stripe = env_disable_stripe.strip().lower() in {
             '1', 'true', 'yes', 'on'}
-        if use_stripe and not env_disable_stripe:
-            return self.run_stripe_binary_tree_pipeline(plan)
 
         use_grid = bool(getattr(self.config, 'grid_pipeline', False))
         env_disable_grid = os.environ.get('WINMOL_DISABLE_GRID_PIPELINE', '')
         env_disable_grid = env_disable_grid.strip().lower() in {
             '1', 'true', 'yes', 'on'}
-        if use_grid and not env_disable_grid:
-            return self.run_grid_binary_tree_pipeline(plan)
+
+        can_use_integrated_binary_pipeline = (
+            self.process_type in {'Trees', 'Nodes'}
+            and plan.vector_mode == 'tiled'
+            and plan.prediction_mode in {'stream', 'cpu_stream'}
+        )
+
+        if can_use_integrated_binary_pipeline:
+            if use_stripe and not env_disable_stripe:
+                return self.run_stripe_binary_tree_pipeline(plan)
+
+            if use_grid and not env_disable_grid:
+                return self.run_grid_binary_tree_pipeline(plan)
 
         pred, profile, pred_path = self.run_prediction_phase(plan)
         return self.run_vector_phase(

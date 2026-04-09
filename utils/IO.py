@@ -915,9 +915,16 @@ def _detect_tiles(work_dir, output_gpkg):
                     prefix = rf.replace(ext, "")
                     break
 
-            gpkg = sorted(str(p) for p in work_dir_path.rglob(f"{prefix}*.gpkg"))
+            gpkg = sorted(
+                str(p) for p in work_dir_path.rglob(f"{prefix}*.gpkg")
+            )
             if not gpkg:
                 continue
+
+            if len(gpkg) > 1:
+                raise RuntimeError(
+                    f"Multiple GPKG candidates found for tile '{prefix}': {gpkg}"
+                )
 
             tiles.append((prefix, gpkg[0], os.path.join(work_dir, rf)))
 
