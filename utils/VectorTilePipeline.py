@@ -162,7 +162,7 @@ def process_prediction_array_to_gpkg(
             setattr(config, key, value)
         except Exception:
             pass
-    config.cpu_workers = max(1, int(getattr(config, 'cpu_workers', 1) or 1))
+    config.cpu_workers = 1
     config.vector_tile_workers = 1
 
     pred = np.asarray(pred_arr)
@@ -219,12 +219,8 @@ def process_prediction_tiles(
     os.makedirs(output_dir, exist_ok=True)
     total_workers = \
         max(1, int(cpu_workers or getattr(config, 'cpu_workers', 1) or 1))
-    requested_tile_workers = \
-        max(1, int(getattr(config, 'vector_tile_workers', 1) or 1))
-    tile_workers = \
-        max(1, min(requested_tile_workers,
-                   len(pred_tile_paths), total_workers))
-    inner_workers = max(1, total_workers // tile_workers)
+    tile_workers = 1
+    inner_workers = total_workers
     progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
 
     tasks = []

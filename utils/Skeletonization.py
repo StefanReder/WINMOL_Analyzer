@@ -30,6 +30,10 @@ def _as_binary_mask(pred):
 
 
 def _worker_count(config=None):
+    proc = mp.current_process()
+    if proc.name != "MainProcess":
+        return 1
+
     value = getattr(config, 'cpu_workers', None) \
         if config is not None else None
     if value is None:
