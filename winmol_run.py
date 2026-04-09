@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
+import json
 import math
 import os
 import shutil
@@ -52,6 +53,30 @@ class ImageProcessing:
         self.trees_path = trees_path
         self.process_type = process_type
         self.config = Config()
+        self.apply_env_config_overrides()
+
+    def apply_env_config_overrides(self):
+        raw = os.environ.get("WINMOL_CONFIG_OVERRIDES_JSON", "").strip()
+        if not raw:
+            return
+
+        try:
+            overrides = json.loads(raw)
+        except Exception as exc:
+            print(f"Invalid WINMOL_CONFIG_OVERRIDES_JSON: {exc}")
+            sys.exit(2)
+
+        if not isinstance(overrides, dict):
+            print("Invalid WINMOL_CONFIG_OVERRIDES_JSON: top-level JSON must be an object.")
+            sys.exit(2)
+
+        print("Applying config overrides from WINMOL_CONFIG_OVERRIDES_JSON:")
+        for key, value in overrides.items():
+            if not hasattr(self.config, key):
+                print(f"  [skip] unknown config key: {key}")
+                continue
+            setattr(self.config, key, value)
+            print(f"  {key:30} {value}")
 
     def detect_hardware(self):
         hardware = HardwareInfo.detect()

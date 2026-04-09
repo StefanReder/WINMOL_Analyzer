@@ -34,6 +34,18 @@ def export_tile_results(stems, profile, process_type: str, output_prefix: str):
     return write_all_layers_to_gpkg(stems, profile, output_prefix)
 
 
+
+def _vector_result(tile_label, output_path, fg_count, segment_count, stem_count, timings):
+    return {
+        'tile_label': tile_label,
+        'gpkg_path': output_path,
+        'fg_count': int(fg_count or 0),
+        'segment_count': int(segment_count or 0),
+        'stem_count': int(stem_count or 0),
+        'timings': dict(timings),
+    }
+
+
 def _vector_summary(tile_label, fg_count, segment_count, stem_count, timings, output_path):
     print(
         f'VECTOR TILE {tile_label} | fg {fg_count} | segments {segment_count} '
@@ -69,7 +81,7 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
         timings['total_s'] = time.perf_counter() - total_t0
         if bool(getattr(config, 'vector_summary_log', True)):
             _vector_summary(tile_label, fg_count, 0, 0, timings, None)
-        return None
+        return _vector_result(tile_label, None, fg_count, 0, 0, timings)
     segment_count = len(segments)
 
     t0 = time.perf_counter()
@@ -83,7 +95,7 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
         timings['total_s'] = time.perf_counter() - total_t0
         if bool(getattr(config, 'vector_summary_log', True)):
             _vector_summary(tile_label, fg_count, segment_count, 0, timings, None)
-        return None
+        return _vector_result(tile_label, None, fg_count, segment_count, 0, timings)
 
     t0 = time.perf_counter()
     stems = Vec.connect_stems(stems, config)
@@ -92,7 +104,7 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
         timings['total_s'] = time.perf_counter() - total_t0
         if bool(getattr(config, 'vector_summary_log', True)):
             _vector_summary(tile_label, fg_count, segment_count, 0, timings, None)
-        return None
+        return _vector_result(tile_label, None, fg_count, segment_count, 0, timings)
 
     Vec.rebuild_endnodes_from_stems(stems)
 
@@ -103,7 +115,7 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
         timings['total_s'] = time.perf_counter() - total_t0
         if bool(getattr(config, 'vector_summary_log', True)):
             _vector_summary(tile_label, fg_count, segment_count, 0, timings, None)
-        return None
+        return _vector_result(tile_label, None, fg_count, segment_count, 0, timings)
     stem_count = len(stems)
 
     t0 = time.perf_counter()
@@ -113,7 +125,14 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
 
     if bool(getattr(config, 'vector_summary_log', True)):
         _vector_summary(tile_label, fg_count, segment_count, stem_count, timings, output_path)
-    return output_path
+    return _vector_result(
+        tile_label,
+        output_path,
+        fg_count,
+        segment_count,
+        stem_count,
+        timings,
+    )
 
 
 def _run_with_debug_control(fn, config, *args, **kwargs):

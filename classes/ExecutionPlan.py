@@ -220,8 +220,8 @@ def build_execution_plan(  # noqa: C901
             1, min(6, cpu_workers // 8 or 1))
 
     if huge_nodes_job:
-        vector_tile_workers = max(1, min(2, cpu_workers, max(hw_cpu - 1, 1)))
-        vector_inner_workers = 2 #max(1, hw_cpu // (vector_tile_workers + 1))
+        vector_tile_workers = max(1, min(4, cpu_workers, max(hw_cpu - 1, 1)))
+        vector_inner_workers = max(1, hw_cpu // (4 + 1))
     else:
         vector_tile_workers = 1
         vector_inner_workers = cpu_workers

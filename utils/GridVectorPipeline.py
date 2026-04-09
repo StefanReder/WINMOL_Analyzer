@@ -114,27 +114,44 @@ def assign_prediction_jobs_to_grid(pred_jobs, grid_jobs, n_rows, n_cols, inner_p
 def _read_raw_prediction_inputs(src, indexes, batch_jobs):
     raw_tiles = []
     raw_masks = []
-    read_s = 0.0
+    stats = {
+        'data_s': 0.0,
+        'mask_s': 0.0,
+        'prep_s': 0.0,
+        'read_s': 0.0,
+    }
+
     for job in batch_jobs:
-        t0 = time.perf_counter()
         window = Window(job['src_col'], job['src_row'], job['src_width'], job['src_height'])
+
+        t0 = time.perf_counter()
         tile = src.read(
             indexes,
             window=window,
             boundless=True,
             fill_value=0,
-        ).transpose(1, 2, 0)
+        )
+        stats['data_s'] += time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         gdal_mask = src.read_masks(
             1,
             window=window,
             boundless=True,
         ) > 0
+        stats['mask_s'] += time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        tile = tile.transpose(1, 2, 0)
         pixel_mask = np.any(tile != 0, axis=2)
         valid_mask = pixel_mask if np.all(gdal_mask) else (gdal_mask & pixel_mask)
-        read_s += time.perf_counter() - t0
+        stats['prep_s'] += time.perf_counter() - t0
+
         raw_tiles.append(tile)
         raw_masks.append(valid_mask)
-    return raw_tiles, raw_masks, read_s
+
+    stats['read_s'] = stats['data_s'] + stats['mask_s'] + stats['prep_s']
+    return raw_tiles, raw_masks, stats
 
 
 def _paste_prediction_core(tile_arr, tile_job, pred_job, pred_core):
@@ -162,7 +179,14 @@ def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config):
         dtype=np.uint8,
     )
     tile_profile = None
-    stats = {'read_s': 0.0, 'infer_s': 0.0, 'jobs': len(pred_jobs)}
+    stats = {
+        'read_s': 0.0,
+        'read_data_s': 0.0,
+        'read_mask_s': 0.0,
+        'prep_s': 0.0,
+        'infer_s': 0.0,
+        'jobs': len(pred_jobs),
+    }
     if not pred_jobs:
         with rasterio.open(uav_path) as src:
             layout = Pred._resampling_layout((src.height, src.width), src.profile.copy(), config)
@@ -193,11 +217,14 @@ def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config):
 
         for start in range(0, len(pred_jobs), batch_size):
             batch_jobs = pred_jobs[start:start + batch_size]
-            raw_tiles, raw_masks, read_s = _read_raw_prediction_inputs(src, indexes, batch_jobs)
+            raw_tiles, raw_masks, read_stats = _read_raw_prediction_inputs(src, indexes, batch_jobs)
             infer0 = time.perf_counter()
             pred_cores = Pred._predict_batch_core(raw_tiles, raw_masks, model, config)
             infer_s = time.perf_counter() - infer0
-            stats['read_s'] += read_s
+            stats['read_s'] += read_stats['read_s']
+            stats['read_data_s'] += read_stats['data_s']
+            stats['read_mask_s'] += read_stats['mask_s']
+            stats['prep_s'] += read_stats['prep_s']
             stats['infer_s'] += infer_s
             for job, pred_core in zip(batch_jobs, pred_cores):
                 _paste_prediction_core(tile_arr, grid_job, job, pred_core)
@@ -475,7 +502,7 @@ def _pop_completed(pending, tile_outputs, keep_temp, raster_profile, target_crs_
         if is_dense:
             stats['vec_dense_ema'] = _ema(stats['vec_dense_ema'], elapsed, alpha)
         try:
-            gpkg_path = rec['future'].result()
+            result = rec['future'].result()
         except Exception as exc:
             failure = _classify_worker_exception(exc)
             stats['failed_jobs'] = int(stats.get('failed_jobs', 0) or 0) + 1
@@ -494,7 +521,20 @@ def _pop_completed(pending, tile_outputs, keep_temp, raster_profile, target_crs_
                     flush=True,
                 )
             continue
+
+        if isinstance(result, dict):
+            gpkg_path = result.get('gpkg_path')
+            stem_count = int(result.get('stem_count', 0) or 0)
+            segment_count = int(result.get('segment_count', 0) or 0)
+        else:
+            gpkg_path = result
+            stem_count = 0
+            segment_count = 0
+
         stats['failure_streak'] = 0
+        stats['detected_stems'] = int(stats.get('detected_stems', 0) or 0) + stem_count
+        stats['detected_segments'] = int(stats.get('detected_segments', 0) or 0) + segment_count
+
         if gpkg_path is not None:
             tile_outputs.append((item['tile_job'], gpkg_path))
             stats['completed_jobs'] += 1
@@ -605,6 +645,9 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     start = time.monotonic()
     last_report = start
     total_read_s = 0.0
+    total_read_data_s = 0.0
+    total_read_mask_s = 0.0
+    total_prep_s = 0.0
     total_infer_s = 0.0
     predicted_tiles = 0
     submitted_tiles = 0
@@ -621,6 +664,8 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
         'failure_streak': 0,
         'oom_events': 0,
         'oom_cooldown_until': 0.0,
+        'detected_stems': 0,
+        'detected_segments': 0,
     }
 
     with rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
@@ -631,8 +676,15 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 uav_path, model, grid_job, jobs_by_grid.get(grid_job.tile_id, []), config)
             tile_elapsed = max(time.monotonic() - tile_t0, 1e-6)
             tile_read_s = float(pred_stats.get('read_s', 0.0))
+            tile_read_data_s = float(pred_stats.get('read_data_s', 0.0))
+            tile_read_mask_s = float(pred_stats.get('read_mask_s', 0.0))
+            tile_prep_s = float(pred_stats.get('prep_s', 0.0))
             tile_infer_s = float(pred_stats.get('infer_s', 0.0))
+
             total_read_s += tile_read_s
+            total_read_data_s += tile_read_data_s
+            total_read_mask_s += tile_read_mask_s
+            total_prep_s += tile_prep_s
             total_infer_s += tile_infer_s
 
             r0, r1, c0, c1 = _inner_slice(grid_job)
@@ -668,7 +720,8 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 print(
                     f'PRED TILE {grid_job.tile_id} | pred_jobs {len(jobs_by_grid.get(grid_job.tile_id, []))} | '
                     f'fg {fg_count} | vec_jobs {vector_jobs_created} | '
-                    f'read {tile_read_s:.3f}s | infer {tile_infer_s:.3f}s | total {tile_elapsed:.3f}s',
+                    f'read_data {tile_read_data_s:.3f}s | read_mask {tile_read_mask_s:.3f}s | '
+                    f'prep {tile_prep_s:.3f}s | infer {tile_infer_s:.3f}s | total {tile_elapsed:.3f}s',
                     flush=True,
                 )
 
@@ -706,8 +759,13 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 print(
                     f'Grid tiles predicted {idx}/{len(grid_jobs)} | {idx / len(grid_jobs):.1%} | '
                     f'{rate * 60:.2f} tiles/min | ETA {Pred._format_eta(eta_s)} | '
-                    f'avg read {total_read_s / max(idx, 1):.3f}s infer {total_infer_s / max(idx, 1):.3f}s | '
-                    f'last read {tile_read_s:.3f}s infer {tile_infer_s:.3f}s total {tile_elapsed:.3f}s | '
+                    f'avg read_data {total_read_data_s / max(idx, 1):.3f}s '
+                    f'read_mask {total_read_mask_s / max(idx, 1):.3f}s '
+                    f'prep {total_prep_s / max(idx, 1):.3f}s '
+                    f'infer {total_infer_s / max(idx, 1):.3f}s | '
+                    f'last read_data {tile_read_data_s:.3f}s read_mask {tile_read_mask_s:.3f}s '
+                    f'prep {tile_prep_s:.3f}s infer {tile_infer_s:.3f}s total {tile_elapsed:.3f}s | '
+                    f'stems detected {int(stats.get("detected_stems", 0) or 0)} | '
                     f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles} | '
                     f'{_queue_state_string(max_workers, worker_target, pending, waiting_heap, stats, queue_limit)}',
                     flush=True,
@@ -759,6 +817,7 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     print('')
     print('GRID PIPELINE SUMMARY')
     print(f'Grid tiles predicted:  {predicted_tiles}')
+    print(f'Detected stems total: {stats["detected_stems"]}')
     print(f'Grid tiles submitted:  {submitted_tiles}')
     print(f'Vector jobs completed: {stats["completed_jobs"]}')
     print(f'Vector jobs failed:    {stats["failed_jobs"]}')

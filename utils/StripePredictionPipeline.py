@@ -323,6 +323,10 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
     start = time.monotonic()
     last_report = start
     total_read_s = 0.0
+    total_read_data_s = 0.0
+    total_read_mask_s = 0.0
+    total_transpose_s = 0.0
+    total_prep_s = 0.0
     total_infer_s = 0.0
     rows_done = 0
     released_tiles_total = 0
@@ -338,6 +342,8 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
         'failure_streak': 0,
         'oom_events': 0,
         'oom_cooldown_until': 0.0,
+        'detected_stems': 0,
+        'detected_segments': 0,
     }
     pending_pred_s = 0.0
     active_idx = 0
@@ -355,16 +361,28 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
             row_t0 = time.monotonic()
             row_strip = _read_prediction_row_strip(src, row_jobs, indexes)
             row_read_s = float(row_strip['read_s'])
+            row_read_data_s = float(row_strip['read_data_s'])
+            row_read_mask_s = float(row_strip['read_mask_s'])
+            row_transpose_s = float(row_strip['transpose_s'])
+            row_window_h = int(row_strip['window_height'])
+            row_window_w = int(row_strip['window_width'])
             row_infer_s = 0.0
+            row_prep_s = 0.0
+
             total_read_s += row_read_s
+            total_read_data_s += row_read_data_s
+            total_read_mask_s += row_read_mask_s
+            total_transpose_s += row_transpose_s
             for start_idx in range(0, len(row_jobs), batch_size):
                 batch_jobs = row_jobs[start_idx:start_idx + batch_size]
                 raw_tiles = []
                 raw_masks = []
+                prep0 = time.perf_counter()
                 for job in batch_jobs:
                     tile, valid_mask = _slice_prediction_job_from_row_strip(row_strip, job)
                     raw_tiles.append(tile)
                     raw_masks.append(valid_mask)
+                row_prep_s += time.perf_counter() - prep0
                 infer0 = time.perf_counter()
                 pred_cores = Pred._predict_batch_core(raw_tiles, raw_masks, model, config)
                 infer_s = time.perf_counter() - infer0
@@ -377,6 +395,7 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                             _activate_stripe(stripe, out_profile)
                         _paste_core_to_stripe(stripe, job, pred_core, int(out_profile['width']))
             row_strip = None
+            total_prep_s += row_prep_s
             row_elapsed = max(time.monotonic() - row_t0, 1e-6)
             pending_pred_s += row_read_s + row_infer_s
             rows_done += 1
@@ -424,7 +443,9 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
             if bool(getattr(config, 'prediction_tile_log', True)):
                 print(
                     f'PRED ROW {rows_done}/{layout["y_tiles"]} | pred_jobs {len(row_jobs)} | '
-                    f'released {released_now} | read {row_read_s:.3f}s | '
+                    f'released {released_now} | src {row_window_h}x{row_window_w} | '
+                    f'read_data {row_read_data_s:.3f}s | read_mask {row_read_mask_s:.3f}s | '
+                    f'xpose {row_transpose_s:.3f}s | prep {row_prep_s:.3f}s | '
                     f'infer {row_infer_s:.3f}s | total {row_elapsed:.3f}s',
                     flush=True,
                 )
@@ -460,9 +481,16 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                 print(
                     f'Prediction rows completed {rows_done}/{layout["y_tiles"]} | {rows_done / layout["y_tiles"]:.1%} | '
                     f'{rate * 60:.2f} rows/min | ETA {Pred._format_eta(eta_s)} | '
-                    f'avg read {total_read_s / max(rows_done, 1):.3f}s infer {total_infer_s / max(rows_done, 1):.3f}s | '
-                    f'last read {row_read_s:.3f}s infer {row_infer_s:.3f}s total {row_elapsed:.3f}s | '
+                    f'avg read_data {total_read_data_s / max(rows_done, 1):.3f}s '
+                    f'read_mask {total_read_mask_s / max(rows_done, 1):.3f}s '
+                    f'xpose {total_transpose_s / max(rows_done, 1):.3f}s '
+                    f'prep {total_prep_s / max(rows_done, 1):.3f}s '
+                    f'infer {total_infer_s / max(rows_done, 1):.3f}s | '
+                    f'last read_data {row_read_data_s:.3f}s read_mask {row_read_mask_s:.3f}s '
+                    f'xpose {row_transpose_s:.3f}s prep {row_prep_s:.3f}s '
+                    f'infer {row_infer_s:.3f}s total {row_elapsed:.3f}s | '
                     f'vector tiles released {released_tiles_total}/{len(grid_jobs)} | '
+                    f'stems detected {int(stats.get("detected_stems", 0) or 0)} | '
                     f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles} | '
                     f'{_queue_state_string(max_workers, worker_target, pending, waiting_heap, stats, queue_limit)}',
                     flush=True,
