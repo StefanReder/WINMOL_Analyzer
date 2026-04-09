@@ -905,6 +905,7 @@ def _detect_tiles(work_dir, output_gpkg):
     ]
 
     tiles = []
+    work_dir_path = Path(work_dir)
 
     if rasters:
         for rf in sorted(rasters):
@@ -914,7 +915,7 @@ def _detect_tiles(work_dir, output_gpkg):
                     prefix = rf.replace(ext, "")
                     break
 
-            gpkg = sorted(glob.glob(os.path.join(work_dir, f"{prefix}*.gpkg")))
+            gpkg = sorted(str(p) for p in work_dir_path.rglob(f"{prefix}*.gpkg"))
             if not gpkg:
                 continue
 
@@ -922,7 +923,8 @@ def _detect_tiles(work_dir, output_gpkg):
 
         return tiles
 
-    for gpkg in sorted(glob.glob(os.path.join(work_dir, "*.gpkg"))):
+    for gpkg_path in sorted(work_dir_path.rglob("*.gpkg")):
+        gpkg = str(gpkg_path)
         if output_gpkg:
             if os.path.abspath(gpkg) == os.path.abspath(output_gpkg):
                 continue
@@ -1048,6 +1050,22 @@ def merge_selected_tile_results(
     total_vectors = 0
     tile_count = 0
 
+    tile_records = sorted(tile_records, key=lambda item: str(item[1]))
+    gpkg_files = sorted({str(Path(gpkg_path)) for _, gpkg_path in tile_records})
+    if gpkg_files:
+        merge_root = Path(os.path.commonpath([str(Path(p).parent) for p in gpkg_files]))
+    else:
+        merge_root = Path(output_gpkg).parent
+    recursive_candidates = []
+    if merge_root.exists():
+        recursive_candidates = sorted(str(p) for p in merge_root.rglob('*.gpkg'))
+    print(
+        f'MERGE DISCOVERY | root {merge_root} | gpkg_files {len(recursive_candidates)}',
+        flush=True,
+    )
+    for candidate in recursive_candidates[:5]:
+        print(f'MERGE INPUT | {candidate}', flush=True)
+
     for tile_job, gpkg_path in tile_records:
         out, target_crs = process_tile_gpkg(
             tile_job, gpkg_path, raster_profile, target_crs=target_crs)
@@ -1117,6 +1135,13 @@ def merge_and_filter_tiled_results(
         os.remove(output_gpkg)
 
     tiles = _detect_tiles(work_dir, output_gpkg)
+    recursive_candidates = sorted(str(p) for p in Path(work_dir).rglob('*.gpkg'))
+    print(
+        f'MERGE DISCOVERY | root {work_dir} | gpkg_files {len(recursive_candidates)}',
+        flush=True,
+    )
+    for candidate in recursive_candidates[:5]:
+        print(f'MERGE INPUT | {candidate}', flush=True)
     if not tiles:
         raise FileNotFoundError(f"No .gpkg files found in: {work_dir}")
 
