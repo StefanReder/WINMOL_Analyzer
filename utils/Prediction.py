@@ -140,7 +140,7 @@ def _binarize_prediction_core(pred_core, mask_core, threshold: float = 0.5):
 def _predict_batch_core(raw_tiles, raw_masks, model, config):
     tile_tensor, mask_resized = _prepare_inference_batch(
         raw_tiles, raw_masks, config)
-    pred = model.predict_on_batch(tile_tensor)
+    pred = np.asarray(model.predict_on_batch(tile_tensor))
     crop = config.overlap_pred // 2
     threshold = float(getattr(config, 'stem_binary_threshold', 0.5))
     pred_cores = []

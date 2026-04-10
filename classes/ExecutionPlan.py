@@ -198,14 +198,25 @@ def build_execution_plan(  # noqa: C901
                        int(_cfg(config, 'multi_gpu_cpu_workers',
                                 max(24, int(max_cpu_workers * 0.75))))))
         if gpu_mem_gb >= 70:
-            default_batch = 8
+            default_per_gpu = 8
         elif gpu_mem_gb >= 40:
-            default_batch = 6
+            default_per_gpu = 6
+        elif gpu_mem_gb >= 20:
+            default_per_gpu = 4
         else:
-            default_batch = 4
-        prediction_batch_size = max(1, min(int(
-            _cfg(config, 'prediction_batch_max_gpu', 12)), int(
-                _cfg(config, 'prediction_batch_gpu', default_batch))))
+            default_per_gpu = 3
+        per_gpu_batch = int(_cfg(
+            config, 'prediction_batch_per_gpu_multi_gpu', default_per_gpu
+        ) or default_per_gpu)
+        requested_total_batch = int(_cfg(
+            config, 'prediction_batch_gpu_multi_gpu',
+            per_gpu_batch * max(gpu_workers, 1)
+        ) or (per_gpu_batch * max(gpu_workers, 1)))
+        max_total_batch = int(_cfg(
+            config, 'prediction_batch_max_multi_gpu',
+            max(int(_cfg(config, 'prediction_batch_max_gpu', 16)), requested_total_batch)
+        ) or requested_total_batch)
+        prediction_batch_size = max(1, min(max_total_batch, requested_total_batch))
         producer_queue_batches = max(4, int(
             _cfg(config, 'producer_queue_batches', 8)))
         producer_workers = max(1, int(

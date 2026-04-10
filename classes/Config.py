@@ -22,6 +22,9 @@ class Config(object):
     prediction_batch_cpu = 1
     prediction_batch_gpu = 2
     prediction_batch_max_gpu = 16
+    prediction_batch_gpu_multi_gpu = None  # total batch across all GPUs
+    prediction_batch_per_gpu_multi_gpu = None
+    prediction_batch_max_multi_gpu = 64
     prediction_batch_autotune = True
     prediction_batch_autotune_patience = 4
     prediction_batch_autotune_repeats = 5

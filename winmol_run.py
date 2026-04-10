@@ -129,9 +129,7 @@ class ImageProcessing:
         return plan
 
     def _apply_plan_to_config(self, plan):
-        self.config.cpu_workers = plan.vector_inner_workers \
-            if plan.vector_mode == 'tiled' \
-            else plan.cpu_workers
+        self.config.cpu_workers = plan.vector_inner_workers             if plan.vector_mode == 'tiled'             else plan.cpu_workers
         self.config.gpu_workers = plan.gpu_workers
         self.config.vector_mode = plan.vector_mode
         self.config.vector_tile_workers = plan.vector_tile_workers
@@ -163,6 +161,18 @@ class ImageProcessing:
                 int(max(6, math.ceil(queue_mult * self.config.grid_vector_workers_max))),
             )
 
+    def _prediction_backend(self, plan):
+        if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
+            from utils.PredictWorkers import build_batch_predictor
+            print(f"\nStarting multi-GPU batch predictor on {plan.gpu_workers} GPU(s)...")
+            return build_batch_predictor(
+                self.model_path,
+                list(range(plan.gpu_workers)),
+                self.config,
+            )
+        print("\nLoading Model...")
+        return IO.load_model_from_path(self.model_path)
+
     def run_prediction_phase(self, plan):
         if plan.prediction_mode == 'full':
             from utils import Prediction as Pred
@@ -183,32 +193,22 @@ class ImageProcessing:
                                                              True) else None)
             return pred, profile, self.stem_path
 
-        if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
-            from utils.PredictWorkers import run_multi_gpu_prediction
-
-            print("\nPerforming multi-GPU streamed prediction...")
-            profile = run_multi_gpu_prediction(
-                self.model_path,
-                self.uav_path,
-                self.stem_path,
-                tile_jobs=None,
-                gpu_ids=list(range(plan.gpu_workers)),
-                config=self.config,
-            )
-            return (None, profile, self.stem_path)
-
         from utils import Prediction as Pred
 
-        print("\nLoading Model...")
-        model = IO.load_model_from_path(self.model_path)
-        print("\nPerforming Prediction with Resampling in stream mode...")
-        profile = Pred.predict_stream_to_raster(
-            self.uav_path,
-            self.stem_path,
-            model,
-            self.config,
-        )
-        return (None, profile, self.stem_path)
+        backend = self._prediction_backend(plan)
+        try:
+            print("\nPerforming Prediction with Resampling in stream mode...")
+            profile = Pred.predict_stream_to_raster(
+                self.uav_path,
+                self.stem_path,
+                backend,
+                self.config,
+            )
+            return (None, profile, self.stem_path)
+        finally:
+            close_fn = getattr(backend, 'close', None)
+            if callable(close_fn):
+                close_fn()
 
     def trees_processing(self, pred, profile):
         print("\nFinding Stem Segments...")
@@ -228,64 +228,40 @@ class ImageProcessing:
     def run_grid_binary_tree_pipeline(self, plan):
         from utils.GridVectorPipeline import run_binary_grid_pipeline
 
-        use_multi_gpu = plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1
-        if use_multi_gpu:
-            print("\nRunning binary coarse-grid prediction/vector pipeline with real multi-GPU prediction...")
+        backend = self._prediction_backend(plan)
+        print("\nRunning binary coarse-grid prediction/vector pipeline...")
+        try:
             return run_binary_grid_pipeline(
-                model=None,
-                model_path=self.model_path,
-                gpu_ids=list(range(plan.gpu_workers)),
+                model=backend,
                 uav_path=self.uav_path,
                 stem_path=self.stem_path,
                 trees_path=self.trees_path,
                 process_type=self.process_type,
                 config=self.config,
             )
-
-        print("\nLoading Model...")
-        model = IO.load_model_from_path(self.model_path)
-        print("\nRunning binary coarse-grid prediction/vector pipeline...")
-        return run_binary_grid_pipeline(
-            model=model,
-            model_path=None,
-            gpu_ids=None,
-            uav_path=self.uav_path,
-            stem_path=self.stem_path,
-            trees_path=self.trees_path,
-            process_type=self.process_type,
-            config=self.config,
-        )
+        finally:
+            close_fn = getattr(backend, 'close', None)
+            if callable(close_fn):
+                close_fn()
 
     def run_stripe_binary_tree_pipeline(self, plan):
         from utils.StripePredictionPipeline import run_stripe_binary_pipeline
 
-        use_multi_gpu = plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1
-        if use_multi_gpu:
-            print("\nRunning binary stripe prediction/vector pipeline with real multi-GPU prediction...")
+        backend = self._prediction_backend(plan)
+        print("\nRunning binary stripe prediction/vector pipeline...")
+        try:
             return run_stripe_binary_pipeline(
-                model=None,
-                model_path=self.model_path,
-                gpu_ids=list(range(plan.gpu_workers)),
+                model=backend,
                 uav_path=self.uav_path,
                 stem_path=self.stem_path,
                 trees_path=self.trees_path,
                 process_type=self.process_type,
                 config=self.config,
             )
-
-        print("\nLoading Model...")
-        model = IO.load_model_from_path(self.model_path)
-        print("\nRunning binary stripe prediction/vector pipeline...")
-        return run_stripe_binary_pipeline(
-            model=model,
-            model_path=None,
-            gpu_ids=None,
-            uav_path=self.uav_path,
-            stem_path=self.stem_path,
-            trees_path=self.trees_path,
-            process_type=self.process_type,
-            config=self.config,
-        )
+        finally:
+            close_fn = getattr(backend, 'close', None)
+            if callable(close_fn):
+                close_fn()
 
     def run_vector_phase(self, plan, pred_path=None, pred=None, profile=None):
         if plan.vector_mode == 'global':

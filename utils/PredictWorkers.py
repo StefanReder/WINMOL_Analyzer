@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import queue
 import time
-from typing import List
+from typing import Any, List
 
 import numpy as np
 import rasterio
@@ -17,7 +18,7 @@ from utils.Prediction import _iter_tile_jobs, _prepare_inference_batch, \
 
 def _config_from_dict(config_dict: dict) -> Config:
     cfg = Config()
-    for key, value in config_dict.items():
+    for key, value in (config_dict or {}).items():
         try:
             setattr(cfg, key, value)
         except Exception:
@@ -53,48 +54,6 @@ def _group_jobs(jobs, batch_size):
         yield batch
 
 
-def _read_batch_jobs(src, indexes, batch_jobs):
-    raw_tiles = []
-    raw_masks = []
-    stats = {
-        'read_s': 0.0,
-        'read_data_s': 0.0,
-        'read_mask_s': 0.0,
-        'prep_s': 0.0,
-        'jobs': len(batch_jobs),
-    }
-    for job in batch_jobs:
-        t0 = time.perf_counter()
-        window = Window(job['src_col'], job['src_row'],
-                        job['src_width'], job['src_height'])
-        tile = src.read(
-            indexes,
-            window=window,
-            boundless=True,
-            fill_value=0,
-        )
-        stats['read_data_s'] += time.perf_counter() - t0
-
-        t0 = time.perf_counter()
-        gdal_mask = src.read_masks(
-            1,
-            window=window,
-            boundless=True,
-        ) > 0
-        stats['read_mask_s'] += time.perf_counter() - t0
-
-        t0 = time.perf_counter()
-        tile = tile.transpose(1, 2, 0)
-        pixel_mask = np.any(tile != 0, axis=2)
-        valid_mask = pixel_mask if np.all(gdal_mask) else (gdal_mask & pixel_mask)
-        stats['prep_s'] += time.perf_counter() - t0
-
-        raw_tiles.append(tile)
-        raw_masks.append(valid_mask)
-    stats['read_s'] = stats['read_data_s'] + stats['read_mask_s'] + stats['prep_s']
-    return raw_tiles, raw_masks, stats
-
-
 def prediction_worker(
     gpu_id: int,
     model_path: str,
@@ -122,7 +81,36 @@ def prediction_worker(
     with rasterio.open(input_raster) as src:
         indexes = list(range(1, min(cfg.n_channels, src.count) + 1))
         for batch_jobs in _group_jobs(jobs, batch_size):
-            raw_tiles, raw_masks, read_stats = _read_batch_jobs(src, indexes, batch_jobs)
+            raw_tiles = []
+            raw_masks = []
+            read_s = 0.0
+            for job in batch_jobs:
+                t0 = time.perf_counter()
+                window = Window(job['src_col'], job['src_row'],
+                                job['src_width'], job['src_height'])
+                tile = src.read(
+                    indexes,
+                    window=window,
+                    boundless=True,
+                    fill_value=0,
+                ).transpose(1, 2, 0)
+
+                gdal_mask = src.read_masks(
+                    1,
+                    window=window,
+                    boundless=True,
+                ) > 0
+
+                pixel_mask = np.any(tile != 0, axis=2)
+
+                if np.all(gdal_mask):
+                    valid_mask = pixel_mask
+                else:
+                    valid_mask = gdal_mask & pixel_mask
+
+                read_s += time.perf_counter() - t0
+                raw_tiles.append(tile)
+                raw_masks.append(valid_mask)
             infer0 = time.perf_counter()
             pred_cores = _predict_batch(raw_tiles, raw_masks, model, cfg)
             infer_s = time.perf_counter() - infer0
@@ -131,20 +119,13 @@ def prediction_worker(
                     'row_off': job['dst_row'],
                     'col_off': job['dst_col'],
                     'array': pred_core,
-                    'read_s': read_stats['read_s'] / max(len(batch_jobs), 1),
+                    'read_s': read_s / max(len(batch_jobs), 1),
                     'infer_s': infer_s / max(len(batch_jobs), 1),
                 })
     results.put({'done': True, 'gpu_id': gpu_id})
 
 
-def prediction_service_worker(
-    gpu_id: int,
-    model_path: str,
-    input_raster: str,
-    tasks,
-    results,
-    config_dict: dict,
-):
+def _batch_predict_worker(gpu_id: int, model_path: str, input_q, output_q, config_dict: dict):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     import tensorflow as tf
     from utils.IO import load_model_from_path
@@ -158,172 +139,122 @@ def prediction_service_worker(
 
     cfg = _config_from_dict(config_dict)
     model = load_model_from_path(model_path)
-    batch_size = max(1, int(getattr(cfg, 'prediction_batch_size', None)
-                            or getattr(cfg, 'prediction_batch_gpu', 4)))
 
-    with rasterio.open(input_raster) as src:
-        indexes = list(range(1, min(cfg.n_channels, src.count) + 1))
-        while True:
-            task = tasks.get()
-            if task is None or task.get('cmd') == 'stop':
-                break
-
-            request_id = int(task['request_id'])
-            jobs = list(task.get('jobs') or [])
-            outputs = []
-            stats = {
-                'jobs': len(jobs),
-                'read_s': 0.0,
-                'read_data_s': 0.0,
-                'read_mask_s': 0.0,
-                'prep_s': 0.0,
-                'infer_s': 0.0,
-            }
-
-            for batch_jobs in _group_jobs(jobs, batch_size):
-                raw_tiles, raw_masks, read_stats = _read_batch_jobs(src, indexes, batch_jobs)
-                infer0 = time.perf_counter()
-                pred_cores = _predict_batch(raw_tiles, raw_masks, model, cfg)
-                stats['infer_s'] += time.perf_counter() - infer0
-                stats['read_s'] += float(read_stats.get('read_s', 0.0))
-                stats['read_data_s'] += float(read_stats.get('read_data_s', 0.0))
-                stats['read_mask_s'] += float(read_stats.get('read_mask_s', 0.0))
-                stats['prep_s'] += float(read_stats.get('prep_s', 0.0))
-                for job, pred_core in zip(batch_jobs, pred_cores):
-                    outputs.append({
-                        'request_index': int(job['__request_index__']),
-                        'job': {k: v for k, v in job.items() if k != '__request_index__'},
-                        'array': pred_core,
-                    })
-
-            results.put({
-                'request_id': request_id,
-                'gpu_id': gpu_id,
-                'outputs': outputs,
-                'stats': stats,
+    while True:
+        task = input_q.get()
+        if task is None:
+            break
+        call_id = int(task['call_id'])
+        start_idx = int(task['start_idx'])
+        batch = np.asarray(task['batch'])
+        if batch.size == 0:
+            output_q.put({
+                'call_id': call_id,
+                'start_idx': start_idx,
+                'pred': np.empty((0,), dtype=np.float32),
+            })
+            continue
+        try:
+            pred = model.predict_on_batch(batch)
+            output_q.put({
+                'call_id': call_id,
+                'start_idx': start_idx,
+                'pred': np.asarray(pred),
+            })
+        except Exception as exc:
+            output_q.put({
+                'call_id': call_id,
+                'start_idx': start_idx,
+                'error': f'{type(exc).__name__}: {exc}',
             })
 
 
-def start_multi_gpu_prediction_service(
-    model_path: str,
-    input_raster: str,
-    gpu_ids: list[int],
-    config,
-):
-    if not gpu_ids:
-        raise ValueError('start_multi_gpu_prediction_service requires at least one GPU id')
+class MultiGPUBatchPredictor:
+    def __init__(self, model_path: str, gpu_ids: list[int], config):
+        if not gpu_ids:
+            raise ValueError('MultiGPUBatchPredictor requires at least one GPU id')
+        self.model_path = model_path
+        self.gpu_ids = [int(g) for g in gpu_ids]
+        self.config = _config_from_dict(dict(getattr(config, 'to_dict', lambda: {})()))
+        self.ctx = mp.get_context('spawn')
+        queue_depth = max(8, len(self.gpu_ids) * 4)
+        self.input_q = self.ctx.Queue(maxsize=queue_depth)
+        self.output_q = self.ctx.Queue(maxsize=queue_depth)
+        self.workers = []
+        self._call_id = 0
+        for gpu_id in self.gpu_ids:
+            proc = self.ctx.Process(
+                target=_batch_predict_worker,
+                args=(gpu_id, model_path, self.input_q, self.output_q, self.config.to_dict()),
+            )
+            proc.start()
+            self.workers.append(proc)
 
-    ctx = mp.get_context('spawn')
-    task_q = ctx.Queue(maxsize=max(8, len(gpu_ids) * 4))
-    result_q = ctx.Queue(maxsize=max(8, len(gpu_ids) * 4))
-    cfg_dict = dict(getattr(config, 'to_dict', lambda: {})())
-    workers = []
-    for gpu_id in gpu_ids:
-        p = ctx.Process(
-            target=prediction_service_worker,
-            args=(gpu_id, model_path, input_raster, task_q, result_q, cfg_dict),
-        )
-        p.start()
-        workers.append(p)
-    return {
-        'ctx': ctx,
-        'task_q': task_q,
-        'result_q': result_q,
-        'workers': workers,
-        'gpu_ids': list(gpu_ids),
-        'next_request_id': 1,
-    }
+    def predict_on_batch(self, tile_tensor: Any):
+        batch = np.asarray(tile_tensor)
+        if batch.ndim == 3:
+            batch = batch[None, ...]
+        n = int(batch.shape[0]) if batch.ndim >= 1 else 0
+        if n <= 0:
+            return np.empty((0,), dtype=np.float32)
+        num_parts = min(len(self.gpu_ids), n)
+        self._call_id += 1
+        call_id = self._call_id
+        starts = [int(round(i * n / num_parts)) for i in range(num_parts + 1)]
+        pending = 0
+        for i in range(num_parts):
+            s, e = starts[i], starts[i + 1]
+            if s >= e:
+                continue
+            self.input_q.put({
+                'call_id': call_id,
+                'start_idx': s,
+                'batch': np.ascontiguousarray(batch[s:e]),
+            })
+            pending += 1
+        pieces = []
+        while len(pieces) < pending:
+            result = self.output_q.get()
+            if int(result.get('call_id', -1)) != call_id:
+                continue
+            if 'error' in result:
+                raise RuntimeError(result['error'])
+            pieces.append((int(result['start_idx']), np.asarray(result['pred'])))
+        pieces.sort(key=lambda x: x[0])
+        preds = [pred for _, pred in pieces if pred.size > 0]
+        if not preds:
+            return np.empty((0,), dtype=np.float32)
+        return np.concatenate(preds, axis=0)
 
-
-def stop_multi_gpu_prediction_service(service):
-    if not service:
-        return
-    task_q = service.get('task_q')
-    workers = list(service.get('workers') or [])
-    for _ in workers:
-        try:
-            task_q.put({'cmd': 'stop'})
-        except Exception:
-            pass
-    for proc in workers:
-        try:
+    def close(self):
+        for _ in self.workers:
+            try:
+                self.input_q.put(None)
+            except Exception:
+                pass
+        for proc in self.workers:
             proc.join(timeout=10.0)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=5.0)
+        try:
+            self.input_q.close()
         except Exception:
             pass
-        if proc.is_alive():
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            try:
-                proc.join(timeout=2.0)
-            except Exception:
-                pass
+        try:
+            self.output_q.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
 
 
-def predict_jobs_multi_gpu(service, jobs):
-    jobs = list(jobs or [])
-    stats = {
-        'jobs': len(jobs),
-        'read_s': 0.0,
-        'read_data_s': 0.0,
-        'read_mask_s': 0.0,
-        'prep_s': 0.0,
-        'infer_s': 0.0,
-    }
-    if not jobs:
-        return [], stats
-
-    gpu_ids = list(service.get('gpu_ids') or [])
-    if not gpu_ids:
-        raise ValueError('predict_jobs_multi_gpu requires at least one GPU id in service')
-
-    request_id = int(service.get('next_request_id', 1))
-    service['next_request_id'] = request_id + 1
-
-    shards = []
-    start = 0
-    for idx in range(len(gpu_ids)):
-        end = int(round((idx + 1) * len(jobs) / len(gpu_ids)))
-        shard = []
-        for req_idx, job in enumerate(jobs[start:end], start=start):
-            item = dict(job)
-            item['__request_index__'] = int(req_idx)
-            shard.append(item)
-        if shard:
-            shards.append(shard)
-        start = end
-
-    if not shards:
-        return [], stats
-
-    task_q = service['task_q']
-    result_q = service['result_q']
-    for shard in shards:
-        task_q.put({
-            'request_id': request_id,
-            'jobs': shard,
-        })
-
-    outputs = [None] * len(jobs)
-    pending = len(shards)
-    while pending > 0:
-        result = result_q.get()
-        if int(result.get('request_id', -1)) != request_id:
-            continue
-        pending -= 1
-        shard_stats = result.get('stats') or {}
-        stats['read_s'] += float(shard_stats.get('read_s', 0.0))
-        stats['read_data_s'] += float(shard_stats.get('read_data_s', 0.0))
-        stats['read_mask_s'] += float(shard_stats.get('read_mask_s', 0.0))
-        stats['prep_s'] += float(shard_stats.get('prep_s', 0.0))
-        stats['infer_s'] += float(shard_stats.get('infer_s', 0.0))
-        for item in result.get('outputs') or []:
-            idx = int(item['request_index'])
-            outputs[idx] = item['array']
-
-    ordered = [arr for arr in outputs if arr is not None]
-    return ordered, stats
+def build_batch_predictor(model_path: str, gpu_ids: list[int], config):
+    return MultiGPUBatchPredictor(model_path, gpu_ids, config)
 
 
 def run_multi_gpu_prediction(
@@ -334,96 +265,17 @@ def run_multi_gpu_prediction(
     gpu_ids: list[int],
     config,
 ):
+    # Compatibility wrapper: preserve the public function name, but execute
+    # a single outer prediction loop and shard only each inference batch.
+    from utils import Prediction as Pred
+
     if not gpu_ids:
         raise ValueError('multi_gpu_prediction requires at least one GPU id')
 
-    ctx = mp.get_context('spawn')
-    result_q = ctx.Queue(maxsize=max(8, len(gpu_ids) * 8))
-
-    with rasterio.open(input_raster) as src:
-        profile = src.profile.copy()
-        layout = _resampling_layout((src.height, src.width), profile, config)
-        all_jobs = list(_iter_tile_jobs(layout, config)) \
-            if tile_jobs is None else list(tile_jobs)
-
-    shards = []
-    start = 0
-    for idx in range(len(gpu_ids)):
-        end = int(round((idx + 1) * len(all_jobs) / len(gpu_ids)))
-        shards.append(all_jobs[start:end])
-        start = end
-
-    out_profile = IO.build_safe_prediction_profile(
-        src_profile=profile,
-        width=layout['out_width'],
-        height=layout['out_height'],
-        transform=layout['out_transform'],
-        compress='DEFLATE' if getattr(config, 'compress_output', True)
-        else None,
-        dtype='uint8',
-    )
-    tmp_path = IO.atomic_tmp_path(output_raster)
-
-    cfg_dict = dict(getattr(config, 'to_dict', lambda: {})())
-    workers = []
-    for shard, gpu_id in zip(shards, gpu_ids):
-        p = ctx.Process(
-            target=prediction_worker,
-            args=(gpu_id, model_path, input_raster, shard, result_q, cfg_dict),
+    with build_batch_predictor(model_path, gpu_ids, config) as predictor:
+        return Pred.predict_stream_to_raster(
+            input_raster,
+            output_raster,
+            predictor,
+            config,
         )
-        p.start()
-        workers.append(p)
-
-    total_tiles = len(all_jobs)
-    done = 0
-    finished = 0
-    start = time.monotonic()
-    last_report = start
-    total_read_s = 0.0
-    total_infer_s = 0.0
-    total_write_s = 0.0
-    progress_interval_s = float(getattr(config, 'progress_interval_s', 20.0))
-
-    with rasterio.open(tmp_path, 'w', **out_profile) as dst:
-        while finished < len(workers):
-            result = result_q.get()
-            if result.get('done'):
-                finished += 1
-                continue
-            arr = result['array']
-            row_off = int(result['row_off'])
-            col_off = int(result['col_off'])
-            write_h = min(arr.shape[0], layout['out_height'] - row_off)
-            write_w = min(arr.shape[1], layout['out_width'] - col_off)
-            t0 = time.perf_counter()
-            dst.write(
-                np.ascontiguousarray(arr[:write_h, :write_w],
-                                     dtype=np.uint8), 1,
-                window=Window(col_off, row_off, write_w, write_h))
-            total_write_s += time.perf_counter() - t0
-            total_read_s += float(result.get('read_s', 0.0))
-            total_infer_s += float(result.get('infer_s', 0.0))
-            done += 1
-            now = time.monotonic()
-            if (
-                done == 1 or done == total_tiles
-                or (now - last_report) >= progress_interval_s
-            ):
-                elapsed = max(now - start, 1e-9)
-                rate = done / elapsed
-                eta_s = \
-                    (total_tiles - done) / rate if rate > 0 else float('inf')
-                print(
-                    f"Multi-GPU prediction {done}/{total_tiles} | "
-                    f"{done / total_tiles:.1%} | {rate * 60:.1f} tiles/min"
-                    f" | ETA {_format_eta(eta_s)} | avg read "
-                    f"{total_read_s / max(done, 1):.3f}s infer "
-                    f"{total_infer_s / max(done, 1):.3f}s write "
-                    f"{total_write_s / max(done, 1):.3f}s",
-                    flush=True, )
-                last_report = now
-
-    for p in workers:
-        p.join()
-    IO.finalize_raster(tmp_path, output_raster)
-    return out_profile
