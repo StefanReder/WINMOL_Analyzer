@@ -29,6 +29,11 @@ from utils.GridVectorPipeline import (
     build_aligned_grid,
 )
 from utils.Tiling import tile_profile_from_parent
+from utils.PredictWorkers import (
+    predict_jobs_multi_gpu,
+    start_multi_gpu_prediction_service,
+    stop_multi_gpu_prediction_service,
+)
 
 
 def _aligned_stripe_inner_rows_px(grid_inner_px: int, step_px: int, config) -> int:
@@ -316,6 +321,8 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
     work_dir = tempfile.mkdtemp(prefix='winmol_stripe_', dir=os.path.dirname(trees_path) or None)
     tmp_stem_path = IO.atomic_tmp_path(stem_path)
     keep_temp = bool(getattr(config, 'keep_temp_tiles', False))
+    predictor_service = None
+    use_multi_gpu_prediction = bool(model_path and gpu_ids and len(gpu_ids) > 1)
     min_workers = max(1, int(getattr(config, 'grid_vector_workers_min', 1) or 1))
     max_workers = max(min_workers, int(getattr(config, 'grid_vector_workers_max', getattr(config, 'grid_vector_workers', 2)) or 2))
     progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
@@ -362,53 +369,84 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
     if len(stripes) > 1:
         _activate_stripe(stripes[1], out_profile)
 
-    with rasterio.open(uav_path) as src, \
-            rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
-            cf.ProcessPoolExecutor(max_workers=max_workers, mp_context=spawn_ctx) as pool:
-        indexes = list(range(1, min(config.n_channels, src.count) + 1))
-        for dst_row, row_jobs in _row_groups(pred_jobs):
-            row_t0 = time.monotonic()
-            row_strip = _read_prediction_row_strip(src, row_jobs, indexes)
-            row_read_s = float(row_strip['read_s'])
-            row_read_data_s = float(row_strip['read_data_s'])
-            row_read_mask_s = float(row_strip['read_mask_s'])
-            row_transpose_s = float(row_strip['transpose_s'])
-            row_window_h = int(row_strip['window_height'])
-            row_window_w = int(row_strip['window_width'])
-            row_infer_s = 0.0
-            row_prep_s = 0.0
+    try:
+        if use_multi_gpu_prediction:
+            predictor_service = start_multi_gpu_prediction_service(
+                model_path=model_path,
+                input_raster=uav_path,
+                gpu_ids=list(gpu_ids),
+                config=config,
+            )
 
-            total_read_s += row_read_s
-            total_read_data_s += row_read_data_s
-            total_read_mask_s += row_read_mask_s
-            total_transpose_s += row_transpose_s
-            for start_idx in range(0, len(row_jobs), batch_size):
-                batch_jobs = row_jobs[start_idx:start_idx + batch_size]
-                raw_tiles = []
-                raw_masks = []
-                prep0 = time.perf_counter()
-                for job in batch_jobs:
-                    tile, valid_mask = _slice_prediction_job_from_row_strip(row_strip, job)
-                    raw_tiles.append(tile)
-                    raw_masks.append(valid_mask)
-                row_prep_s += time.perf_counter() - prep0
-                infer0 = time.perf_counter()
-                pred_cores = Pred._predict_batch_core(raw_tiles, raw_masks, model, config)
-                infer_s = time.perf_counter() - infer0
-                row_infer_s += infer_s
-                total_infer_s += infer_s
-                for job, pred_core in zip(batch_jobs, pred_cores):
-                    for idx in range(active_idx, min(active_idx + 2, len(stripes))):
-                        stripe = stripes[idx]
-                        if stripe['arr'] is None:
-                            _activate_stripe(stripe, out_profile)
-                        _paste_core_to_stripe(stripe, job, pred_core, int(out_profile['width']))
-            row_strip = None
-            total_prep_s += row_prep_s
-            row_elapsed = max(time.monotonic() - row_t0, 1e-6)
-            pending_pred_s += row_read_s + row_infer_s
-            rows_done += 1
-            row_ready = int(dst_row) + core_h
+        with rasterio.open(uav_path) as src, \
+                rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
+                cf.ProcessPoolExecutor(max_workers=max_workers, mp_context=spawn_ctx) as pool:
+            indexes = list(range(1, min(config.n_channels, src.count) + 1))
+            for dst_row, row_jobs in _row_groups(pred_jobs):
+                row_t0 = time.monotonic()
+                row_infer_s = 0.0
+                row_prep_s = 0.0
+
+                if use_multi_gpu_prediction:
+                    row_window_h, row_window_w = _row_jobs_source_extent(row_jobs)
+                    pred_cores, row_stats = predict_jobs_multi_gpu(predictor_service, row_jobs)
+                    row_read_s = float(row_stats.get('read_s', 0.0))
+                    row_read_data_s = float(row_stats.get('read_data_s', 0.0))
+                    row_read_mask_s = float(row_stats.get('read_mask_s', 0.0))
+                    row_transpose_s = 0.0
+                    row_prep_s = float(row_stats.get('prep_s', 0.0))
+                    row_infer_s = float(row_stats.get('infer_s', 0.0))
+                    total_read_s += row_read_s
+                    total_read_data_s += row_read_data_s
+                    total_read_mask_s += row_read_mask_s
+                    total_prep_s += row_prep_s
+                    total_infer_s += row_infer_s
+                    for job, pred_core in zip(row_jobs, pred_cores):
+                        for idx in range(active_idx, min(active_idx + 2, len(stripes))):
+                            stripe = stripes[idx]
+                            if stripe['arr'] is None:
+                                _activate_stripe(stripe, out_profile)
+                            _paste_core_to_stripe(stripe, job, pred_core, int(out_profile['width']))
+                else:
+                    row_strip = _read_prediction_row_strip(src, row_jobs, indexes)
+                    row_read_s = float(row_strip['read_s'])
+                    row_read_data_s = float(row_strip['read_data_s'])
+                    row_read_mask_s = float(row_strip['read_mask_s'])
+                    row_transpose_s = float(row_strip['transpose_s'])
+                    row_window_h = int(row_strip['window_height'])
+                    row_window_w = int(row_strip['window_width'])
+
+                    total_read_s += row_read_s
+                    total_read_data_s += row_read_data_s
+                    total_read_mask_s += row_read_mask_s
+                    total_transpose_s += row_transpose_s
+                    for start_idx in range(0, len(row_jobs), batch_size):
+                        batch_jobs = row_jobs[start_idx:start_idx + batch_size]
+                        raw_tiles = []
+                        raw_masks = []
+                        prep0 = time.perf_counter()
+                        for job in batch_jobs:
+                            tile, valid_mask = _slice_prediction_job_from_row_strip(row_strip, job)
+                            raw_tiles.append(tile)
+                            raw_masks.append(valid_mask)
+                        row_prep_s += time.perf_counter() - prep0
+                        infer0 = time.perf_counter()
+                        pred_cores = Pred._predict_batch_core(raw_tiles, raw_masks, model, config)
+                        infer_s = time.perf_counter() - infer0
+                        row_infer_s += infer_s
+                        total_infer_s += infer_s
+                        for job, pred_core in zip(batch_jobs, pred_cores):
+                            for idx in range(active_idx, min(active_idx + 2, len(stripes))):
+                                stripe = stripes[idx]
+                                if stripe['arr'] is None:
+                                    _activate_stripe(stripe, out_profile)
+                                _paste_core_to_stripe(stripe, job, pred_core, int(out_profile['width']))
+                    row_strip = None
+                    total_prep_s += row_prep_s
+                row_elapsed = max(time.monotonic() - row_t0, 1e-6)
+                pending_pred_s += row_read_s + row_infer_s
+                rows_done += 1
+                row_ready = int(dst_row) + core_h
 
             released_now = 0
             while active_idx < len(stripes):
@@ -549,6 +587,9 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                 )
             elif waiting_heap:
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+
+    finally:
+        stop_multi_gpu_prediction_service(predictor_service)
 
     IO.finalize_raster(tmp_stem_path, stem_path)
 

@@ -172,7 +172,7 @@ def _paste_prediction_core(tile_arr, tile_job, pred_job, pred_core):
     )
 
 
-def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config):
+def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config, predictor_service=None):
     tile_arr = np.zeros(
         (int(grid_job.halo_window.height), int(grid_job.halo_window.width)),
         dtype=np.uint8,
@@ -213,6 +213,17 @@ def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config):
             dtype='uint8',
         )
         tile_profile = tile_profile_from_parent(out_profile, grid_job.halo_window)
+
+        if predictor_service is not None:
+            pred_cores, pred_stats = predict_jobs_multi_gpu(predictor_service, pred_jobs)
+            stats['read_s'] += float(pred_stats.get('read_s', 0.0))
+            stats['read_data_s'] += float(pred_stats.get('read_data_s', 0.0))
+            stats['read_mask_s'] += float(pred_stats.get('read_mask_s', 0.0))
+            stats['prep_s'] += float(pred_stats.get('prep_s', 0.0))
+            stats['infer_s'] += float(pred_stats.get('infer_s', 0.0))
+            for job, pred_core in zip(pred_jobs, pred_cores):
+                _paste_prediction_core(tile_arr, grid_job, job, pred_core)
+            return tile_arr, tile_profile, stats
 
         for start in range(0, len(pred_jobs), batch_size):
             batch_jobs = pred_jobs[start:start + batch_size]
@@ -589,7 +600,7 @@ def _current_queue_limit(config, worker_target):
     return max(base, int(math.ceil(mult * configured_workers)))
 
 
-def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_type, config):
+def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_type, config, model_path=None, gpu_ids=None):
     if process_type == 'Stems':
         raise ValueError('Grid vector pipeline is only for Trees/Nodes')
 
@@ -628,6 +639,8 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     work_dir = tempfile.mkdtemp(prefix='winmol_grid_', dir=os.path.dirname(trees_path) or None)
     tmp_stem_path = IO.atomic_tmp_path(stem_path)
     keep_temp = bool(getattr(config, 'keep_temp_tiles', False))
+    predictor_service = None
+    use_multi_gpu_prediction = bool(model_path and gpu_ids and len(gpu_ids) > 1)
 
     min_workers = max(1, int(getattr(config, 'grid_vector_workers_min', 1) or 1))
     max_workers = max(min_workers, int(getattr(config, 'grid_vector_workers_max', getattr(config, 'grid_vector_workers', 2)) or 2))
@@ -667,109 +680,119 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
         'detected_segments': 0,
     }
 
-    with rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
-            cf.ProcessPoolExecutor(max_workers=max_workers, mp_context=spawn_ctx) as pool:
-        for idx, grid_job in enumerate(grid_jobs, start=1):
-            tile_t0 = time.monotonic()
-            tile_arr, tile_profile, pred_stats = _predict_binary_grid_tile(
-                uav_path, model, grid_job, jobs_by_grid.get(grid_job.tile_id, []), config)
-            tile_elapsed = max(time.monotonic() - tile_t0, 1e-6)
-            tile_read_s = float(pred_stats.get('read_s', 0.0))
-            tile_read_data_s = float(pred_stats.get('read_data_s', 0.0))
-            tile_read_mask_s = float(pred_stats.get('read_mask_s', 0.0))
-            tile_prep_s = float(pred_stats.get('prep_s', 0.0))
-            tile_infer_s = float(pred_stats.get('infer_s', 0.0))
+    try:
+        if use_multi_gpu_prediction:
+            predictor_service = start_multi_gpu_prediction_service(
+                model_path=model_path,
+                input_raster=uav_path,
+                gpu_ids=list(gpu_ids),
+                config=config,
+            )
 
-            total_read_s += tile_read_s
-            total_read_data_s += tile_read_data_s
-            total_read_mask_s += tile_read_mask_s
-            total_prep_s += tile_prep_s
-            total_infer_s += tile_infer_s
+        with rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
+                cf.ProcessPoolExecutor(max_workers=max_workers, mp_context=spawn_ctx) as pool:
+            for idx, grid_job in enumerate(grid_jobs, start=1):
+                tile_t0 = time.monotonic()
+                tile_arr, tile_profile, pred_stats = _predict_binary_grid_tile(
+                    uav_path, model, grid_job, jobs_by_grid.get(grid_job.tile_id, []), config,
+                    predictor_service=predictor_service)
+                tile_elapsed = max(time.monotonic() - tile_t0, 1e-6)
+                tile_read_s = float(pred_stats.get('read_s', 0.0))
+                tile_read_data_s = float(pred_stats.get('read_data_s', 0.0))
+                tile_read_mask_s = float(pred_stats.get('read_mask_s', 0.0))
+                tile_prep_s = float(pred_stats.get('prep_s', 0.0))
+                tile_infer_s = float(pred_stats.get('infer_s', 0.0))
 
-            r0, r1, c0, c1 = _inner_slice(grid_job)
-            inner_arr = np.ascontiguousarray(tile_arr[r0:r1, c0:c1], dtype=np.uint8)
-            dst.write(inner_arr, 1, window=grid_job.inner_window)
-            predicted_tiles += 1
-            stats['pred_tile_ema'] = _ema(stats['pred_tile_ema'], tile_read_s + tile_infer_s, alpha)
+                total_read_s += tile_read_s
+                total_read_data_s += tile_read_data_s
+                total_read_mask_s += tile_read_mask_s
+                total_prep_s += tile_prep_s
+                total_infer_s += tile_infer_s
 
-            fg_count, _ = _tile_complexity(tile_arr, grid_job, use_inner=True)
-            vector_jobs_created = 0
-            if fg_count > 0:
-                nonzero_history.append(fg_count)
-                vector_items, split_count = _build_vector_items(
-                    grid_job,
-                    tile_arr,
-                    tile_profile,
-                    halo_px,
-                    config,
-                    work_dir,
-                    nonzero_history,
-                    depth=0,
-                )
-                if vector_items:
-                    submitted_tiles += 1
-                    split_tiles += split_count
-                    vector_jobs_created = len(vector_items)
-                    stats['jobs_per_tile_ema'] = _ema(
-                        stats['jobs_per_tile_ema'], len(vector_items), alpha)
-                    for item in vector_items:
-                        sequence = _enqueue_vector_item(waiting_heap, sequence, item)
+                r0, r1, c0, c1 = _inner_slice(grid_job)
+                inner_arr = np.ascontiguousarray(tile_arr[r0:r1, c0:c1], dtype=np.uint8)
+                dst.write(inner_arr, 1, window=grid_job.inner_window)
+                predicted_tiles += 1
+                stats['pred_tile_ema'] = _ema(stats['pred_tile_ema'], tile_read_s + tile_infer_s, alpha)
 
-            if bool(getattr(config, 'prediction_tile_log', True)):
-                print(
-                    f'PRED TILE {grid_job.tile_id} | pred_jobs {len(jobs_by_grid.get(grid_job.tile_id, []))} | '
-                    f'fg {fg_count} | vec_jobs {vector_jobs_created} | '
-                    f'read_data {tile_read_data_s:.3f}s | read_mask {tile_read_mask_s:.3f}s | '
-                    f'prep {tile_prep_s:.3f}s | infer {tile_infer_s:.3f}s | total {tile_elapsed:.3f}s',
-                    flush=True,
-                )
+                fg_count, _ = _tile_complexity(tile_arr, grid_job, use_inner=True)
+                vector_jobs_created = 0
+                if fg_count > 0:
+                    nonzero_history.append(fg_count)
+                    vector_items, split_count = _build_vector_items(
+                        grid_job,
+                        tile_arr,
+                        tile_profile,
+                        halo_px,
+                        config,
+                        work_dir,
+                        nonzero_history,
+                        depth=0,
+                    )
+                    if vector_items:
+                        submitted_tiles += 1
+                        split_tiles += split_count
+                        vector_jobs_created = len(vector_items)
+                        stats['jobs_per_tile_ema'] = _ema(
+                            stats['jobs_per_tile_ema'], len(vector_items), alpha)
+                        for item in vector_items:
+                            sequence = _enqueue_vector_item(waiting_heap, sequence, item)
 
-            worker_target = _current_worker_target(config, stats)
-            queue_limit = _current_queue_limit(config, worker_target)
-            _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
-            _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
-            submitted_jobs = max(submitted_jobs, len(pending) + len(waiting_heap))
+                if bool(getattr(config, 'prediction_tile_log', True)):
+                    print(
+                        f'PRED TILE {grid_job.tile_id} | pred_jobs {len(jobs_by_grid.get(grid_job.tile_id, []))} | '
+                        f'fg {fg_count} | vec_jobs {vector_jobs_created} | '
+                        f'read_data {tile_read_data_s:.3f}s | read_mask {tile_read_mask_s:.3f}s | '
+                        f'prep {tile_prep_s:.3f}s | infer {tile_infer_s:.3f}s | total {tile_elapsed:.3f}s',
+                        flush=True,
+                    )
 
-            while len(pending) + len(waiting_heap) > queue_limit and pending:
-                dense_cutoff = _dense_threshold(nonzero_history, config)
-                _pop_completed(
-                    pending,
-                    tile_outputs,
-                    keep_temp,
-                    out_profile,
-                    target_crs_box,
-                    stats,
-                    alpha,
-                    dense_cutoff,
-                    config,
-                )
                 worker_target = _current_worker_target(config, stats)
                 queue_limit = _current_queue_limit(config, worker_target)
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
                 _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
+                submitted_jobs = max(submitted_jobs, len(pending) + len(waiting_heap))
 
-            now = time.monotonic()
-            if idx == 1 or idx == len(grid_jobs) or (now - last_report) >= progress_interval_s:
-                elapsed = max(now - start, 1e-9)
-                rate = idx / elapsed
-                eta_s = (len(grid_jobs) - idx) / rate if rate > 0 else float('inf')
-                dense_cutoff = _dense_threshold(nonzero_history, config)
-                queue_limit = _current_queue_limit(config, worker_target)
-                print(
-                    f'Grid tiles predicted {idx}/{len(grid_jobs)} | {idx / len(grid_jobs):.1%} | '
-                    f'{rate * 60:.2f} tiles/min | ETA {Pred._format_eta(eta_s)} | '
-                    f'avg read_data {total_read_data_s / max(idx, 1):.3f}s '
-                    f'read_mask {total_read_mask_s / max(idx, 1):.3f}s '
-                    f'prep {total_prep_s / max(idx, 1):.3f}s '
-                    f'infer {total_infer_s / max(idx, 1):.3f}s | '
-                    f'last read_data {tile_read_data_s:.3f}s read_mask {tile_read_mask_s:.3f}s '
-                    f'prep {tile_prep_s:.3f}s infer {tile_infer_s:.3f}s total {tile_elapsed:.3f}s | '
-                    f'stems detected {int(stats.get("detected_stems", 0) or 0)} | '
-                    f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles} | '
-                    f'{_queue_state_string(max_workers, worker_target, pending, waiting_heap, stats, queue_limit)}',
-                    flush=True,
-                )
-                last_report = now
+                while len(pending) + len(waiting_heap) > queue_limit and pending:
+                    dense_cutoff = _dense_threshold(nonzero_history, config)
+                    _pop_completed(
+                        pending,
+                        tile_outputs,
+                        keep_temp,
+                        out_profile,
+                        target_crs_box,
+                        stats,
+                        alpha,
+                        dense_cutoff,
+                        config,
+                    )
+                    worker_target = _current_worker_target(config, stats)
+                    queue_limit = _current_queue_limit(config, worker_target)
+                    _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+                    _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
+
+                now = time.monotonic()
+                if idx == 1 or idx == len(grid_jobs) or (now - last_report) >= progress_interval_s:
+                    elapsed = max(now - start, 1e-9)
+                    rate = idx / elapsed
+                    eta_s = (len(grid_jobs) - idx) / rate if rate > 0 else float('inf')
+                    dense_cutoff = _dense_threshold(nonzero_history, config)
+                    queue_limit = _current_queue_limit(config, worker_target)
+                    print(
+                        f'Grid tiles predicted {idx}/{len(grid_jobs)} | {idx / len(grid_jobs):.1%} | '
+                        f'{rate * 60:.2f} tiles/min | ETA {Pred._format_eta(eta_s)} | '
+                        f'avg read_data {total_read_data_s / max(idx, 1):.3f}s '
+                        f'read_mask {total_read_mask_s / max(idx, 1):.3f}s '
+                        f'prep {total_prep_s / max(idx, 1):.3f}s '
+                        f'infer {total_infer_s / max(idx, 1):.3f}s | '
+                        f'last read_data {tile_read_data_s:.3f}s read_mask {tile_read_mask_s:.3f}s '
+                        f'prep {tile_prep_s:.3f}s infer {tile_infer_s:.3f}s total {tile_elapsed:.3f}s | '
+                        f'stems detected {int(stats.get("detected_stems", 0) or 0)} | '
+                        f'dense cutoff {0 if math.isinf(dense_cutoff) else int(dense_cutoff)} | splits {split_tiles} | '
+                        f'{_queue_state_string(max_workers, worker_target, pending, waiting_heap, stats, queue_limit)}',
+                        flush=True,
+                    )
+                    last_report = now
 
         while waiting_heap or pending:
             worker_target = _current_worker_target(config, stats)
@@ -791,6 +814,9 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 )
             elif waiting_heap:
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+
+    finally:
+        stop_multi_gpu_prediction_service(predictor_service)
 
     IO.finalize_raster(tmp_stem_path, stem_path)
 

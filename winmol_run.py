@@ -228,11 +228,27 @@ class ImageProcessing:
     def run_grid_binary_tree_pipeline(self, plan):
         from utils.GridVectorPipeline import run_binary_grid_pipeline
 
+        use_multi_gpu = plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1
+        if use_multi_gpu:
+            print("\nRunning binary coarse-grid prediction/vector pipeline with real multi-GPU prediction...")
+            return run_binary_grid_pipeline(
+                model=None,
+                model_path=self.model_path,
+                gpu_ids=list(range(plan.gpu_workers)),
+                uav_path=self.uav_path,
+                stem_path=self.stem_path,
+                trees_path=self.trees_path,
+                process_type=self.process_type,
+                config=self.config,
+            )
+
         print("\nLoading Model...")
         model = IO.load_model_from_path(self.model_path)
         print("\nRunning binary coarse-grid prediction/vector pipeline...")
         return run_binary_grid_pipeline(
             model=model,
+            model_path=None,
+            gpu_ids=None,
             uav_path=self.uav_path,
             stem_path=self.stem_path,
             trees_path=self.trees_path,
@@ -243,11 +259,27 @@ class ImageProcessing:
     def run_stripe_binary_tree_pipeline(self, plan):
         from utils.StripePredictionPipeline import run_stripe_binary_pipeline
 
+        use_multi_gpu = plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1
+        if use_multi_gpu:
+            print("\nRunning binary stripe prediction/vector pipeline with real multi-GPU prediction...")
+            return run_stripe_binary_pipeline(
+                model=None,
+                model_path=self.model_path,
+                gpu_ids=list(range(plan.gpu_workers)),
+                uav_path=self.uav_path,
+                stem_path=self.stem_path,
+                trees_path=self.trees_path,
+                process_type=self.process_type,
+                config=self.config,
+            )
+
         print("\nLoading Model...")
         model = IO.load_model_from_path(self.model_path)
         print("\nRunning binary stripe prediction/vector pipeline...")
         return run_stripe_binary_pipeline(
             model=model,
+            model_path=None,
+            gpu_ids=None,
             uav_path=self.uav_path,
             stem_path=self.stem_path,
             trees_path=self.trees_path,
