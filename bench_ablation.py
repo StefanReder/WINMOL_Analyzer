@@ -17,7 +17,7 @@ MODEL = os.environ.get(
     "WINMOL_ABLATION_MODEL",
     "/workspace/WINMOL-Analyzer/standalone/model/model_UNet_GenDS_512_2023-02-27_211141.hdf5",
 )
-INPUT = os.environ.get("WINMOL_ABLATION_INPUT", "/data/in/raster_7_roi.tif")
+INPUT = os.environ.get("WINMOL_ABLATION_INPUT", "/data/in/Barnekow_6.tif")
 PROCESS_TYPE = os.environ.get("WINMOL_ABLATION_PROCESS_TYPE", "Nodes")
 
 OUT_ROOT = pathlib.Path(
@@ -84,18 +84,18 @@ PIPELINES = [
 ]
 
 MODES = [
+    # {
+    #     "name": "cpu",
+    #     "env": {
+    #         "CUDA_VISIBLE_DEVICES": "",
+    #     },
+    #     "config": {
+    #         "prediction_backend": "cpu",
+    #         "execution_mode": "stream",
+    #     },
+    # },
     {
-        "name": "cpu",
-        "env": {
-            "CUDA_VISIBLE_DEVICES": "",
-        },
-        "config": {
-            "prediction_backend": "cpu",
-            "execution_mode": "stream",
-        },
-    },
-    {
-        "name": "single_gpu",
+        "name": "single_gpu_s_",
         "env": {
             "CUDA_VISIBLE_DEVICES": "0",
         },
@@ -104,8 +104,28 @@ MODES = [
             "execution_mode": "stream",
         },
     },
+        {
+        "name": "single_gpu_t_",
+        "env": {
+            "CUDA_VISIBLE_DEVICES": "0",
+        },
+        "config": {
+            "prediction_backend": "single_gpu",
+            "execution_mode": "tiled",
+        },
+    },
     {
-        "name": "multi_gpu",
+        "name": "multi_gpu_s_",
+        "env": {
+            "CUDA_VISIBLE_DEVICES": MULTI_GPU_VISIBLE,
+        },
+        "config": {
+            "prediction_backend": "multi_gpu",
+            "execution_mode": "stream",
+        },
+    },
+    {
+        "name": "multi_gpu_t",
         "env": {
             "CUDA_VISIBLE_DEVICES": MULTI_GPU_VISIBLE,
         },

@@ -865,30 +865,34 @@ def _tile_id_from_prefix(prefix):
 
 def _read_gpkg_layer(gpkg_path, layer_names):
     errors = []
+
     for ln in layer_names:
         try:
-            gdf = gpd.read_file(gpkg_path, layer=ln)
-            print(
-                f"MERGE READ OK | file {gpkg_path} | layer {ln} | rows {len(gdf)}",
-                flush=True,
-            )
-            return gdf
-        except Exception as exc:
-            errors.append((ln, exc))
+            with fiona.open(gpkg_path, layer=ln) as src:
+                feats = list(src)
+                crs = None
+                try:
+                    crs = src.crs_wkt
+                except Exception:
+                    crs = None
+                if not crs:
+                    try:
+                        crs = src.crs
+                    except Exception:
+                        crs = None
 
-    if errors:
-        tried = ", ".join(
-            f"{ln}: {type(exc).__name__}: {exc}" for ln, exc in errors
-        )
-        print(
-            f"MERGE READ FAIL | file {gpkg_path} | tried [{tried}]",
-            flush=True,
-        )
-    else:
-        print(
-            f"MERGE READ FAIL | file {gpkg_path} | tried []",
-            flush=True,
-        )
+            if not feats:
+                return gpd.GeoDataFrame(geometry=[], crs=crs)
+
+            gdf = gpd.GeoDataFrame.from_features(feats, crs=crs)
+            return gdf
+
+        except Exception as exc:
+            errors.append(f"{ln}: {type(exc).__name__}: {exc}")
+
+    print(
+        f"MERGE READ FAIL | file {gpkg_path} | tried [{', '.join(errors)}]"
+    )
     return gpd.GeoDataFrame(geometry=[])
 
 
