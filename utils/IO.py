@@ -854,11 +854,31 @@ def _tile_id_from_prefix(prefix):
 
 
 def _read_gpkg_layer(gpkg_path, layer_names):
+    errors = []
     for ln in layer_names:
         try:
-            return gpd.read_file(gpkg_path, layer=ln)
-        except Exception:
-            continue
+            gdf = gpd.read_file(gpkg_path, layer=ln)
+            print(
+                f"MERGE READ OK | file {gpkg_path} | layer {ln} | rows {len(gdf)}",
+                flush=True,
+            )
+            return gdf
+        except Exception as exc:
+            errors.append((ln, exc))
+
+    if errors:
+        tried = ", ".join(
+            f"{ln}: {type(exc).__name__}: {exc}" for ln, exc in errors
+        )
+        print(
+            f"MERGE READ FAIL | file {gpkg_path} | tried [{tried}]",
+            flush=True,
+        )
+    else:
+        print(
+            f"MERGE READ FAIL | file {gpkg_path} | tried []",
+            flush=True,
+        )
     return gpd.GeoDataFrame(geometry=[])
 
 
@@ -951,6 +971,7 @@ def _default_output_gpkg(work_dir, output_gpkg):
 def _globalize_stems(stems, tile_id, filter_geom):
     id_col = _pick_id_col(stems)
     if not id_col:
+        print(f"MERGE FILTER | tile {tile_id} | missing stem id column", flush=True)
         return gpd.GeoDataFrame(), set()
 
     stems = stems.copy()
@@ -958,8 +979,21 @@ def _globalize_stems(stems, tile_id, filter_geom):
     stems["stem_id"] = tile_id + "_" + stems["_stem_id_local"]
     stems["tile_id"] = tile_id
 
+    before = len(stems)
     if filter_geom is not None:
-        stems = stems[stems.intersects(filter_geom)].copy()
+        kept_mask = stems.intersects(filter_geom)
+        stems = stems[kept_mask].copy()
+        print(
+            f"MERGE FILTER | tile {tile_id} | before {before} | after {len(stems)} "
+            f"| filter_empty {getattr(filter_geom, 'is_empty', False)} "
+            f"| filter_bounds {getattr(filter_geom, 'bounds', None)}",
+            flush=True,
+        )
+    else:
+        print(
+            f"MERGE FILTER | tile {tile_id} | before {before} | after {before} | filter none",
+            flush=True,
+        )
 
     kept_local = set(stems["_stem_id_local"].tolist())
     return stems, kept_local
@@ -989,6 +1023,12 @@ def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
     filter_geom, raster_crs = _raster_filter_geom(raster_path, edge_buffer_m)
 
     stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
+    print(
+        f"MERGE TILE READ | tile {tile_id} | file {gpkg_path} | stems {0 if stems is None else len(stems)} "
+        f"| nodes {0 if nodes is None else len(nodes)} | vectors {0 if vectors is None else len(vectors)} "
+        f"| raster {raster_path}",
+        flush=True,
+    )
     if stems is None or stems.empty:
         return None, target_crs
 
@@ -1017,6 +1057,11 @@ def _window_geom_from_profile(profile, window):
 
 def process_tile_gpkg(tile_job, gpkg_path, raster_profile, target_crs=None):
     stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
+    print(
+        f"MERGE TILE READ | tile {tile_job.tile_id} | file {gpkg_path} | stems {0 if stems is None else len(stems)} "
+        f"| nodes {0 if nodes is None else len(nodes)} | vectors {0 if vectors is None else len(vectors)}",
+        flush=True,
+    )
     if stems is None or stems.empty:
         return None, target_crs
 
@@ -1185,13 +1230,31 @@ def merge_and_filter_tiled_results(
         total_nodes += n_n
         total_vectors += n_v
 
-    _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
+    if merged_stems or merged_nodes or merged_vectors:
+        _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
+        written_layers = []
+        try:
+            written_layers = list(fiona.listlayers(output_gpkg))
+        except Exception as exc:
+            print(
+                f"MERGE VERIFY FAIL | file {output_gpkg} | {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
-    print("")
-    print("MERGE SUMMARY")
-    print(f"Tiles processed:       {tile_count}")
-    print(f"Total stems written:   {total_stems}")
-    print(f"Total nodes written:   {total_nodes}")
-    print(f"Total vectors written: {total_vectors}")
-    print(f"Output saved to: {output_gpkg}")
+        print("")
+        print("MERGE SUMMARY")
+        print(f"Tiles processed:       {tile_count}")
+        print(f"Total stems written:   {total_stems}")
+        print(f"Total nodes written:   {total_nodes}")
+        print(f"Total vectors written: {total_vectors}")
+        print(f"Layers written:        {written_layers}")
+        print(f"Output saved to: {output_gpkg}")
+    else:
+        print("")
+        print("MERGE SUMMARY")
+        print("Tiles processed:       0")
+        print("Total stems written:   0")
+        print("Total nodes written:   0")
+        print("Total vectors written: 0")
+        print(f"No output GPKG created: {output_gpkg} (0 features written)")
     return output_gpkg

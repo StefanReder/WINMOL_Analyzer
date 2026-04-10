@@ -144,9 +144,7 @@ def _run_with_debug_control(fn, config, *args, **kwargs):
     vector_mode = str(getattr(config, 'vector_mode', 'tiled') or 'tiled').lower()
     if vector_mode != 'tiled' or bool(getattr(config, 'vector_debug', False)):
         return fn(*args, **kwargs)
-    sink = io.StringIO()
-    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-        return fn(*args, **kwargs)
+    return fn(*args, **kwargs)
 
 
 def process_prediction_array_to_gpkg(
