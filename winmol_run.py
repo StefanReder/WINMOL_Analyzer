@@ -346,7 +346,7 @@ class ImageProcessing:
         can_use_integrated_binary_pipeline = (
             self.process_type in {'Trees', 'Nodes'}
             and plan.vector_mode == 'tiled'
-            and plan.prediction_mode in {'stream', 'cpu_stream'}
+            and plan.prediction_mode in {'stream', 'cpu_stream', 'multi_gpu_stream'}
         )
 
         if can_use_integrated_binary_pipeline:

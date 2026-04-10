@@ -29,11 +29,7 @@ from utils.GridVectorPipeline import (
     build_aligned_grid,
 )
 from utils.Tiling import tile_profile_from_parent
-from utils.PredictWorkers import (
-    predict_jobs_multi_gpu,
-    start_multi_gpu_prediction_service,
-    stop_multi_gpu_prediction_service,
-)
+from utils.PredictWorkers import predict_jobs_with_batch_predictor
 
 
 def _aligned_stripe_inner_rows_px(grid_inner_px: int, step_px: int, config) -> int:
@@ -123,6 +119,17 @@ def _row_groups(pred_jobs):
 def _job_row_range(job):
     core_h = int(job.get('core_h', 0) or 0)
     return int(job['dst_row']), int(job['dst_row']) + core_h
+
+
+
+def _row_jobs_source_extent(row_jobs):
+    if not row_jobs:
+        return 0, 0
+    src_row0 = min(int(job['src_row']) for job in row_jobs)
+    src_row1 = max(int(job['src_row']) + int(job['src_height']) for job in row_jobs)
+    src_col0 = min(int(job['src_col']) for job in row_jobs)
+    src_col1 = max(int(job['src_col']) + int(job['src_width']) for job in row_jobs)
+    return int(src_row1 - src_row0), int(src_col1 - src_col0)
 
 
 
@@ -321,8 +328,8 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
     work_dir = tempfile.mkdtemp(prefix='winmol_stripe_', dir=os.path.dirname(trees_path) or None)
     tmp_stem_path = IO.atomic_tmp_path(stem_path)
     keep_temp = bool(getattr(config, 'keep_temp_tiles', False))
-    predictor_service = None
-    use_multi_gpu_prediction = bool(model_path and gpu_ids and len(gpu_ids) > 1)
+    batch_predictor = model if callable(getattr(model, 'close', None)) else None
+    use_multi_gpu_prediction = batch_predictor is not None
     min_workers = max(1, int(getattr(config, 'grid_vector_workers_min', 1) or 1))
     max_workers = max(min_workers, int(getattr(config, 'grid_vector_workers_max', getattr(config, 'grid_vector_workers', 2)) or 2))
     progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
@@ -370,14 +377,6 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
         _activate_stripe(stripes[1], out_profile)
 
     try:
-        if use_multi_gpu_prediction:
-            predictor_service = start_multi_gpu_prediction_service(
-                model_path=model_path,
-                input_raster=uav_path,
-                gpu_ids=list(gpu_ids),
-                config=config,
-            )
-
         with rasterio.open(uav_path) as src, \
                 rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
                 cf.ProcessPoolExecutor(max_workers=max_workers, mp_context=spawn_ctx) as pool:
@@ -389,7 +388,12 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
 
                 if use_multi_gpu_prediction:
                     row_window_h, row_window_w = _row_jobs_source_extent(row_jobs)
-                    pred_cores, row_stats = predict_jobs_multi_gpu(predictor_service, row_jobs)
+                    pred_cores, row_stats = predict_jobs_with_batch_predictor(
+                        batch_predictor,
+                        uav_path,
+                        row_jobs,
+                        config,
+                    )
                     row_read_s = float(row_stats.get('read_s', 0.0))
                     row_read_data_s = float(row_stats.get('read_data_s', 0.0))
                     row_read_mask_s = float(row_stats.get('read_mask_s', 0.0))
@@ -589,7 +593,7 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
 
     finally:
-        stop_multi_gpu_prediction_service(predictor_service)
+        pass
 
     IO.finalize_raster(tmp_stem_path, stem_path)
 
