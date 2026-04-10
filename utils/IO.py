@@ -27,7 +27,6 @@ from collections.abc import Mapping
 from pyproj import CRS
 from pathlib import Path
 
-import utils.Vectorization as Vec
 import utils.Quantification as Quant
 from classes.Stem import Stem
 
@@ -1491,7 +1490,14 @@ def _reconstruct_edge_stems_for_tiled_merge(
     if not original_edge_stems:
         return _stems_to_layer_gdfs(inner_stems, target_crs)
 
-    recon_cfg = config if config is not None else None
+    import utils.Vectorization as Vec
+
+    if config is None:
+        from classes.Config import Config
+        recon_cfg = Config()
+    else:
+        recon_cfg = config
+
     merged_edge_stems = Vec.connect_stems(list(original_edge_stems), recon_cfg)
     Vec.rebuild_endnodes_from_stems(merged_edge_stems)
 

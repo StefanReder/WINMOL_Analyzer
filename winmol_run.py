@@ -324,7 +324,8 @@ class ImageProcessing:
         return IO.merge_and_filter_tiled_results(
             work_dir=work_dir,
             output_gpkg=out_path,
-            edge_buffer_m=plan.tile_overlap_m,
+            edge_buffer_m=plan.tile_overlap_m
+            config=self.config,
         )
 
     def run_stem_pipeline(self, plan):
