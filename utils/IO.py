@@ -27,6 +27,10 @@ from collections.abc import Mapping
 from pyproj import CRS
 from pathlib import Path
 
+import utils.Vectorization as Vec
+import utils.Quantification as Quant
+from classes.Stem import Stem
+
 
 ###############################################################################
 
@@ -865,34 +869,40 @@ def _tile_id_from_prefix(prefix):
 
 def _read_gpkg_layer(gpkg_path, layer_names):
     errors = []
-
     for ln in layer_names:
         try:
             with fiona.open(gpkg_path, layer=ln) as src:
                 feats = list(src)
-                crs = None
                 try:
-                    crs = src.crs_wkt
+                    crs = src.crs_wkt or src.crs
                 except Exception:
                     crs = None
-                if not crs:
-                    try:
-                        crs = src.crs
-                    except Exception:
-                        crs = None
 
             if not feats:
-                return gpd.GeoDataFrame(geometry=[], crs=crs)
-
-            gdf = gpd.GeoDataFrame.from_features(feats, crs=crs)
+                gdf = gpd.GeoDataFrame(geometry=[], crs=crs)
+            else:
+                gdf = gpd.GeoDataFrame.from_features(feats, crs=crs)
+            print(
+                f"MERGE READ OK | file {gpkg_path} | layer {ln} | rows {len(gdf)}",
+                flush=True,
+            )
             return gdf
-
         except Exception as exc:
-            errors.append(f"{ln}: {type(exc).__name__}: {exc}")
+            errors.append((ln, exc))
 
-    print(
-        f"MERGE READ FAIL | file {gpkg_path} | tried [{', '.join(errors)}]"
-    )
+    if errors:
+        tried = ", ".join(
+            f"{ln}: {type(exc).__name__}: {exc}" for ln, exc in errors
+        )
+        print(
+            f"MERGE READ FAIL | file {gpkg_path} | tried [{tried}]",
+            flush=True,
+        )
+    else:
+        print(
+            f"MERGE READ FAIL | file {gpkg_path} | tried []",
+            flush=True,
+        )
     return gpd.GeoDataFrame(geometry=[])
 
 
@@ -1222,10 +1232,297 @@ def _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors):
     return _safe_finalize_gpkg(tmp_path, output_gpkg)
 
 
+def _json_list_or_empty(value):
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return value
+    try:
+        out = json.loads(value)
+        return out if isinstance(out, list) else []
+    except Exception:
+        return []
+
+
+def _stem_from_row(row):
+    geom = getattr(row, 'geometry', None)
+    if geom is None or getattr(geom, 'is_empty', True):
+        return None
+    try:
+        coords = list(geom.coords)
+    except Exception:
+        return None
+    if len(coords) < 2:
+        return None
+    sx = getattr(row, 'start_x', None)
+    sy = getattr(row, 'start_y', None)
+    ex = getattr(row, 'stop_x', None)
+    ey = getattr(row, 'stop_y', None)
+    start_xy = coords[0] if sx is None or sy is None else (float(sx), float(sy))
+    stop_xy = coords[-1] if ex is None or ey is None else (float(ex), float(ey))
+    return Stem(
+        start=Point(start_xy),
+        stop=Point(stop_xy),
+        path=LineString(coords),
+        vector=[],
+        segment_diameter_list=[float(v) for v in _json_list_or_empty(getattr(row, 'd_json', []))],
+        segment_length_list=[float(v) for v in _json_list_or_empty(getattr(row, 'l_json', []))],
+        segment_volume_list=[float(v) for v in _json_list_or_empty(getattr(row, 'v_json', []))],
+        crs=getattr(row, 'crs', None),
+    )
+
+
+def _stems_from_gdf(stems_gdf):
+    stems = []
+    if stems_gdf is None or stems_gdf.empty:
+        return stems
+    crs = getattr(stems_gdf, 'crs', None)
+    for row in stems_gdf.itertuples(index=False):
+        stem = _stem_from_row(row)
+        if stem is None:
+            continue
+        stem.crs = crs
+        stems.append(stem)
+    return stems
+
+
+def _stems_to_layer_gdfs(stems, crs):
+    profile = {'crs': crs}
+    stems_gdf = stems_to_gdf(stems, profile) if stems else None
+    nodes_gdf = nodes_to_gdf(stems, profile) if stems else None
+    vectors_gdf = vectors_to_gdf(stems, profile) if stems else None
+    return stems_gdf, nodes_gdf, vectors_gdf
+
+
+def _tile_edge_band_geom(raster_path, edge_buffer_m):
+    if not raster_path:
+        return None, None
+    try:
+        with rasterio.open(raster_path) as src:
+            geom = box(*src.bounds)
+            inner = geom.buffer(-abs(edge_buffer_m))
+            if inner.is_empty:
+                band = geom
+            else:
+                band = geom.difference(inner)
+            return band, src.crs
+    except Exception:
+        return None, None
+
+
+def _reverse_stem_profile(stem):
+    coords = list(stem.path.coords)
+    rev_coords = list(reversed(coords))
+    rev_d = list(reversed(list(getattr(stem, 'segment_diameter_list', []))))
+    rev_l = list(reversed(list(getattr(stem, 'segment_length_list', []))))
+    rev_v = list(reversed(list(getattr(stem, 'segment_volume_list', []))))
+    return Stem(
+        start=Point(rev_coords[0]),
+        stop=Point(rev_coords[-1]),
+        path=LineString(rev_coords),
+        vector=list(getattr(stem, 'vector', [])),
+        segment_diameter_list=rev_d,
+        segment_length_list=rev_l,
+        segment_volume_list=rev_v,
+        crs=getattr(stem, 'crs', None),
+    )
+
+
+def _orient_stem_along_merged_path(stem, merged_path):
+    try:
+        s_proj = merged_path.project(Point(stem.start.coords[0]))
+        e_proj = merged_path.project(Point(stem.stop.coords[0]))
+    except Exception:
+        return stem
+    if s_proj <= e_proj:
+        return stem
+    return _reverse_stem_profile(stem)
+
+
+def _match_edge_contributors(merged_stem, original_edge_stems, used, tol=1e-6):
+    contributors = []
+    try:
+        band = merged_stem.path.buffer(max(float(tol), 1e-6))
+    except Exception:
+        band = None
+    for idx, stem in enumerate(original_edge_stems):
+        if idx in used:
+            continue
+        try:
+            same_geom = stem.path.equals(merged_stem.path)
+        except Exception:
+            same_geom = False
+        try:
+            intersects = band.intersects(stem.path) if band is not None else False
+        except Exception:
+            intersects = False
+        try:
+            endpoints_on_path = (
+                merged_stem.path.distance(stem.start) <= tol
+                or merged_stem.path.distance(stem.stop) <= tol
+            )
+        except Exception:
+            endpoints_on_path = False
+        if same_geom or intersects or endpoints_on_path:
+            contributors.append((idx, stem))
+    return contributors
+
+
+def _rebuild_connected_stem_profile(merged_stem, contributors):
+    if not contributors:
+        stem = Stem(
+            start=Point(merged_stem.start.coords[0]),
+            stop=Point(merged_stem.stop.coords[0]),
+            path=LineString(list(merged_stem.path.coords)),
+            vector=list(getattr(merged_stem, 'vector', [])),
+            segment_diameter_list=list(getattr(merged_stem, 'segment_diameter_list', [])),
+            segment_length_list=list(getattr(merged_stem, 'segment_length_list', [])),
+            segment_volume_list=list(getattr(merged_stem, 'segment_volume_list', [])),
+            crs=getattr(merged_stem, 'crs', None),
+        )
+        return Quant.quantify_stem(stem)
+
+    oriented = []
+    for _, stem in contributors:
+        s = _orient_stem_along_merged_path(stem, merged_stem.path)
+        try:
+            start_proj = merged_stem.path.project(Point(s.start.coords[0]))
+            stop_proj = merged_stem.path.project(Point(s.stop.coords[0]))
+            pos = min(start_proj, stop_proj)
+        except Exception:
+            pos = 0.0
+        oriented.append((pos, s))
+    oriented.sort(key=lambda item: item[0])
+
+    coords = []
+    diameters = []
+    for _, stem in oriented:
+        stem_coords = list(stem.path.coords)
+        stem_d = list(getattr(stem, 'segment_diameter_list', []))
+        if not stem_coords:
+            continue
+        if not stem_d:
+            stem_d = [0.0] * len(stem_coords)
+        if len(stem_d) < len(stem_coords):
+            fill = stem_d[-1] if stem_d else 0.0
+            stem_d = stem_d + [fill] * (len(stem_coords) - len(stem_d))
+        elif len(stem_d) > len(stem_coords):
+            stem_d = stem_d[:len(stem_coords)]
+
+        if not coords:
+            coords = stem_coords[:]
+            diameters = stem_d[:]
+            continue
+
+        if tuple(coords[-1]) == tuple(stem_coords[0]):
+            coords.extend(stem_coords[1:])
+            diameters.extend(stem_d[1:])
+        else:
+            coords.extend(stem_coords)
+            diameters.extend(stem_d)
+
+    if len(coords) < 2:
+        coords = list(merged_stem.path.coords)
+    if len(diameters) < len(coords):
+        fill = diameters[-1] if diameters else 0.0
+        diameters = diameters + [fill] * (len(coords) - len(diameters))
+    elif len(diameters) > len(coords):
+        diameters = diameters[:len(coords)]
+
+    rebuilt = Stem(
+        start=Point(coords[0]),
+        stop=Point(coords[-1]),
+        path=LineString(coords),
+        vector=list(getattr(merged_stem, 'vector', [])),
+        segment_diameter_list=diameters,
+        segment_length_list=[],
+        segment_volume_list=[],
+        crs=getattr(merged_stem, 'crs', None),
+    )
+    return Quant.quantify_stem(rebuilt)
+
+
+def _reconstruct_edge_stems_for_tiled_merge(
+    merged_stems,
+    tiles,
+    target_crs,
+    edge_buffer_m,
+    config=None,
+    stem_map_path=None,
+):
+    stems_gdf = _concat_merged_layer(merged_stems)
+    if stems_gdf is None or stems_gdf.empty:
+        return stems_gdf, None, None
+
+    if target_crs is not None:
+        stems_gdf = _ensure_crs(stems_gdf, target_crs)
+
+    edge_indices = set()
+    for prefix, _gpkg_path, raster_path in tiles:
+        tile_id = _tile_id_from_prefix(prefix)
+        tile_rows = stems_gdf[stems_gdf.get('tile_id', '') == tile_id]
+        if tile_rows.empty:
+            continue
+        edge_band, raster_crs = _tile_edge_band_geom(raster_path, edge_buffer_m)
+        if edge_band is None:
+            continue
+        tile_rows = _ensure_crs(tile_rows, target_crs or raster_crs)
+        try:
+            idx = tile_rows[tile_rows.intersects(edge_band)].index.tolist()
+        except Exception:
+            idx = []
+        edge_indices.update(idx)
+
+    print(
+        f"MERGE EDGE RECON | candidates {len(edge_indices)} | total {len(stems_gdf)} | edge_buffer_m {edge_buffer_m}",
+        flush=True,
+    )
+
+    all_stems = _stems_from_gdf(stems_gdf)
+    if not edge_indices:
+        return _stems_to_layer_gdfs(all_stems, target_crs)
+
+    edge_gdf = stems_gdf.loc[sorted(edge_indices)].copy()
+    inner_gdf = stems_gdf.drop(index=sorted(edge_indices)).copy()
+
+    inner_stems = _stems_from_gdf(inner_gdf)
+    original_edge_stems = _stems_from_gdf(edge_gdf)
+
+    if not original_edge_stems:
+        return _stems_to_layer_gdfs(inner_stems, target_crs)
+
+    recon_cfg = config if config is not None else None
+    merged_edge_stems = Vec.connect_stems(list(original_edge_stems), recon_cfg)
+    Vec.rebuild_endnodes_from_stems(merged_edge_stems)
+
+    used = set()
+    rebuilt_edge_stems = []
+    for merged_stem in merged_edge_stems:
+        contributors = _match_edge_contributors(merged_stem, original_edge_stems, used)
+        for idx, _ in contributors:
+            used.add(idx)
+        rebuilt_edge_stems.append(
+            _rebuild_connected_stem_profile(merged_stem, contributors)
+        )
+
+    for idx, stem in enumerate(original_edge_stems):
+        if idx not in used:
+            rebuilt_edge_stems.append(Quant.quantify_stem(stem))
+
+    final_stems = inner_stems + rebuilt_edge_stems
+    print(
+        f"MERGE EDGE RECON | inner {len(inner_stems)} | reconstructed_edge {len(rebuilt_edge_stems)} | final {len(final_stems)}",
+        flush=True,
+    )
+    return _stems_to_layer_gdfs(final_stems, target_crs)
+
+
 def merge_and_filter_tiled_results(
     work_dir: str,
     output_gpkg: str | None = None,
     edge_buffer_m: float = 1.0,
+    config=None,
+    stem_map_path: str | None = None,
 ):
     work_dir = os.path.abspath(work_dir)
     output_gpkg = _default_output_gpkg(work_dir, output_gpkg)
@@ -1277,7 +1574,18 @@ def merge_and_filter_tiled_results(
         total_vectors += n_v
 
     if merged_stems or merged_nodes or merged_vectors:
-        written_gpkg = _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
+        stems_gdf, nodes_gdf, vectors_gdf = _reconstruct_edge_stems_for_tiled_merge(
+            merged_stems,
+            tiles,
+            target_crs,
+            edge_buffer_m,
+            config=config,
+            stem_map_path=stem_map_path,
+        )
+        final_stems = [stems_gdf] if stems_gdf is not None and not stems_gdf.empty else []
+        final_nodes = [nodes_gdf] if nodes_gdf is not None and not nodes_gdf.empty else []
+        final_vectors = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
+        written_gpkg = _write_merged(output_gpkg, final_stems, final_nodes, final_vectors)
         written_layers = []
         try:
             written_layers = list(fiona.listlayers(written_gpkg))
@@ -1287,12 +1595,16 @@ def merge_and_filter_tiled_results(
                 flush=True,
             )
 
+        final_stem_count = 0 if stems_gdf is None else len(stems_gdf)
+        final_node_count = 0 if nodes_gdf is None else len(nodes_gdf)
+        final_vector_count = 0 if vectors_gdf is None else len(vectors_gdf)
+
         print("")
         print("MERGE SUMMARY")
         print(f"Tiles processed:       {tile_count}")
-        print(f"Total stems written:   {total_stems}")
-        print(f"Total nodes written:   {total_nodes}")
-        print(f"Total vectors written: {total_vectors}")
+        print(f"Total stems written:   {final_stem_count}")
+        print(f"Total nodes written:   {final_node_count}")
+        print(f"Total vectors written: {final_vector_count}")
         print(f"Layers written:        {written_layers}")
         print(f"Output saved to: {written_gpkg}")
     else:
