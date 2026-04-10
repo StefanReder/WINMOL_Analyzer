@@ -682,7 +682,15 @@ def _feature_records(gdf, schema):
 
 def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
     schema = _infer_fiona_schema(gdf)
-    mode = "a" if append else "w"
+
+    layer_exists = False
+    if os.path.exists(path):
+        try:
+            layer_exists = layer_name in set(fiona.listlayers(path))
+        except Exception:
+            layer_exists = False
+
+    mode = "a" if append and layer_exists else "w"
 
     crs_wkt = None
     if crs is not None:
@@ -694,7 +702,10 @@ def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
             except Exception:
                 crs_wkt = None
 
-    print(f"Fiona schema for layer '{layer_name}': {schema}")
+    print(
+        f"Fiona schema for layer '{layer_name}': {schema} | mode {mode} | "
+        f"layer_exists {layer_exists}",
+    )
 
     kwargs = {
         "driver": "GPKG",
@@ -704,7 +715,6 @@ def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
     if crs_wkt is not None:
         kwargs["crs_wkt"] = crs_wkt
 
-    # Always use "w" for creating a layer
     with fiona.open(path, mode=mode, **kwargs) as dst:
         dst.writerecords(_feature_records(gdf, schema))
 
@@ -968,6 +978,18 @@ def _default_output_gpkg(work_dir, output_gpkg):
     return os.path.join(work_dir, f"{folder}_merged_data.gpkg")
 
 
+def _remove_existing_output(path):
+    if not os.path.exists(path):
+        return
+    try:
+        os.remove(path)
+    except PermissionError:
+        print(
+            f"MERGE OUTPUT LOCKED | keeping existing file and writing fallback if needed: {path}",
+            flush=True,
+        )
+
+
 def _globalize_stems(stems, tile_id, filter_geom):
     id_col = _pick_id_col(stems)
     if not id_col:
@@ -1090,8 +1112,7 @@ def merge_selected_tile_results(
     raster_profile,
     keep_temp: bool = False,
 ):
-    if os.path.exists(output_gpkg):
-        os.remove(output_gpkg)
+    _remove_existing_output(output_gpkg)
 
     merged_stems = []
     merged_nodes = []
@@ -1139,14 +1160,14 @@ def merge_selected_tile_results(
                 pass
 
     if merged_stems or merged_nodes or merged_vectors:
-        _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
+        written_gpkg = _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
         print("")
         print("MERGE SUMMARY")
         print(f"Tiles processed:       {tile_count}")
         print(f"Total stems written:   {total_stems}")
         print(f"Total nodes written:   {total_nodes}")
         print(f"Total vectors written: {total_vectors}")
-        print(f"Output saved to: {output_gpkg}")
+        print(f"Output saved to: {written_gpkg}")
     else:
         print("")
         print("MERGE SUMMARY")
@@ -1155,24 +1176,46 @@ def merge_selected_tile_results(
         print("Total nodes written:   0")
         print("Total vectors written: 0")
         print(f"No output GPKG created: {output_gpkg} (0 features written)")
-    return output_gpkg
+    return written_gpkg if merged_stems or merged_nodes or merged_vectors else output_gpkg
+
+
+def _concat_merged_layer(gdfs):
+    if not gdfs:
+        return None
+
+    non_empty = [gdf for gdf in gdfs if gdf is not None and not gdf.empty]
+    if not non_empty:
+        return None
+
+    first = non_empty[0]
+    geom_col = first.geometry.name
+    crs = first.crs
+    merged = pd.concat(non_empty, ignore_index=True)
+    return gpd.GeoDataFrame(merged, geometry=geom_col, crs=crs)
+
 
 
 def _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors):
-    if merged_stems:
-        gpd.GeoDataFrame(
-            pd.concat(merged_stems, ignore_index=True),
-        ).to_file(output_gpkg, layer="stems", driver="GPKG")
+    stems_gdf = _concat_merged_layer(merged_stems)
+    nodes_gdf = _concat_merged_layer(merged_nodes)
+    vectors_gdf = _concat_merged_layer(merged_vectors)
 
-    if merged_nodes:
-        gpd.GeoDataFrame(
-            pd.concat(merged_nodes, ignore_index=True),
-        ).to_file(output_gpkg, layer="nodes", driver="GPKG")
+    crs = None
+    for gdf in (stems_gdf, nodes_gdf, vectors_gdf):
+        if gdf is not None and getattr(gdf, 'crs', None) is not None:
+            crs = gdf.crs
+            break
 
-    if merged_vectors:
-        gpd.GeoDataFrame(
-            pd.concat(merged_vectors, ignore_index=True),
-        ).to_file(output_gpkg, layer="vectors", driver="GPKG")
+    tmp_path = _write_layers_to_temp_gpkg(
+        layers=[
+            ("stems", stems_gdf),
+            ("nodes", nodes_gdf),
+            ("vectors", vectors_gdf),
+        ],
+        crs=crs,
+        final_path=output_gpkg,
+    )
+    return _safe_finalize_gpkg(tmp_path, output_gpkg)
 
 
 def merge_and_filter_tiled_results(
@@ -1183,8 +1226,7 @@ def merge_and_filter_tiled_results(
     work_dir = os.path.abspath(work_dir)
     output_gpkg = _default_output_gpkg(work_dir, output_gpkg)
 
-    if os.path.exists(output_gpkg):
-        os.remove(output_gpkg)
+    _remove_existing_output(output_gpkg)
 
     tiles = _detect_tiles(work_dir, output_gpkg)
     recursive_candidates = sorted(str(p) for p in Path(work_dir).rglob('*.gpkg'))
@@ -1231,13 +1273,13 @@ def merge_and_filter_tiled_results(
         total_vectors += n_v
 
     if merged_stems or merged_nodes or merged_vectors:
-        _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
+        written_gpkg = _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
         written_layers = []
         try:
-            written_layers = list(fiona.listlayers(output_gpkg))
+            written_layers = list(fiona.listlayers(written_gpkg))
         except Exception as exc:
             print(
-                f"MERGE VERIFY FAIL | file {output_gpkg} | {type(exc).__name__}: {exc}",
+                f"MERGE VERIFY FAIL | file {written_gpkg} | {type(exc).__name__}: {exc}",
                 flush=True,
             )
 
@@ -1248,7 +1290,7 @@ def merge_and_filter_tiled_results(
         print(f"Total nodes written:   {total_nodes}")
         print(f"Total vectors written: {total_vectors}")
         print(f"Layers written:        {written_layers}")
-        print(f"Output saved to: {output_gpkg}")
+        print(f"Output saved to: {written_gpkg}")
     else:
         print("")
         print("MERGE SUMMARY")
@@ -1257,4 +1299,4 @@ def merge_and_filter_tiled_results(
         print("Total nodes written:   0")
         print("Total vectors written: 0")
         print(f"No output GPKG created: {output_gpkg} (0 features written)")
-    return output_gpkg
+    return written_gpkg if merged_stems or merged_nodes or merged_vectors else output_gpkg
