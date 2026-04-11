@@ -548,49 +548,61 @@ def run_stripe_binary_pipeline(model, uav_path, stem_path, trees_path, process_t
                 )
                 last_report = now
 
-        final_ready = int(out_profile['height'])
-        for stripe in stripes:
-            if stripe.get('arr') is None:
-                continue
-            rel_tiles, rel_splits = _release_ready_tiles(
-                stripe,
-                final_ready,
-                out_profile,
-                halo_px,
-                config,
-                work_dir,
-                nonzero_history,
-                waiting_heap,
-                sequence_box,
-                stats,
-                alpha,
-            )
-            released_tiles_total += rel_tiles
-            split_tiles += rel_splits
-            if not stripe['inner_written']:
-                _write_inner_rows(dst, stripe)
-        if pending_pred_s > 0 and released_tiles_total > 0:
-            stats['pred_tile_ema'] = _ema(stats.get('pred_tile_ema'), pending_pred_s / max(1, released_tiles_total), alpha)
-        while waiting_heap or pending:
-            worker_target = _current_worker_target(config, stats)
-            queue_limit = _current_queue_limit(config, worker_target)
-            _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
-            _log_schedule_event(config, stats, worker_target, max_workers, pending, waiting_heap, queue_limit)
-            if pending:
-                dense_cutoff = _dense_threshold(nonzero_history, config)
-                _pop_completed(
-                    pending,
-                    tile_outputs,
-                    keep_temp,
+            final_ready = int(out_profile['height'])
+            for stripe in stripes:
+                if stripe.get('arr') is None:
+                    continue
+                rel_tiles, rel_splits = _release_ready_tiles(
+                    stripe,
+                    final_ready,
                     out_profile,
-                    target_crs_box,
+                    halo_px,
+                    config,
+                    work_dir,
+                    nonzero_history,
+                    waiting_heap,
+                    sequence_box,
                     stats,
                     alpha,
-                    dense_cutoff,
-                    config,
                 )
-            elif waiting_heap:
-                _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
+                released_tiles_total += rel_tiles
+                split_tiles += rel_splits
+                if not stripe['inner_written']:
+                    _write_inner_rows(dst, stripe)
+            if pending_pred_s > 0 and released_tiles_total > 0:
+                stats['pred_tile_ema'] = _ema(
+                    stats.get('pred_tile_ema'),
+                    pending_pred_s / max(1, released_tiles_total),
+                    alpha,
+                )
+            while waiting_heap or pending:
+                worker_target = _current_worker_target(config, stats)
+                queue_limit = _current_queue_limit(config, worker_target)
+                _submit_available(
+                    waiting_heap, pending, pool, worker_target, cfg_dict, process_type
+                )
+                _log_schedule_event(
+                    config, stats, worker_target, max_workers, pending,
+                    waiting_heap, queue_limit,
+                )
+                if pending:
+                    dense_cutoff = _dense_threshold(nonzero_history, config)
+                    _pop_completed(
+                        pending,
+                        tile_outputs,
+                        keep_temp,
+                        out_profile,
+                        target_crs_box,
+                        stats,
+                        alpha,
+                        dense_cutoff,
+                        config,
+                    )
+                elif waiting_heap:
+                    _submit_available(
+                        waiting_heap, pending, pool, worker_target,
+                        cfg_dict, process_type,
+                    )
 
     finally:
         pass
