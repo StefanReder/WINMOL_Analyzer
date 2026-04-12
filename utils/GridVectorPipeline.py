@@ -24,7 +24,6 @@ from utils.Tiling import (
     tile_profile_from_parent,
 )
 from utils.VectorTilePipeline import process_prediction_array_to_gpkg
-from utils.PredictWorkers import predict_jobs_with_batch_predictor
 
 
 def _prediction_core_step(config) -> int:
@@ -173,7 +172,7 @@ def _paste_prediction_core(tile_arr, tile_job, pred_job, pred_core):
     )
 
 
-def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config, batch_predictor=None):
+def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config, predictor_service=None):
     tile_arr = np.zeros(
         (int(grid_job.halo_window.height), int(grid_job.halo_window.width)),
         dtype=np.uint8,
@@ -215,13 +214,8 @@ def _predict_binary_grid_tile(uav_path, model, grid_job, pred_jobs, config, batc
         )
         tile_profile = tile_profile_from_parent(out_profile, grid_job.halo_window)
 
-        if batch_predictor is not None:
-            pred_cores, pred_stats = predict_jobs_with_batch_predictor(
-                batch_predictor,
-                uav_path,
-                pred_jobs,
-                config,
-            )
+        if predictor_service is not None:
+            pred_cores, pred_stats = predict_jobs_multi_gpu(predictor_service, pred_jobs)
             stats['read_s'] += float(pred_stats.get('read_s', 0.0))
             stats['read_data_s'] += float(pred_stats.get('read_data_s', 0.0))
             stats['read_mask_s'] += float(pred_stats.get('read_mask_s', 0.0))
@@ -645,8 +639,8 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     work_dir = tempfile.mkdtemp(prefix='winmol_grid_', dir=os.path.dirname(trees_path) or None)
     tmp_stem_path = IO.atomic_tmp_path(stem_path)
     keep_temp = bool(getattr(config, 'keep_temp_tiles', False))
-    batch_predictor = model if callable(getattr(model, 'close', None)) else None
-    use_multi_gpu_prediction = batch_predictor is not None
+    predictor_service = None
+    use_multi_gpu_prediction = bool(model_path and gpu_ids and len(gpu_ids) > 1)
 
     min_workers = max(1, int(getattr(config, 'grid_vector_workers_min', 1) or 1))
     max_workers = max(min_workers, int(getattr(config, 'grid_vector_workers_max', getattr(config, 'grid_vector_workers', 2)) or 2))
@@ -687,13 +681,21 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
     }
 
     try:
+        if use_multi_gpu_prediction:
+            predictor_service = start_multi_gpu_prediction_service(
+                model_path=model_path,
+                input_raster=uav_path,
+                gpu_ids=list(gpu_ids),
+                config=config,
+            )
+
         with rasterio.open(tmp_stem_path, 'w', **out_profile) as dst, \
                 cf.ProcessPoolExecutor(max_workers=max_workers, mp_context=spawn_ctx) as pool:
             for idx, grid_job in enumerate(grid_jobs, start=1):
                 tile_t0 = time.monotonic()
                 tile_arr, tile_profile, pred_stats = _predict_binary_grid_tile(
                     uav_path, model, grid_job, jobs_by_grid.get(grid_job.tile_id, []), config,
-                    batch_predictor=batch_predictor)
+                    predictor_service=predictor_service)
                 tile_elapsed = max(time.monotonic() - tile_t0, 1e-6)
                 tile_read_s = float(pred_stats.get('read_s', 0.0))
                 tile_read_data_s = float(pred_stats.get('read_data_s', 0.0))
@@ -814,7 +816,7 @@ def run_binary_grid_pipeline(model, uav_path, stem_path, trees_path, process_typ
                 _submit_available(waiting_heap, pending, pool, worker_target, cfg_dict, process_type)
 
     finally:
-        pass
+        stop_multi_gpu_prediction_service(predictor_service)
 
     IO.finalize_raster(tmp_stem_path, stem_path)
 

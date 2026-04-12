@@ -33,20 +33,17 @@ MULTI_GPU_VISIBLE = os.environ.get(
 PIPELINES = [
     {
         "name": "stripe_binary",
-        "runtime_path": "integrated_stripe_binary",
         "env": {
             "WINMOL_STREAM_PREDICTION": "1",
-            "WINMOL_DISABLE_GRID_PIPELINE": "1",
         },
         "config": {
             "stripe_pipeline": True,
-            "grid_pipeline": False,
+            "grid_pipeline": True,
             "grid_dense_split": False,
         },
     },
     {
         "name": "grid_binary",
-        "runtime_path": "integrated_grid_binary",
         "env": {
             "WINMOL_STREAM_PREDICTION": "1",
             "WINMOL_DISABLE_STRIPE_PIPELINE": "1",
@@ -59,7 +56,6 @@ PIPELINES = [
     },
     {
         "name": "stream_tiled_vector",
-        "runtime_path": "prediction_then_tiled_vector",
         "env": {
             "WINMOL_STREAM_PREDICTION": "1",
             "WINMOL_TILED_VECTOR_PROCESSING": "1",
@@ -74,7 +70,6 @@ PIPELINES = [
     },
     {
         "name": "stream_global_vector",
-        "runtime_path": "prediction_then_global_vector",
         "env": {
             "WINMOL_STREAM_PREDICTION": "1",
             "WINMOL_DISABLE_STRIPE_PIPELINE": "1",
@@ -88,11 +83,29 @@ PIPELINES = [
     },
 ]
 
-# Keep only distinct hardware/prediction scenarios. The earlier s_/t_ split was
-# redundant because the current planner collapses them to the same runtime path.
 MODES = [
+    # {
+    #     "name": "cpu",
+    #     "env": {
+    #         "CUDA_VISIBLE_DEVICES": "",
+    #     },
+    #     "config": {
+    #         "prediction_backend": "cpu",
+    #         "execution_mode": "stream",
+    #     },
+    # },
     {
-        "name": "single_gpu",
+        "name": "single_gpu_s_",
+        "env": {
+            "CUDA_VISIBLE_DEVICES": "0",
+        },
+        "config": {
+            "prediction_backend": "single_gpu",
+            "execution_mode": "stream",
+        },
+    },
+        {
+        "name": "single_gpu_t_",
         "env": {
             "CUDA_VISIBLE_DEVICES": "0",
         },
@@ -102,7 +115,17 @@ MODES = [
         },
     },
     {
-        "name": "multi_gpu",
+        "name": "multi_gpu_s_",
+        "env": {
+            "CUDA_VISIBLE_DEVICES": MULTI_GPU_VISIBLE,
+        },
+        "config": {
+            "prediction_backend": "multi_gpu",
+            "execution_mode": "stream",
+        },
+    },
+    {
+        "name": "multi_gpu_t",
         "env": {
             "CUDA_VISIBLE_DEVICES": MULTI_GPU_VISIBLE,
         },
@@ -114,9 +137,7 @@ MODES = [
 ]
 
 STEMS_RE = re.compile(r"Total stems written:\s+(\d+)")
-LIVE_STEMS_RE = re.compile(
-    r"(?:final number of stems|Detected stems(?: total)?)\s*[: ]\s*(\d+)"
-)
+LIVE_STEMS_RE = re.compile(r"(?:final number of stems|Detected stems(?: total)?)\s*[: ]\s*(\d+)")
 AVG_READ_RE = re.compile(r"avg read(?:_data)?\s+([0-9.]+)s")
 AVG_INFER_RE = re.compile(r"avg infer\s+([0-9.]+)s")
 VECTOR_JOBS_RE = re.compile(r"Vector jobs completed:\s+(\d+)")
@@ -139,7 +160,6 @@ def build_cases():
                 {
                     "mode": mode["name"],
                     "pipeline": pipeline["name"],
-                    "runtime_path": pipeline["runtime_path"],
                     "name": f"{mode['name']}__{pipeline['name']}",
                     "env": env,
                     "config": config,
@@ -203,7 +223,6 @@ def run_case(case: dict) -> dict:
         "name": case["name"],
         "mode": case["mode"],
         "pipeline": case["pipeline"],
-        "runtime_path": case["runtime_path"],
         "returncode": proc.returncode,
         "wall_s": round(wall_s, 3),
         "reported_elapsed_s": reported_elapsed_s,
@@ -220,13 +239,6 @@ def main():
     results = []
     cases = build_cases()
 
-    print("Benchmark cases:")
-    for case in cases:
-        print(
-            f"  {case['name']:34} -> {case['runtime_path']} "
-            f"(backend={case['config']['prediction_backend']})"
-        )
-
     for case in cases:
         print(f"Running {case['name']} ...", flush=True)
         result = run_case(case)
@@ -238,7 +250,6 @@ def main():
         "name",
         "mode",
         "pipeline",
-        "runtime_path",
         "returncode",
         "wall_s",
         "reported_elapsed_s",
@@ -259,7 +270,6 @@ def main():
     for row in sorted(results, key=lambda x: (x["returncode"] != 0, x["wall_s"])):
         print(
             f"{row['name']:32} "
-            f"path={row['runtime_path']:31} "
             f"rc={row['returncode']} "
             f"wall={row['wall_s']:.3f}s "
             f"elapsed={row['reported_elapsed_s']} "
