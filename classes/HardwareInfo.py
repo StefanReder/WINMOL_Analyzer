@@ -21,11 +21,13 @@ class HardwareInfo:
         gpu_names = cls._detect_gpu_names_nvidia_smi()
         gpu_memory_gb = cls._detect_gpu_memory_gb_nvidia_smi()
         gpu_count = len(gpu_names)
+
         if gpu_memory_gb and gpu_count != len(gpu_memory_gb):
             if len(gpu_memory_gb) > gpu_count:
                 gpu_memory_gb = gpu_memory_gb[:gpu_count]
             else:
                 gpu_memory_gb.extend([0.0] * (gpu_count - len(gpu_memory_gb)))
+
         return cls(
             cpu_count=cpu_count,
             total_ram_gb=total_ram_gb,
