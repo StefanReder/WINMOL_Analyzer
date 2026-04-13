@@ -18,7 +18,7 @@ class HardwareInfo:
     def detect(cls) -> "HardwareInfo":
         cpu_count = os.cpu_count() or 1
         total_ram_gb = cls._detect_total_ram_gb()
-        gpu_names = cls._detect_gpu_names_tf()
+        gpu_names = cls._detect_gpu_names_nvidia_smi()
         gpu_memory_gb = cls._detect_gpu_memory_gb_nvidia_smi()
         gpu_count = len(gpu_names)
         if gpu_memory_gb and gpu_count != len(gpu_memory_gb):
@@ -43,13 +43,22 @@ class HardwareInfo:
             return 0.0
 
     @staticmethod
-    def _detect_gpu_names_tf() -> List[str]:
+    def _detect_gpu_names_nvidia_smi() -> List[str]:
         try:
-            import tensorflow as tf
-            gpus = tf.config.list_physical_devices('GPU')
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return []
             names = []
-            for gpu in gpus:
-                names.append(getattr(gpu, 'name', str(gpu)))
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    names.append(line)
             return names
         except Exception:
             return []
@@ -57,13 +66,14 @@ class HardwareInfo:
     @staticmethod
     def _detect_gpu_memory_gb_nvidia_smi() -> List[float]:
         try:
-            result = \
-                subprocess.run(['nvidia-smi', '--query-gpu=memory.total',
-                                '--format=csv,noheader,nounits'],
-                               stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE,
-                               text=True,
-                               check=False, )
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=memory.total',
+                 '--format=csv,noheader,nounits'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
             if result.returncode != 0:
                 return []
             values = []
