@@ -20,6 +20,11 @@ class HardwareInfo:
         total_ram_gb = cls._detect_total_ram_gb()
         gpu_names = cls._detect_gpu_names_nvidia_smi()
         gpu_memory_gb = cls._detect_gpu_memory_gb_nvidia_smi()
+
+        gpu_names, gpu_memory_gb = cls._apply_cuda_visible_devices(
+            gpu_names, gpu_memory_gb
+        )
+
         gpu_count = len(gpu_names)
 
         if gpu_memory_gb and gpu_count != len(gpu_memory_gb):
@@ -56,12 +61,7 @@ class HardwareInfo:
             )
             if result.returncode != 0:
                 return []
-            names = []
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if line:
-                    names.append(line)
-            return names
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
         except Exception:
             return []
 
@@ -90,3 +90,45 @@ class HardwareInfo:
             return values
         except Exception:
             return []
+
+    @staticmethod
+    def _apply_cuda_visible_devices(
+        gpu_names: List[str],
+        gpu_memory_gb: List[float],
+    ) -> tuple[List[str], List[float]]:
+        raw = os.environ.get("CUDA_VISIBLE_DEVICES", None)
+
+        # Not set -> keep all GPUs visible
+        if raw is None:
+            return gpu_names, gpu_memory_gb
+
+        raw = raw.strip()
+
+        # Empty string or "-1" -> CPU-only
+        if raw == "" or raw == "-1":
+            return [], []
+
+        indices = []
+        for token in raw.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                indices.append(int(token))
+            except ValueError:
+                # ignore non-integer tokens
+                continue
+
+        if not indices:
+            return [], []
+
+        filtered_names = []
+        filtered_mem = []
+
+        for idx in indices:
+            if 0 <= idx < len(gpu_names):
+                filtered_names.append(gpu_names[idx])
+                if 0 <= idx < len(gpu_memory_gb):
+                    filtered_mem.append(gpu_memory_gb[idx])
+
+        return filtered_names, filtered_mem

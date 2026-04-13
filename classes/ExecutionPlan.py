@@ -205,9 +205,13 @@ def build_execution_plan(config: Any, hardware: Any, raster_info: Any,
             default_batch = 4
         else:
             default_batch = 3
+        multi_gpu_batch = _cfg(config, 'prediction_batch_multi_gpu', None)
+        if multi_gpu_batch is None:
+            multi_gpu_batch = default_batch
+
         prediction_batch_size = max(1, min(
             int(_cfg(config, 'prediction_batch_max_gpu', 12)),
-            int(_cfg(config, 'prediction_batch_multi_gpu', default_batch)),
+            int(multi_gpu_batch),
         ))
         producer_queue_batches = max(4, int(_cfg(config, 'producer_queue_batches', 8)))
         producer_workers = max(1, int(_cfg(config, 'prediction_producer_workers_multi_gpu', 2)))
