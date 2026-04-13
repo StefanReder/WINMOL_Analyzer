@@ -153,7 +153,7 @@ def write_tile_raster(pred_tile, tile_profile, output_path: str):
         compress=None,
     )
     with rasterio.open(output_path, 'w', **prof) as dst:
-        dst.write(pred_tile.astype(np.float32), 1)
+        dst.write(pred_tile.astype(np.uint8), 1)
     return output_path
 
 

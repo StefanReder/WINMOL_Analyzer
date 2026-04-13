@@ -11,8 +11,6 @@ from rasterio.windows import Window
 
 from classes.Config import Config
 from utils import IO
-from utils.Prediction import _iter_tile_jobs, _prepare_inference_batch, \
-    _resampling_layout, _format_eta
 
 
 def _config_from_dict(config_dict: dict) -> Config:
@@ -23,6 +21,123 @@ def _config_from_dict(config_dict: dict) -> Config:
         except Exception:
             pass
     return cfg
+
+
+def _to_float32_image(arr):
+    if arr.dtype == np.float32:
+        return arr
+    if np.issubdtype(arr.dtype, np.integer):
+        return (arr / 255.0).astype(np.float32, copy=False)
+    return arr.astype(np.float32, copy=False)
+
+
+def _raw_tile_to_batchable(tile_img):
+    tile_img = _to_float32_image(tile_img)
+    if tile_img.ndim == 2:
+        tile_img = tile_img[:, :, None]
+    if tile_img.shape[2] < 3:
+        pad = np.zeros(
+            (tile_img.shape[0], tile_img.shape[1], 3 - tile_img.shape[2]),
+            dtype=np.float32,
+        )
+        tile_img = np.concatenate([tile_img, pad], axis=2)
+    return tile_img[:, :, :3]
+
+
+def _prepare_inference_batch(raw_tiles, raw_masks, config):
+    import tensorflow as tf
+
+    batch = np.stack([_raw_tile_to_batchable(t) for t in raw_tiles], axis=0)
+    tile_tensor = tf.convert_to_tensor(batch, dtype=tf.float32)
+    tile_tensor = tf.image.resize(
+        tile_tensor,
+        size=[config.img_height, config.img_width],
+        method='bicubic',
+        antialias=False,
+    )
+
+    if raw_masks is None:
+        raw_masks = [np.any(_raw_tile_to_batchable(t) != 0, axis=2) for t in raw_tiles]
+
+    mask_batch = np.stack(
+        [m.astype(np.float32)[:, :, None] for m in raw_masks],
+        axis=0,
+    )
+    mask_tensor = tf.convert_to_tensor(mask_batch, dtype=tf.float32)
+    mask_tensor = tf.image.resize(
+        mask_tensor,
+        size=[config.img_height, config.img_width],
+        method='nearest',
+        antialias=False,
+    )
+    return tile_tensor, mask_tensor.numpy()
+
+
+def _resampling_layout(shape, profile, config):
+    height, width = int(shape[0]), int(shape[1])
+    px_per_tile_x = int(np.ceil(config.tile_size / abs(profile['transform'][0])))
+    px_per_tile_y = int(np.ceil(config.tile_size / abs(profile['transform'][4])))
+    overlap_img_x = config.overlap_pred * px_per_tile_x / config.img_width
+    overlap_img_y = config.overlap_pred * px_per_tile_y / config.img_width
+    x_tiles = int(np.ceil(width / max(px_per_tile_x - overlap_img_x, 1)))
+    y_tiles = int(np.ceil(height / max(px_per_tile_y - overlap_img_y, 1)))
+    img_width_inner = config.img_width - config.overlap_pred
+    out_width = int(x_tiles * img_width_inner + config.overlap_pred)
+    out_height = int(y_tiles * img_width_inner + config.overlap_pred)
+    from rasterio import Affine
+
+    out_transform = Affine(
+        profile['transform'][0] * px_per_tile_x / config.img_width, 0.0,
+        profile['transform'][2], 0.0,
+        profile['transform'][4] * px_per_tile_y / config.img_width,
+        profile['transform'][5],
+    )
+    return {
+        'px_per_tile_x': px_per_tile_x,
+        'px_per_tile_y': px_per_tile_y,
+        'overlap_img_x': overlap_img_x,
+        'overlap_img_y': overlap_img_y,
+        'x_tiles': x_tiles,
+        'y_tiles': y_tiles,
+        'img_width_inner': img_width_inner,
+        'out_width': out_width,
+        'out_height': out_height,
+        'out_transform': out_transform,
+    }
+
+
+def _iter_tile_jobs(layout, config):
+    core = layout['img_width_inner']
+    src_width = max(1, layout['px_per_tile_x'] - 1)
+    src_height = max(1, layout['px_per_tile_y'] - 1)
+    tile_index = 0
+    for i in range(layout['y_tiles']):
+        src_row = int(np.floor(i * (layout['px_per_tile_y'] - layout['overlap_img_y'])))
+        for j in range(layout['x_tiles']):
+            src_col = int(np.floor(j * (layout['px_per_tile_x'] - layout['overlap_img_x'])))
+            dst_row = config.overlap_pred // 2 + i * core
+            dst_col = config.overlap_pred // 2 + j * core
+            yield {
+                'tile_index': tile_index,
+                'src_row': src_row,
+                'src_col': src_col,
+                'src_width': src_width,
+                'src_height': src_height,
+                'dst_row': dst_row,
+                'dst_col': dst_col,
+            }
+            tile_index += 1
+
+
+def _format_eta(seconds: float) -> str:
+    if not np.isfinite(seconds) or seconds < 0:
+        return 'unknown'
+    seconds = int(round(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h:d}h {m:02d}m {s:02d}s"
+    return f"{m:02d}m {s:02d}s"
 
 
 def _predict_batch(raw_tiles, raw_masks, model, config):

@@ -283,9 +283,12 @@ class ImageProcessing:
         except Exception as e:
             print("Tensorflow error: ", e)
 
-    def display_starting_text(self):
-        print("Check CUDA environment")
-        self.check_DL_env()
+    def display_starting_text(self, plan=None):
+        if plan is not None and plan.prediction_mode == 'multi_gpu_stream':
+            print("Skipping parent TensorFlow initialization for worker-local multi-GPU mode.")
+        else:
+            print("Check CUDA environment")
+            self.check_DL_env()
         print("Command-line arguments:")
         print("Model Path:", self.model_path)
         print("Image Path:", self.uav_path)
@@ -312,7 +315,6 @@ if __name__ == '__main__':
         print(f"Received {len(sys.argv) - 1} arguments: {sys.argv[1:]}")
         sys.exit(2)
 
-    _configure_tensorflow_runtime()
     tt = Timer()
     tt.start()
     print("Start timer")
@@ -330,8 +332,17 @@ if __name__ == '__main__':
 
     image_processor = ImageProcessing(
         model_path, uav_path, stem_path, trees_path, process_type)
-    image_processor.display_starting_text()
-    image_processor.main()
+    hardware = image_processor.detect_hardware()
+    plan = image_processor.build_plan(hardware)
+    if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
+        print("Skipping parent TensorFlow runtime configuration for worker-local multi-GPU mode.")
+    else:
+        _configure_tensorflow_runtime()
+    image_processor.display_starting_text(plan)
+    if process_type == 'Stems':
+        image_processor.run_stem_pipeline(plan)
+    else:
+        image_processor.run_tree_pipeline(plan)
 
     print("Stop timer")
     tt.stop()
