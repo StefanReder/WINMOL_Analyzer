@@ -30,65 +30,22 @@ MULTI_GPU_VISIBLE = os.environ.get(
     "0,1,2,3",
 )
 
-PIPELINES = [
-    {
-        "name": "stripe_binary",
-        "runtime_path": "integrated_stripe_binary",
-        "env": {
-            "WINMOL_STREAM_PREDICTION": "1",
-            "WINMOL_DISABLE_GRID_PIPELINE": "1",
-        },
-        "config": {
-            "stripe_pipeline": True,
-            "grid_pipeline": False,
-            "grid_dense_split": False,
-        },
-    },
-    {
-        "name": "grid_binary",
-        "runtime_path": "integrated_grid_binary",
-        "env": {
-            "WINMOL_STREAM_PREDICTION": "1",
-            "WINMOL_DISABLE_STRIPE_PIPELINE": "1",
-        },
-        "config": {
-            "stripe_pipeline": False,
-            "grid_pipeline": True,
-            "grid_dense_split": False,
-        },
-    },
-    {
-        "name": "stream_tiled_vector",
-        "runtime_path": "prediction_then_tiled_vector",
-        "env": {
-            "WINMOL_STREAM_PREDICTION": "1",
-            "WINMOL_TILED_VECTOR_PROCESSING": "1",
-            "WINMOL_DISABLE_STRIPE_PIPELINE": "1",
-            "WINMOL_DISABLE_GRID_PIPELINE": "1",
-        },
-        "config": {
-            "stripe_pipeline": False,
-            "grid_pipeline": False,
-            "vector_backend": "tiled",
-        },
-    },
-    {
-        "name": "stream_global_vector",
-        "runtime_path": "prediction_then_global_vector",
-        "env": {
-            "WINMOL_STREAM_PREDICTION": "1",
-            "WINMOL_DISABLE_STRIPE_PIPELINE": "1",
-            "WINMOL_DISABLE_GRID_PIPELINE": "1",
-        },
-        "config": {
-            "stripe_pipeline": False,
-            "grid_pipeline": False,
-            "vector_backend": "global",
-        },
-    },
-]
+PIPELINE = {
+    "name": "stream_tiled_vector",
+    "runtime_path": "stream_prediction_then_tiled_vector",
+    "config": {},
+}
 
 MODES = [
+    {
+        "name": "cpu",
+        "env": {
+            "CUDA_VISIBLE_DEVICES": "",
+        },
+        "config": {
+            "prediction_backend": "cpu",
+        },
+    },
     {
         "name": "single_gpu",
         "env": {
@@ -96,17 +53,15 @@ MODES = [
         },
         "config": {
             "prediction_backend": "single_gpu",
-            "execution_mode": "tiled",
         },
     },
     {
-        "name": "multi_gpu_t",
+        "name": "multi_gpu",
         "env": {
             "CUDA_VISIBLE_DEVICES": MULTI_GPU_VISIBLE,
         },
         "config": {
             "prediction_backend": "multi_gpu",
-            "execution_mode": "tiled",
         },
     },
 ]
@@ -123,25 +78,23 @@ ELAPSED_RE = re.compile(r"Elapsed time:\s+([0-9.]+)\s+seconds")
 def build_cases():
     cases = []
     for mode in MODES:
-        for pipeline in PIPELINES:
-            env = {}
-            env.update(mode.get("env", {}))
-            env.update(pipeline.get("env", {}))
+        env = {}
+        env.update(mode.get("env", {}))
 
-            config = {}
-            config.update(mode.get("config", {}))
-            config.update(pipeline.get("config", {}))
+        config = {}
+        config.update(PIPELINE.get("config", {}))
+        config.update(mode.get("config", {}))
 
-            cases.append(
-                {
-                    "mode": mode["name"],
-                    "pipeline": pipeline["name"],
-                    "runtime_path": pipeline["runtime_path"],
-                    "name": f"{mode['name']}__{pipeline['name']}",
-                    "env": env,
-                    "config": config,
-                }
-            )
+        cases.append(
+            {
+                "mode": mode["name"],
+                "pipeline": PIPELINE["name"],
+                "runtime_path": PIPELINE["runtime_path"],
+                "name": f"{mode['name']}__{PIPELINE['name']}",
+                "env": env,
+                "config": config,
+            }
+        )
     return cases
 
 
@@ -256,7 +209,7 @@ def main():
     for row in sorted(results, key=lambda x: (x["returncode"] != 0, x["wall_s"])):
         print(
             f"{row['name']:32} "
-            f"path={row['runtime_path']:31} "
+            f"path={row['runtime_path']:36} "
             f"rc={row['returncode']} "
             f"wall={row['wall_s']:.3f}s "
             f"elapsed={row['reported_elapsed_s']} "

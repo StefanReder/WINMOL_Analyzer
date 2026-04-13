@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -40,6 +39,16 @@ def _configure_tensorflow_runtime():
             print(f"Memory growth setup failed: {e}")
     else:
         print("No GPUs found. Running on CPU.")
+    return tf
+
+
+def _force_tensorflow_cpu_only():
+    tf = _import_tensorflow()
+    try:
+        tf.config.set_visible_devices([], 'GPU')
+        print('Configured TensorFlow for CPU-only prediction.')
+    except RuntimeError as exc:
+        print(f'CPU-only TensorFlow setup failed: {exc}')
     return tf
 
 
@@ -93,18 +102,8 @@ class ImageProcessing:
         if hardware is None:
             hardware = self.detect_hardware()
         raster_info = IO.get_raster_info(self.uav_path)
-        plan = build_execution_plan(self.config, hardware, raster_info,
-                                    self.process_type)
-
-        env_stream = os.environ.get('WINMOL_STREAM_PREDICTION', '')\
-            .strip().lower() in {'1', 'true', 'yes', 'on'}
-        env_tiled_vec = os.environ.get('WINMOL_TILED_VECTOR_PROCESSING', '')\
-            .strip().lower() in {'1', 'true', 'yes', 'on'}
-        if env_stream and plan.prediction_mode == 'full':
-            plan.prediction_mode = 'stream' if plan.gpu_workers \
-                else 'cpu_stream'
-        if env_tiled_vec and self.process_type != 'Stems':
-            plan.vector_mode = 'tiled'
+        plan = build_execution_plan(
+            self.config, hardware, raster_info, self.process_type)
 
         print('Execution plan:')
         print(f"  process_type     = {plan.process_type}")
@@ -122,93 +121,53 @@ class ImageProcessing:
         print(f"  producer_workers = {plan.producer_workers}")
         print(f"  progress_interval_s = {plan.progress_interval_s}")
         print(f"  est_pred_tiles   = {plan.estimated_prediction_tiles}")
-        print(f"  grid_pipeline    = {getattr(self.config, 'grid_pipeline', False)}")
-        print(f"  grid_inner_m     = {getattr(self.config, 'grid_inner_m', None)}")
-        print(f"  grid_halo_m      = {getattr(self.config, 'grid_halo_m', None)}")
         self._apply_plan_to_config(plan)
         return plan
 
     def _apply_plan_to_config(self, plan):
-        self.config.cpu_workers = plan.vector_inner_workers             if plan.vector_mode == 'tiled'             else plan.cpu_workers
+        self.config.cpu_workers = (
+            plan.vector_inner_workers
+            if plan.vector_mode == 'tiled'
+            else plan.cpu_workers
+        )
         self.config.gpu_workers = plan.gpu_workers
         self.config.vector_mode = plan.vector_mode
         self.config.vector_tile_workers = plan.vector_tile_workers
-        self.config.grid_vector_workers = plan.vector_tile_workers
         self.config.prediction_batch_size = plan.prediction_batch_size
         self.config.producer_queue_batches = plan.producer_queue_batches
         self.config.prediction_producer_workers = plan.producer_workers
         self.config.progress_interval_s = plan.progress_interval_s
 
-        cpu_total = max(1, int(plan.cpu_workers or 1))
-        grid_min = max(1, int(getattr(self.config, 'grid_vector_workers_min', 1) or 1))
-        default_grid_max = max(2, min(6, cpu_total // 3 if cpu_total >= 3 else 1))
-        grid_max = max(grid_min, int(getattr(
-            self.config, 'grid_vector_workers_max', default_grid_max
-        ) or default_grid_max))
-        grid_max = min(grid_max, max(1, cpu_total))
-
-        if getattr(self.config, 'grid_pipeline', False):
-            planned_workers = max(1, int(plan.vector_tile_workers or 1))
-            self.config.grid_vector_workers_min = grid_min
-            self.config.grid_vector_workers_max = max(planned_workers, grid_max)
-            self.config.grid_vector_workers = max(
-                grid_min,
-                min(self.config.grid_vector_workers_max, planned_workers),
-            )
-            queue_mult = float(getattr(self.config, 'grid_queue_multiplier', 3.0) or 3.0)
-            self.config.grid_inflight_tiles = max(
-                int(getattr(self.config, 'grid_inflight_tiles', 0) or 0),
-                int(max(6, math.ceil(queue_mult * self.config.grid_vector_workers_max))),
-            )
-
-    def _prediction_backend(self, plan):
-        if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
-            from utils.PredictWorkers import build_batch_predictor
-            print(f"\nStarting multi-GPU batch predictor on {plan.gpu_workers} GPU(s)...")
-            return build_batch_predictor(
-                self.model_path,
-                list(range(plan.gpu_workers)),
-                self.config,
-            )
-        print("\nLoading Model...")
-        return IO.load_model_from_path(self.model_path)
-
     def run_prediction_phase(self, plan):
-        if plan.prediction_mode == 'full':
-            from utils import Prediction as Pred
-            print("\nLoading Model...")
-            model = IO.load_model_from_path(self.model_path)
-            print("\nLoading Orthomosaic Image...")
-            img, profile = IO.load_orthomosaic(self.uav_path, self.config)
-            print("\nPerforming Prediction with Resampling...")
-            pred, profile = Pred.predict_with_resampling_per_tile(
-                img, profile, model, self.config)
-            print("\nExporting Predicted Stem Map...")
-            stem_file_name = os.path.splitext(
-                os.path.basename(self.stem_path))[0]
-            stem_dir = os.path.dirname(self.stem_path)
-            IO.export_stem_map(pred, profile, stem_dir, stem_file_name,
-                               compress='DEFLATE' if getattr(self.config,
-                                                             'compress_output',
-                                                             True) else None)
-            return pred, profile, self.stem_path
+        if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
+            from utils.PredictWorkers import run_multi_gpu_prediction
+
+            print("\nPerforming multi-GPU streamed prediction...")
+            profile = run_multi_gpu_prediction(
+                self.model_path,
+                self.uav_path,
+                self.stem_path,
+                tile_jobs=None,
+                gpu_ids=list(range(plan.gpu_workers)),
+                config=self.config,
+            )
+            return (None, profile, self.stem_path)
 
         from utils import Prediction as Pred
 
-        backend = self._prediction_backend(plan)
-        try:
-            print("\nPerforming Prediction with Resampling in stream mode...")
-            profile = Pred.predict_stream_to_raster(
-                self.uav_path,
-                self.stem_path,
-                backend,
-                self.config,
-            )
-            return (None, profile, self.stem_path)
-        finally:
-            close_fn = getattr(backend, 'close', None)
-            if callable(close_fn):
-                close_fn()
+        if plan.prediction_mode == 'cpu_stream':
+            _force_tensorflow_cpu_only()
+
+        print("\nLoading Model...")
+        model = IO.load_model_from_path(self.model_path)
+        print("\nPerforming Prediction with Resampling in stream mode...")
+        profile = Pred.predict_stream_to_raster(
+            self.uav_path,
+            self.stem_path,
+            model,
+            self.config,
+        )
+        return (None, profile, self.stem_path)
 
     def trees_processing(self, pred, profile):
         print("\nFinding Stem Segments...")
@@ -225,55 +184,9 @@ class ImageProcessing:
         stems = Quant.quantify_stems(stems, pred, profile, config=self.config)
         return stems
 
-    def run_grid_binary_tree_pipeline(self, plan):
-        from utils.GridVectorPipeline import run_binary_grid_pipeline
-
-        backend = self._prediction_backend(plan)
-        print("\nRunning binary coarse-grid prediction/vector pipeline...")
-        try:
-            return run_binary_grid_pipeline(
-                model=backend,
-                uav_path=self.uav_path,
-                stem_path=self.stem_path,
-                trees_path=self.trees_path,
-                process_type=self.process_type,
-                config=self.config,
-            )
-        finally:
-            close_fn = getattr(backend, 'close', None)
-            if callable(close_fn):
-                close_fn()
-
-    def run_stripe_binary_tree_pipeline(self, plan):
-        from utils.StripePredictionPipeline import run_stripe_binary_pipeline
-
-        backend = self._prediction_backend(plan)
-        print("\nRunning binary stripe prediction/vector pipeline...")
-        try:
-            return run_stripe_binary_pipeline(
-                model=backend,
-                uav_path=self.uav_path,
-                stem_path=self.stem_path,
-                trees_path=self.trees_path,
-                process_type=self.process_type,
-                config=self.config,
-            )
-        finally:
-            close_fn = getattr(backend, 'close', None)
-            if callable(close_fn):
-                close_fn()
-
     def run_vector_phase(self, plan, pred_path=None, pred=None, profile=None):
-        if plan.vector_mode == 'global':
-            if pred is None or profile is None:
-                pred, profile = IO.load_stem_map(pred_path or self.stem_path)
-            stems = self.trees_processing(pred, profile)
-            if self.process_type == 'Trees':
-                print("\nExporting detected stems to GeoPackage...")
-                return IO.write_stems_to_gpkg(stems, profile, self.trees_path)
-            print("\nExporting detected stems, and measuring nodes"
-                  "and vectors to GeoPackage...")
-            return IO.write_all_layers_to_gpkg(stems, profile, self.trees_path)
+        if self.process_type == 'Stems':
+            return None
 
         print("\nRunning tiled vector processing...")
         work_dir = tempfile.mkdtemp(
@@ -286,10 +199,12 @@ class ImageProcessing:
                 raster_info['pixel_size_x'],
                 raster_info['pixel_size_y'],
             )
-            jobs = build_tile_grid(raster_info['width'],
-                                   raster_info['height'],
-                                   plan.tile_inner_px,
-                                   halo_px)
+            jobs = build_tile_grid(
+                raster_info['width'],
+                raster_info['height'],
+                plan.tile_inner_px,
+                halo_px,
+            )
             tile_paths = []
             for job in jobs:
                 pred_tile, tile_profile = IO.load_raster_window_with_profile(
@@ -305,7 +220,7 @@ class ImageProcessing:
                 self.config,
                 self.process_type,
                 work_dir,
-                plan.cpu_workers,
+                plan.vector_inner_workers,
             )
             merged = self.run_merge_phase(plan, work_dir)
             if plan.keep_temp:
@@ -332,30 +247,6 @@ class ImageProcessing:
         self.run_prediction_phase(plan)
 
     def run_tree_pipeline(self, plan):
-        use_stripe = bool(getattr(self.config, 'stripe_pipeline', False))
-        env_disable_stripe = os.environ.get(
-            'WINMOL_DISABLE_STRIPE_PIPELINE', '')
-        env_disable_stripe = env_disable_stripe.strip().lower() in {
-            '1', 'true', 'yes', 'on'}
-
-        use_grid = bool(getattr(self.config, 'grid_pipeline', False))
-        env_disable_grid = os.environ.get('WINMOL_DISABLE_GRID_PIPELINE', '')
-        env_disable_grid = env_disable_grid.strip().lower() in {
-            '1', 'true', 'yes', 'on'}
-
-        can_use_integrated_binary_pipeline = (
-            self.process_type in {'Trees', 'Nodes'}
-            and plan.vector_mode == 'tiled'
-            and plan.prediction_mode in {'stream', 'cpu_stream'}
-        )
-
-        if can_use_integrated_binary_pipeline:
-            if use_stripe and not env_disable_stripe:
-                return self.run_stripe_binary_tree_pipeline(plan)
-
-            if use_grid and not env_disable_grid:
-                return self.run_grid_binary_tree_pipeline(plan)
-
         pred, profile, pred_path = self.run_prediction_phase(plan)
         return self.run_vector_phase(
             plan, pred_path=pred_path, pred=pred, profile=profile)
