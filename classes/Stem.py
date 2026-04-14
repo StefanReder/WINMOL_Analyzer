@@ -25,10 +25,17 @@ class Stem:
     direction_y: float = 0.0
     direction_deg: Optional[float] = None
     direction_confidence: float = 0.0
+    owner_partition_id: Optional[str] = None
+    source_tile_id: Optional[str] = None
+    is_border_candidate: bool = False
 
     def __post_init__(self):
         if self.stem_id is not None:
             self.stem_id = str(self.stem_id)
+        if self.owner_partition_id is not None:
+            self.owner_partition_id = str(self.owner_partition_id)
+        if self.source_tile_id is not None:
+            self.source_tile_id = str(self.source_tile_id)
 
     def __eq__(self, other):
         return (self.start == other.start and self.stop == other.stop
@@ -61,7 +68,6 @@ class Stem:
             return 0
         return sum(self.segment_volume_list)
 
-    # TBD: what's the difference between nodes and vectors beside the geometry?
     def get_nodes(self) -> List[Node]:
         if self.path.coords is None:
             return []

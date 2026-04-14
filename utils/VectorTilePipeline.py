@@ -10,7 +10,7 @@ import numpy as np
 
 from classes.Config import Config
 from utils.IO \
-    import load_stem_map, write_all_layers_to_gpkg, write_stems_to_gpkg
+    import load_stem_map, write_stems_to_gpkg
 import utils.Skeletonization as Skel
 import utils.Vectorization as Vec
 import utils.Quantification as Quant
@@ -28,10 +28,11 @@ def _clone_config(config, **updates):
     return cfg
 
 
-def export_tile_results(stems, profile, process_type: str, output_prefix: str):
-    if process_type == 'Trees':
+def export_tile_results(stems, profile, process_type: str, output_prefix: str, config=None):
+    write_stems_only = bool(getattr(config, 'write_tile_stems_only', True))
+    if write_stems_only or process_type == 'Trees':
         return write_stems_to_gpkg(stems, profile, output_prefix)
-    return write_all_layers_to_gpkg(stems, profile, output_prefix)
+    return write_stems_to_gpkg(stems, profile, output_prefix)
 
 
 
@@ -110,7 +111,7 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
     stem_count = len(stems)
 
     t0 = time.perf_counter()
-    output_path = export_tile_results(stems, profile, process_type, output_prefix)
+    output_path = export_tile_results(stems, profile, process_type, output_prefix, config=config)
     timings['write_s'] = time.perf_counter() - t0
     timings['total_s'] = time.perf_counter() - total_t0
     output_exists = bool(output_path) and os.path.exists(output_path)

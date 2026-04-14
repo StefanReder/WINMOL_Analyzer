@@ -54,6 +54,9 @@ def _clone_stem(stem: Stem) -> Stem:
         direction_y=float(getattr(stem, 'direction_y', 0.0) or 0.0),
         direction_deg=getattr(stem, 'direction_deg', None),
         direction_confidence=float(getattr(stem, 'direction_confidence', 0.0) or 0.0),
+        owner_partition_id=getattr(stem, 'owner_partition_id', None),
+        source_tile_id=getattr(stem, 'source_tile_id', None),
+        is_border_candidate=bool(getattr(stem, 'is_border_candidate', False)),
     )
     if hasattr(stem, '_contributors'):
         cloned._contributors = list(getattr(stem, '_contributors', []))
@@ -61,10 +64,15 @@ def _clone_stem(stem: Stem) -> Stem:
 
 
 def _direction_variants(stem: Stem, config=None):
-    variants = [_clone_stem(stem)]
-    if Quant.is_direction_ambiguous(stem, config=config):
-        variants.append(Quant.reverse_stem_profile(_clone_stem(stem)))
-    return variants
+    primary = _clone_stem(stem)
+    conf = float(getattr(stem, 'direction_confidence', 0.0) or 0.0)
+    try:
+        low = float(getattr(config, 'direction_confidence_low', 0.35))
+    except Exception:
+        low = 0.35
+    if conf <= low or Quant.is_direction_ambiguous(stem, config=config):
+        return [primary, Quant.reverse_stem_profile(_clone_stem(stem))]
+    return [primary]
 
 
 def _contributors_of(stem: Stem):
@@ -91,8 +99,9 @@ def _merged_candidate_stub(base_stem: Stem, candidate_stem: Stem, new_path: Line
         segment_diameter_list=[],
         segment_length_list=[],
         segment_volume_list=[],
-        stem_id=getattr(base_stem, 'stem_id', None),
+        stem_id=None,
         crs=getattr(base_stem, 'crs', getattr(candidate_stem, 'crs', None)),
+        source_tile_id=getattr(base_stem, 'source_tile_id', getattr(candidate_stem, 'source_tile_id', None)),
     )
     contributors = _contributors_of(base_stem) + _contributors_of(candidate_stem)
     merged = Quant.rebuild_connected_stem_profile(
@@ -261,7 +270,6 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                                 best_slave_idx = idx
 
                 if best_candidate is not None and best_slave_idx is not None:
-                    best_candidate.stem_id = getattr(base_stem, 'stem_id', None)
                     base_stem = Quant.refresh_stem_direction(best_candidate, config=config)
                     base_stem = Quant.refresh_measurement_vectors(base_stem, config=config)
                     cycle_stems[base_idx] = base_stem
@@ -288,7 +296,7 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
             connected_stems.append(stem)
         else:
             out_count += 1
-    connected_stems, dup_count_2 = remove_duplicates(connected_stems)
+    connected_stems, dup_count_2 = remove_duplicates_spatial(connected_stems, config=config)
     duplicates_count += dup_count_2
 
     print("")
@@ -297,11 +305,12 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
     print(duplicates_count, "duplicates are removed")
     print(out_count, "stem fragments with a length less than ",
           config.min_length, "m are filtered out")
+    connected_stems = Quant.ensure_stem_ids(connected_stems, prefix="stem")
     print("final number of stems", len(connected_stems))
     t.stop()
     print("#######################################################")
     print("")
-    return Quant.ensure_stem_ids(connected_stems, prefix='stem', preserve_existing=False)
+    return connected_stems
 
 
 def calc_connectivity_votes(
@@ -429,11 +438,9 @@ def build_stem_parts(segments: List[Part]):
             segment_diameter_list=[],
             segment_length_list=[],
             segment_volume_list=[],
-            stem_id=None,
+            stem_id=f"part_{len(stems):08d}",
         )
         stems.append(stem)
-
-    stems = Quant.ensure_stem_ids(stems, prefix='part', preserve_existing=False)
 
     print(len(stems), "stems segments build")
 
@@ -456,6 +463,67 @@ def rebuild_endnodes_from_stems(stems: List[Stem]) -> List[Point]:
     print("#######################################################")
     print("")
     return nodes
+
+
+def remove_duplicates_spatial(stems: List[Stem], config=None, stems0=None):
+    stems = list(stems)
+    stems.sort(key=lambda x: x.length, reverse=True)
+    if not stems:
+        return [], 0
+    try:
+        buffer_m = float(getattr(config, 'partition_dedup_buffer_m', 0.02))
+    except Exception:
+        buffer_m = 0.02
+    buffer_m = max(buffer_m, 1e-6)
+
+    if type(stems0) is Stem:
+        try:
+            base_geom = stems0.path.buffer(buffer_m)
+        except Exception:
+            return remove_duplicates(stems, stems0=stems0)
+        kept = []
+        count = 0
+        for s in stems:
+            try:
+                if base_geom.contains(s.path):
+                    count += 1
+                    continue
+            except Exception:
+                pass
+            kept.append(s)
+        kept.append(stems0)
+        return kept, count
+
+    buffers = []
+    for stem in stems:
+        try:
+            buffers.append(stem.path.buffer(buffer_m))
+        except Exception:
+            buffers.append(stem.path)
+    tree = STRtree(buffers)
+    remaining = set(range(len(stems)))
+    kept = []
+    count = 0
+    while remaining:
+        idx = min(remaining)
+        remaining.remove(idx)
+        base = stems[idx]
+        base_buf = buffers[idx]
+        kept.append(base)
+        try:
+            cand_idx = set(_query_tree_indices(tree, base_buf, buffers))
+        except Exception:
+            cand_idx = set()
+        for j in cand_idx:
+            if j not in remaining or j == idx:
+                continue
+            try:
+                if base_buf.contains(stems[j].path):
+                    remaining.remove(j)
+                    count += 1
+            except Exception:
+                continue
+    return kept, count
 
 
 # Removes duplicates from stem list

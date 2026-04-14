@@ -7,6 +7,7 @@ import json
 import os
 import glob
 import tempfile
+import multiprocessing as mp
 import shutil
 import errno
 import numpy as np
@@ -338,7 +339,6 @@ def _jsonify_list(x):
 
 def stems_to_gdf(stems, profile):
     crs = _crs_from_profile(profile)
-    stems = Quant.ensure_stem_ids(list(stems), prefix='stem', preserve_existing=True)
 
     rows = []
     geoms = []
@@ -352,16 +352,16 @@ def stems_to_gdf(stems, profile):
         except Exception:
             ex, ey = (None, None)
 
-        if hasattr(s.path, "geom_type"):
-            geom = s.path
-        else:
-            geom = LineString(list(s.path.coords))
+        geom = s.path if hasattr(s.path, "geom_type") else LineString(list(s.path.coords))
         geoms.append(geom)
 
         tree_x = getattr(s, "tree_x", sx)
         tree_y = getattr(s, "tree_y", sy)
+        stem_id = getattr(s, 'stem_id', None)
+        if stem_id in (None, '', -1):
+            stem_id = str(i)
         rows.append({
-            "stem_id": s.stem_id,
+            "stem_id": str(stem_id),
             "start_x": sx, "start_y": sy,
             "stop_x": ex, "stop_y": ey,
             "tree_x": tree_x, "tree_y": tree_y,
@@ -369,6 +369,9 @@ def stems_to_gdf(stems, profile):
             "dir_y": float(getattr(s, "direction_y", 0.0) or 0.0),
             "dir_deg": getattr(s, "direction_deg", None),
             "dir_conf": float(getattr(s, "direction_confidence", 0.0) or 0.0),
+            "owner_pid": getattr(s, 'owner_partition_id', None),
+            "src_tile": getattr(s, 'source_tile_id', None),
+            "is_border": bool(getattr(s, 'is_border_candidate', False)),
             "length": float(getattr(s, "length", 0.0)),
             "volume": float(getattr(s, "volume", 0.0)),
             "d_json": _jsonify_list(getattr(s, "segment_diameter_list", [])),
@@ -381,7 +384,6 @@ def stems_to_gdf(stems, profile):
 
 def nodes_to_gdf(stems, profile):
     crs = _crs_from_profile(profile)
-    stems = Quant.ensure_stem_ids(list(stems), prefix='stem', preserve_existing=True)
 
     rows = []
     geoms = []
@@ -395,7 +397,7 @@ def nodes_to_gdf(stems, profile):
             except Exception:
                 pass
             rows.append({
-                "stem_id": s.stem_id,
+                "stem_id": str(getattr(s, "stem_id", i)),
                 "node": j,
                 "d": d,
             })
@@ -405,7 +407,6 @@ def nodes_to_gdf(stems, profile):
 
 def vectors_to_gdf(stems, profile):
     crs = _crs_from_profile(profile)
-    stems = Quant.ensure_stem_ids(list(stems), prefix='stem', preserve_existing=True)
 
     rows = []
     geoms = []
@@ -466,7 +467,7 @@ def vectors_to_gdf(stems, profile):
                 d = None
 
             rows.append({
-                "stem_id": stems[i].stem_id,
+                "stem_id": str(getattr(stems[i], "stem_id", i)),
                 "node": int(j),
                 "d": d,
             })
@@ -931,6 +932,10 @@ def _read_tile_gpkg(gpkg_path):
     return stems, nodes, vectors
 
 
+def _read_tile_stems_gpkg(gpkg_path):
+    return _read_gpkg_layer(gpkg_path, ["stems", "stem", "trees", "tree"])
+
+
 def _ensure_crs(gdf, target_crs):
     if gdf is None or gdf.empty:
         return gpd.GeoDataFrame()
@@ -1073,11 +1078,9 @@ def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
 
     filter_geom, raster_crs = _raster_filter_geom(raster_path, edge_buffer_m)
 
-    stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
+    stems = _read_tile_stems_gpkg(gpkg_path)
     print(
-        f"MERGE TILE READ | tile {tile_id} | file {gpkg_path} | stems {0 if stems is None else len(stems)} "
-        f"| nodes {0 if nodes is None else len(nodes)} | vectors {0 if vectors is None else len(vectors)} "
-        f"| raster {raster_path}",
+        f"MERGE TILE READ | tile {tile_id} | file {gpkg_path} | stems {0 if stems is None else len(stems)} | raster {raster_path}",
         flush=True,
     )
     if stems is None or stems.empty:
@@ -1087,18 +1090,11 @@ def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
         target_crs = stems.crs or raster_crs
 
     stems = _ensure_crs(stems, target_crs)
-    nodes = _ensure_crs(nodes, target_crs)
-    vectors = _ensure_crs(vectors, target_crs)
-
-    stems, kept_local = _globalize_stems(stems, tile_id, filter_geom)
+    stems, _kept_local = _globalize_stems(stems, tile_id, filter_geom)
     if stems.empty:
         return None, target_crs
-
-    nodes_sel = _select_child(nodes, tile_id, kept_local)
-    vectors_sel = _select_child(vectors, tile_id, kept_local)
-
-    counts = (len(stems), len(nodes_sel), len(vectors_sel))
-    return (stems, nodes_sel, vectors_sel, counts), target_crs
+    stems['source_tile_id'] = tile_id
+    return stems, target_crs
 
 
 def _window_geom_from_profile(profile, window):
@@ -1107,10 +1103,9 @@ def _window_geom_from_profile(profile, window):
 
 
 def process_tile_gpkg(tile_job, gpkg_path, raster_profile, target_crs=None):
-    stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
+    stems = _read_tile_stems_gpkg(gpkg_path)
     print(
-        f"MERGE TILE READ | tile {tile_job.tile_id} | file {gpkg_path} | stems {0 if stems is None else len(stems)} "
-        f"| nodes {0 if nodes is None else len(nodes)} | vectors {0 if vectors is None else len(vectors)}",
+        f"MERGE TILE READ | tile {tile_job.tile_id} | file {gpkg_path} | stems {0 if stems is None else len(stems)}",
         flush=True,
     )
     if stems is None or stems.empty:
@@ -1121,18 +1116,13 @@ def process_tile_gpkg(tile_job, gpkg_path, raster_profile, target_crs=None):
         target_crs = stems.crs or raster_crs
 
     stems = _ensure_crs(stems, target_crs)
-    nodes = _ensure_crs(nodes, target_crs)
-    vectors = _ensure_crs(vectors, target_crs)
 
     filter_geom = _window_geom_from_profile(raster_profile, tile_job.inner_window)
-    stems, kept_local = _globalize_stems(stems, tile_job.tile_id, filter_geom)
+    stems, _kept_local = _globalize_stems(stems, tile_job.tile_id, filter_geom)
     if stems.empty:
         return None, target_crs
-
-    nodes_sel = _select_child(nodes, tile_job.tile_id, kept_local)
-    vectors_sel = _select_child(vectors, tile_job.tile_id, kept_local)
-    counts = (len(stems), len(nodes_sel), len(vectors_sel))
-    return (stems, nodes_sel, vectors_sel, counts), target_crs
+    stems['source_tile_id'] = tile_job.tile_id
+    return stems, target_crs
 
 
 def merge_selected_tile_results(
@@ -1291,6 +1281,9 @@ def _stem_from_row(row):
         direction_y=float(getattr(row, 'dir_y', 0.0) or 0.0),
         direction_deg=getattr(row, 'dir_deg', None),
         direction_confidence=float(getattr(row, 'dir_conf', 0.0) or 0.0),
+        owner_partition_id=getattr(row, 'owner_pid', None),
+        source_tile_id=getattr(row, 'src_tile', getattr(row, 'tile_id', None)),
+        is_border_candidate=bool(getattr(row, 'is_border', False)),
     )
     stem = Quant.refresh_stem_direction(stem)
     stem = Quant.refresh_measurement_vectors(stem)
@@ -1349,7 +1342,6 @@ def _reverse_stem_profile(stem):
         segment_diameter_list=rev_d,
         segment_length_list=rev_l,
         segment_volume_list=rev_v,
-        stem_id=getattr(stem, 'stem_id', None),
         crs=getattr(stem, 'crs', None),
     )
 
@@ -1404,7 +1396,6 @@ def _rebuild_connected_stem_profile(merged_stem, contributors):
             segment_diameter_list=list(getattr(merged_stem, 'segment_diameter_list', [])),
             segment_length_list=list(getattr(merged_stem, 'segment_length_list', [])),
             segment_volume_list=list(getattr(merged_stem, 'segment_volume_list', [])),
-            stem_id=getattr(merged_stem, 'stem_id', None),
             crs=getattr(merged_stem, 'crs', None),
         )
         return Quant.quantify_stem(stem)
@@ -1464,7 +1455,6 @@ def _rebuild_connected_stem_profile(merged_stem, contributors):
         segment_diameter_list=diameters,
         segment_length_list=[],
         segment_volume_list=[],
-        stem_id=getattr(merged_stem, 'stem_id', None),
         crs=getattr(merged_stem, 'crs', None),
     )
     return Quant.quantify_stem(rebuilt)
@@ -1552,6 +1542,257 @@ def _reconstruct_edge_stems_for_tiled_merge(
     return _stems_to_layer_gdfs(final_stems, target_crs)
 
 
+
+
+def _default_vector_partition_overlap_m(config):
+    value = getattr(config, 'vector_partition_overlap_m', None)
+    if value not in (None, ''):
+        return float(value)
+    return float(getattr(config, 'max_distance', 8.0)) + 2.0 * float(getattr(config, 'measuring_point_spacing_m', 0.5))
+
+
+def _default_vector_partition_border_band_m(config):
+    value = getattr(config, 'vector_partition_border_band_m', None)
+    if value not in (None, ''):
+        return float(value)
+    return _default_vector_partition_overlap_m(config)
+
+
+def _partition_bounds_from_stems(stems_gdf, partition_size_m):
+    minx, miny, maxx, maxy = stems_gdf.total_bounds
+    if not np.isfinite([minx, miny, maxx, maxy]).all():
+        minx = miny = 0.0
+        maxx = maxy = partition_size_m
+    return float(minx), float(miny), float(maxx), float(maxy)
+
+
+def _partition_id(ix, iy):
+    return f"vp_{int(ix):05d}_{int(iy):05d}"
+
+
+def _partition_polygon(ix, iy, minx, miny, size_m):
+    x0 = minx + ix * size_m
+    y0 = miny + iy * size_m
+    return box(x0, y0, x0 + size_m, y0 + size_m)
+
+
+def _owner_xy_from_row(row):
+    tx = getattr(row, 'tree_x', None)
+    ty = getattr(row, 'tree_y', None)
+    if tx is not None and ty is not None and np.isfinite([tx, ty]).all():
+        return float(tx), float(ty)
+    sx = getattr(row, 'start_x', None)
+    sy = getattr(row, 'start_y', None)
+    if sx is not None and sy is not None and np.isfinite([sx, sy]).all():
+        return float(sx), float(sy)
+    geom = getattr(row, 'geometry', None)
+    try:
+        p = geom.centroid
+        return float(p.x), float(p.y)
+    except Exception:
+        return 0.0, 0.0
+
+
+def _assign_owner_partition(tree_x, tree_y, minx, miny, size_m):
+    ix = int(np.floor((float(tree_x) - minx) / size_m))
+    iy = int(np.floor((float(tree_y) - miny) / size_m))
+    return _partition_id(ix, iy), ix, iy
+
+
+def _intersecting_partitions(geom, minx, miny, size_m, overlap_m):
+    minxg, minyg, maxxg, maxyg = geom.bounds
+    ix0 = int(np.floor((minxg - overlap_m - minx) / size_m))
+    iy0 = int(np.floor((minyg - overlap_m - miny) / size_m))
+    ix1 = int(np.floor((maxxg + overlap_m - minx) / size_m))
+    iy1 = int(np.floor((maxyg + overlap_m - miny) / size_m))
+    out = []
+    for ix in range(ix0, ix1 + 1):
+        for iy in range(iy0, iy1 + 1):
+            cell = _partition_polygon(ix, iy, minx, miny, size_m).buffer(overlap_m)
+            try:
+                if cell.intersects(geom):
+                    out.append((ix, iy, _partition_id(ix, iy)))
+            except Exception:
+                continue
+    return out
+
+
+def build_vector_partitions(merged_stems_gdf, config):
+    if merged_stems_gdf is None or merged_stems_gdf.empty:
+        return {}, {}
+    size_m = float(getattr(config, 'vector_partition_size_m', 80.0) or 80.0)
+    overlap_m = _default_vector_partition_overlap_m(config)
+    border_m = _default_vector_partition_border_band_m(config)
+    minx, miny, maxx, maxy = _partition_bounds_from_stems(merged_stems_gdf, size_m)
+    metadata = {
+        'minx': minx, 'miny': miny, 'maxx': maxx, 'maxy': maxy,
+        'size_m': size_m, 'overlap_m': overlap_m, 'border_m': border_m,
+        'crs': merged_stems_gdf.crs,
+    }
+    partition_rows = {}
+    partition_meta = {}
+    for row in merged_stems_gdf.itertuples(index=False):
+        geom = getattr(row, 'geometry', None)
+        if geom is None or getattr(geom, 'is_empty', True):
+            continue
+        tree_x, tree_y = _owner_xy_from_row(row)
+        owner_pid, owner_ix, owner_iy = _assign_owner_partition(tree_x, tree_y, minx, miny, size_m)
+        for ix, iy, pid in _intersecting_partitions(geom, minx, miny, size_m, overlap_m):
+            core_geom = _partition_polygon(ix, iy, minx, miny, size_m)
+            border_geom = core_geom.boundary.buffer(border_m, cap_style=3, join_style=2)
+            expanded_geom = core_geom.buffer(overlap_m, cap_style=3, join_style=2)
+            partition_meta[pid] = {
+                'ix': ix, 'iy': iy, 'core_geom': core_geom,
+                'border_geom': border_geom, 'expanded_geom': expanded_geom,
+            }
+            rec = row._asdict()
+            rec['owner_pid'] = owner_pid
+            rec['_owner_ix'] = owner_ix
+            rec['_owner_iy'] = owner_iy
+            rec['_partition_id'] = pid
+            rec['_is_owner_partition'] = bool(pid == owner_pid)
+            try:
+                rec['_is_border_candidate'] = bool(geom.intersects(border_geom))
+            except Exception:
+                rec['_is_border_candidate'] = False
+            partition_rows.setdefault(pid, []).append(rec)
+    partitions = {}
+    for pid, rows in partition_rows.items():
+        geom_col = 'geometry'
+        partitions[pid] = {
+            'partition_id': pid,
+            'stems_gdf': gpd.GeoDataFrame(rows, geometry=geom_col, crs=merged_stems_gdf.crs),
+            **partition_meta[pid],
+        }
+    return partitions, metadata
+
+
+def _owner_partition_for_stem(stem, metadata):
+    tx = getattr(stem, 'tree_x', None)
+    ty = getattr(stem, 'tree_y', None)
+    if tx is None or ty is None:
+        try:
+            tx, ty = stem.start.coords[0]
+        except Exception:
+            tx, ty = (metadata['minx'], metadata['miny'])
+    pid, _ix, _iy = _assign_owner_partition(tx, ty, metadata['minx'], metadata['miny'], metadata['size_m'])
+    return pid
+
+
+def _partition_border_for_pid(pid, metadata, partition_meta):
+    if partition_meta and pid in partition_meta:
+        return partition_meta[pid]['border_geom']
+    parts = pid.split('_')
+    ix, iy = int(parts[-2]), int(parts[-1])
+    return _partition_polygon(ix, iy, metadata['minx'], metadata['miny'], metadata['size_m']).boundary.buffer(metadata['border_m'], cap_style=3, join_style=2)
+
+
+def process_vector_partition(payload, config, metadata):
+    import utils.Vectorization as Vec
+    stems_gdf = payload.get('stems_gdf')
+    pid = payload.get('partition_id')
+    if stems_gdf is None or stems_gdf.empty:
+        return {'partition_id': pid, 'core_stems_gdf': gpd.GeoDataFrame(), 'border_stems_gdf': gpd.GeoDataFrame()}
+    stems = _stems_from_gdf(stems_gdf)
+    stems = Quant.ensure_stem_ids(stems, prefix=f"{pid}_part")
+    stems = Quant.refresh_stems_direction_bulk(stems, config=config)
+    stems, _dup = Vec.remove_duplicates_spatial(stems, config=config)
+    stems = Vec.connect_stems(stems, config)
+    stems = Quant.refresh_stems_direction_bulk(stems, config=config)
+    border_geom = payload.get('border_geom')
+    core = []
+    border = []
+    for stem in stems:
+        owner_pid = _owner_partition_for_stem(stem, metadata)
+        stem.owner_partition_id = owner_pid
+        stem.is_border_candidate = False
+        if owner_pid != pid:
+            continue
+        try:
+            is_border = bool(border_geom is not None and stem.path.intersects(border_geom))
+        except Exception:
+            is_border = False
+        stem.is_border_candidate = is_border
+        if is_border:
+            border.append(stem)
+        else:
+            core.append(stem)
+    profile = {'crs': metadata.get('crs')}
+    return {
+        'partition_id': pid,
+        'core_stems_gdf': stems_to_gdf(core, profile) if core else gpd.GeoDataFrame(geometry=[], crs=metadata.get('crs')),
+        'border_stems_gdf': stems_to_gdf(border, profile) if border else gpd.GeoDataFrame(geometry=[], crs=metadata.get('crs')),
+    }
+
+
+def _neighbor_partition_pairs(partition_ids):
+    idx = {}
+    for pid in partition_ids:
+        parts = pid.split('_')
+        idx[pid] = (int(parts[-2]), int(parts[-1]))
+    by_xy = {v: k for k, v in idx.items()}
+    pairs = []
+    for pid, (ix, iy) in idx.items():
+        for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+            other = by_xy.get((ix + dx, iy + dy))
+            if other is not None:
+                pairs.append((pid, other))
+    return pairs
+
+
+def stitch_partition_border_pair(pair_payload, config, metadata):
+    import utils.Vectorization as Vec
+    pid_a, pid_b, gdf_a, gdf_b = pair_payload
+    merged = _concat_merged_layer([gdf_a, gdf_b])
+    if merged is None or merged.empty:
+        return gpd.GeoDataFrame(geometry=[], crs=metadata.get('crs'))
+    stems = _stems_from_gdf(merged)
+    stems = Quant.ensure_stem_ids(stems, prefix=f"{pid_a}_{pid_b}_border")
+    stems = Quant.refresh_stems_direction_bulk(stems, config=config)
+    stems, _dup = Vec.remove_duplicates_spatial(stems, config=config)
+    stems = Vec.connect_stems(stems, config)
+    stems = Quant.refresh_stems_direction_bulk(stems, config=config)
+    out = []
+    for stem in stems:
+        owner_pid = _owner_partition_for_stem(stem, metadata)
+        if owner_pid not in (pid_a, pid_b):
+            continue
+        stem.owner_partition_id = owner_pid
+        stem.is_border_candidate = True
+        out.append(stem)
+    profile = {'crs': metadata.get('crs')}
+    return stems_to_gdf(out, profile) if out else gpd.GeoDataFrame(geometry=[], crs=metadata.get('crs'))
+
+
+def finalize_partitioned_stems(core_partition_outputs, border_outputs, output_gpkg, config, target_crs):
+    import utils.Vectorization as Vec
+    all_layers = []
+    all_layers.extend([g for g in core_partition_outputs if g is not None and not g.empty])
+    all_layers.extend([g for g in border_outputs if g is not None and not g.empty])
+    stems_gdf = _concat_merged_layer(all_layers)
+    if stems_gdf is None or stems_gdf.empty:
+        return _write_merged(output_gpkg, [], [], [])
+    stems_gdf = _ensure_crs(stems_gdf, target_crs)
+    stems = _stems_from_gdf(stems_gdf)
+    stems = Quant.ensure_stem_ids(stems, prefix='final')
+    stems = Quant.refresh_stems_direction_bulk(stems, config=config)
+    stems, _dup = Vec.remove_duplicates_spatial(stems, config=config)
+    stems = Quant.compute_stem_volumes(stems, config=config)
+    stems_gdf, nodes_gdf, vectors_gdf = _stems_to_layer_gdfs(stems, target_crs)
+    final_stems_layers = [stems_gdf] if stems_gdf is not None and not stems_gdf.empty else []
+    final_nodes_layers = [nodes_gdf] if nodes_gdf is not None and not nodes_gdf.empty else []
+    final_vectors_layers = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
+    return _write_merged(output_gpkg, final_stems_layers, final_nodes_layers, final_vectors_layers)
+
+
+def _process_vector_partition_star(args):
+    return process_vector_partition(*args)
+
+
+def _stitch_partition_border_pair_star(args):
+    return stitch_partition_border_pair(*args)
+
+
 def merge_and_filter_tiled_results(
     work_dir: str,
     output_gpkg: str | None = None,
@@ -1575,10 +1816,11 @@ def merge_and_filter_tiled_results(
     if not tiles:
         raise FileNotFoundError(f"No .gpkg files found in: {work_dir}")
 
-    merged_stems = []
-    merged_nodes = []
-    merged_vectors = []
+    if config is None:
+        from classes.Config import Config
+        config = Config()
 
+    merged_stems = []
     target_crs = None
     tile_count = 0
 
@@ -1592,58 +1834,10 @@ def merge_and_filter_tiled_results(
         )
         if out is None:
             continue
-
-        stems, nodes, vectors, _counts = out
-        merged_stems.append(stems)
-        if not nodes.empty:
-            merged_nodes.append(nodes)
-        if not vectors.empty:
-            merged_vectors.append(vectors)
+        merged_stems.append(out)
         tile_count += 1
 
-    if merged_stems or merged_nodes or merged_vectors:
-        stems_gdf = _concat_merged_layer(merged_stems)
-        all_stems = _stems_from_gdf(stems_gdf)
-        import utils.Vectorization as Vec
-
-        if config is None:
-            from classes.Config import Config
-            config = Config()
-
-        all_stems = [Quant.refresh_stem_direction(stem, config=config)
-                     for stem in all_stems]
-        all_stems, dup_count_0 = Vec.remove_duplicates(all_stems)
-        print(f"MERGE GLOBAL CONNECT | input {len(all_stems)} | duplicates_removed {dup_count_0}", flush=True)
-        connected_stems = Vec.connect_stems(all_stems, config)
-        final_stems = Quant.compute_stem_volumes(connected_stems, config=config)
-        stems_gdf, nodes_gdf, vectors_gdf = _stems_to_layer_gdfs(final_stems, target_crs)
-
-        final_stems_layers = [stems_gdf] if stems_gdf is not None and not stems_gdf.empty else []
-        final_nodes_layers = [nodes_gdf] if nodes_gdf is not None and not nodes_gdf.empty else []
-        final_vectors_layers = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
-        written_gpkg = _write_merged(output_gpkg, final_stems_layers, final_nodes_layers, final_vectors_layers)
-        written_layers = []
-        try:
-            written_layers = list(fiona.listlayers(written_gpkg))
-        except Exception as exc:
-            print(
-                f"MERGE VERIFY FAIL | file {written_gpkg} | {type(exc).__name__}: {exc}",
-                flush=True,
-            )
-
-        final_stem_count = 0 if stems_gdf is None else len(stems_gdf)
-        final_node_count = 0 if nodes_gdf is None else len(nodes_gdf)
-        final_vector_count = 0 if vectors_gdf is None else len(vectors_gdf)
-
-        print("")
-        print("MERGE SUMMARY")
-        print(f"Tiles processed:       {tile_count}")
-        print(f"Total stems written:   {final_stem_count}")
-        print(f"Total nodes written:   {final_node_count}")
-        print(f"Total vectors written: {final_vector_count}")
-        print(f"Layers written:        {written_layers}")
-        print(f"Output saved to: {written_gpkg}")
-    else:
+    if not merged_stems:
         print("")
         print("MERGE SUMMARY")
         print("Tiles processed:       0")
@@ -1651,4 +1845,67 @@ def merge_and_filter_tiled_results(
         print("Total nodes written:   0")
         print("Total vectors written: 0")
         print(f"No output GPKG created: {output_gpkg} (0 features written)")
-    return written_gpkg if merged_stems or merged_nodes or merged_vectors else output_gpkg
+        return output_gpkg
+
+    all_tile_stems = _concat_merged_layer(merged_stems)
+    partitions, metadata = build_vector_partitions(all_tile_stems, config)
+    print(f"MERGE PARTITIONS | count {len(partitions)}", flush=True)
+
+    partition_tasks = [(payload, config, metadata) for payload in partitions.values()]
+    workers = max(1, int(getattr(config, 'vector_partition_workers', 1) or 1))
+    partition_results = []
+    if workers > 1 and len(partition_tasks) > 1:
+        with mp.Pool(workers) as pool:
+            for result in pool.imap_unordered(_process_vector_partition_star, partition_tasks):
+                partition_results.append(result)
+    else:
+        for task in partition_tasks:
+            partition_results.append(_process_vector_partition_star(task))
+
+    core_outputs = [r.get('core_stems_gdf') for r in partition_results if r]
+    border_map = {r.get('partition_id'): r.get('border_stems_gdf') for r in partition_results if r}
+    neighbor_pairs = _neighbor_partition_pairs(list(border_map.keys()))
+    print(f"MERGE BORDER PAIRS | count {len(neighbor_pairs)}", flush=True)
+    border_tasks = []
+    for pid_a, pid_b in neighbor_pairs:
+        gdf_a = border_map.get(pid_a)
+        gdf_b = border_map.get(pid_b)
+        if (gdf_a is None or gdf_a.empty) and (gdf_b is None or gdf_b.empty):
+            continue
+        border_tasks.append((pid_a, pid_b, gdf_a, gdf_b))
+
+    border_outputs = []
+    if workers > 1 and len(border_tasks) > 1:
+        with mp.Pool(workers) as pool:
+            args = [(task, config, metadata) for task in border_tasks]
+            for result in pool.imap_unordered(_stitch_partition_border_pair_star, args):
+                border_outputs.append(result)
+    else:
+        for task in border_tasks:
+            border_outputs.append(_stitch_partition_border_pair_star((task, config, metadata)))
+
+    written_gpkg = finalize_partitioned_stems(core_outputs, border_outputs, output_gpkg, config, target_crs or metadata.get('crs'))
+    written_layers = []
+    try:
+        written_layers = list(fiona.listlayers(written_gpkg))
+    except Exception as exc:
+        print(
+            f"MERGE VERIFY FAIL | file {written_gpkg} | {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+    final_stems = _read_gpkg_layer(written_gpkg, ['stems'])
+    final_nodes = _read_gpkg_layer(written_gpkg, ['nodes'])
+    final_vectors = _read_gpkg_layer(written_gpkg, ['vectors'])
+
+    print("")
+    print("MERGE SUMMARY")
+    print(f"Tiles processed:       {tile_count}")
+    print(f"Vector partitions:    {len(partitions)}")
+    print(f"Border stitch pairs:  {len(border_tasks)}")
+    print(f"Total stems written:   {0 if final_stems is None else len(final_stems)}")
+    print(f"Total nodes written:   {0 if final_nodes is None else len(final_nodes)}")
+    print(f"Total vectors written: {0 if final_vectors is None else len(final_vectors)}")
+    print(f"Layers written:        {written_layers}")
+    print(f"Output saved to: {written_gpkg}")
+    return written_gpkg

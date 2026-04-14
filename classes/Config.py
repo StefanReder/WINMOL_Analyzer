@@ -77,6 +77,23 @@ class Config(object):
     edt_clip_max_m = None                # optional clip for extreme EDT radii
     direction_confidence_threshold = 0.15
 
+
+    # vector partitioned merge
+    vector_partition_size_m = 80.0
+    vector_partition_overlap_m = None
+    vector_partition_border_band_m = None
+    vector_partition_workers = 1
+    partition_connect_second_pass = True
+    partition_dedup_buffer_m = 0.02
+
+    # tile/vector export behavior
+    write_tile_nodes_vectors = False
+    write_tile_stems_only = True
+
+    # direction confidence bands
+    direction_confidence_high = 0.75
+    direction_confidence_low = 0.35
+
     def __init__(self):
         pass
 

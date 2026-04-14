@@ -48,33 +48,60 @@ def _direction_confidence_threshold(config=None):
         return 0.15
 
 
-def _coerce_stem_id(value):
-    if value is None:
-        return None
-    value = str(value).strip()
-    return value if value else None
 
-
-def ensure_stem_ids(stems: List[Stem], prefix='stem', preserve_existing=True):
-    if not stems:
-        return stems
+def ensure_stem_ids(stems: List[Stem], prefix: str = "stem"):
     seen = set()
-    next_idx = 1
-    for stem in stems:
-        sid = _coerce_stem_id(getattr(stem, 'stem_id', None))
-        if not preserve_existing or sid is None or sid in seen:
+    counter = 0
+    for stem in stems or []:
+        sid = getattr(stem, 'stem_id', None)
+        sid = None if sid in (None, "", -1) else str(sid)
+        if sid is None or sid in seen:
             while True:
-                sid = f"{prefix}_{next_idx:06d}"
-                next_idx += 1
-                if sid not in seen:
+                candidate = f"{prefix}_{counter:08d}"
+                counter += 1
+                if candidate not in seen:
+                    sid = candidate
                     break
         stem.stem_id = sid
         seen.add(sid)
     return stems
 
 
+def refresh_stems_direction_bulk(stems, config=None):
+    refreshed = []
+    for stem in stems or []:
+        stem = refresh_stem_direction(stem, config=config)
+        stem = refresh_measurement_vectors(stem, config=config)
+        refreshed.append(stem)
+    return refreshed
+
+
 ################################################################################
 """Stem quantification operations"""
+
+
+def quantify_stems(stems: List[Stem], pred, profile, config=None):
+    t = Timer()
+    t.start()
+
+    print("#######################################################")
+    print("Quantifying stems")
+    if not stems:
+        print("0 measurements of diameters where conducted")
+        print("Volume of  0  stems calculated")
+        t.stop()
+        print("#######################################################")
+        print("")
+        return []
+
+    stems = determine_stem_diameters(stems, pred, profile, config=config)
+    stems = compute_stem_volumes(stems, config=config)
+
+    print("Volume of ", len(stems), " stems calculated")
+    t.stop()
+    print("#######################################################")
+    print("")
+    return stems
 
 
 def determine_stem_diameters(stems: List[Stem], pred, profile, config=None):
@@ -83,7 +110,7 @@ def determine_stem_diameters(stems: List[Stem], pred, profile, config=None):
         print("0 measurements of diameters where conducted")
         return []
 
-    stems = ensure_stem_ids(list(stems), prefix='part', preserve_existing=True)
+    stems = ensure_stem_ids(list(stems), prefix="part")
     stems = get_diameters(stems, pred, profile, config=config)
     workers = min(_worker_count(config), max(len(stems), 1))
 
@@ -100,10 +127,11 @@ def determine_stem_diameters(stems: List[Stem], pred, profile, config=None):
                 stem = refresh_stem_direction(stem, config=config)
                 stem = refresh_measurement_vectors(stem, config=config)
                 cleaned.append(stem)
-    return ensure_stem_ids(cleaned, prefix='part', preserve_existing=True)
+    return cleaned
 
 
 def compute_stem_volumes(stems: List[Stem], config=None):
+    stems = ensure_stem_ids(list(stems), prefix="stem")
     workers = min(_worker_count(config), max(len(stems), 1))
     updated = []
     if workers <= 1 or len(stems) <= 1:
@@ -111,7 +139,7 @@ def compute_stem_volumes(stems: List[Stem], config=None):
             stem = refresh_stem_direction(stem, config=config)
             stem = refresh_measurement_vectors(stem, config=config)
             updated.append(quantify_stem(stem))
-        return ensure_stem_ids(updated, prefix='stem', preserve_existing=True)
+        return updated
 
     with mp.Pool(workers) as pool:
         stems_refreshed = []
@@ -119,7 +147,7 @@ def compute_stem_volumes(stems: List[Stem], config=None):
             stems_refreshed.append(refresh_stem_direction(stem, config=config))
         for stem in pool.imap_unordered(quantify_stem, stems_refreshed):
             updated.append(stem)
-    return ensure_stem_ids(updated, prefix='stem', preserve_existing=True)
+    return updated
 
 
 def get_diameters(stems: List[Stem], pred, profile, config=None):
@@ -344,6 +372,9 @@ def reverse_stem_profile(stem: Stem):
         direction_deg=(None if getattr(stem, 'direction_deg', None) is None else
                        float(getattr(stem, 'direction_deg')) + 180.0),
         direction_confidence=float(getattr(stem, 'direction_confidence', 0.0) or 0.0),
+        owner_partition_id=getattr(stem, 'owner_partition_id', None),
+        source_tile_id=getattr(stem, 'source_tile_id', None),
+        is_border_candidate=bool(getattr(stem, 'is_border_candidate', False)),
     )
     for attr in ('_contributors',):
         if hasattr(stem, attr):
@@ -456,6 +487,9 @@ def rebuild_connected_stem_profile(merged_stem: Stem, contributors, config=None,
             stem_id=getattr(merged_stem, 'stem_id', None),
             crs=getattr(merged_stem, 'crs', None),
             direction_confidence=float(getattr(merged_stem, 'direction_confidence', 0.0) or 0.0),
+            owner_partition_id=getattr(merged_stem, 'owner_partition_id', None),
+            source_tile_id=getattr(merged_stem, 'source_tile_id', None),
+            is_border_candidate=bool(getattr(merged_stem, 'is_border_candidate', False)),
         )
         stem = refresh_stem_direction(stem, config=config)
         stem = refresh_measurement_vectors(stem, config=config)
@@ -521,6 +555,9 @@ def rebuild_connected_stem_profile(merged_stem: Stem, contributors, config=None,
         stem_id=getattr(merged_stem, 'stem_id', None),
         crs=getattr(merged_stem, 'crs', None),
         direction_confidence=0.0,
+        owner_partition_id=getattr(merged_stem, 'owner_partition_id', None),
+        source_tile_id=getattr(merged_stem, 'source_tile_id', None),
+        is_border_candidate=bool(getattr(merged_stem, 'is_border_candidate', False)),
     )
     rebuilt = refresh_stem_direction(rebuilt, config=config)
     rebuilt = refresh_measurement_vectors(rebuilt, config=config)
