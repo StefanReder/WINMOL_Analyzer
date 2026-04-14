@@ -169,24 +169,7 @@ class ImageProcessing:
         )
         return (None, profile, self.stem_path)
 
-    def trees_processing(self, pred, profile):
-        print("\nFinding Stem Segments...")
-        segments = Skel.find_segments(pred, self.config, profile)
-        print("\nRestoring Geoinformation...")
-        segments = Vec.restore_geoinformation(segments, self.config, profile)
-        print("\nBuilding Stem Parts...")
-        stems = Vec.build_stem_parts(segments)
-        print("\nDetermining Stem Diameters and Direction...")
-        stems = Quant.determine_stem_diameters(stems, pred, profile, config=self.config)
-        print("\nConnecting Directed Stem Parts...")
-        stems = Vec.connect_stems(stems, self.config)
-        print("\nComputing Final Stem Volumes...")
-        stems = Quant.compute_stem_volumes(stems, config=self.config)
-        print("\nRebuilding End Nodes...")
-        Vec.rebuild_endnodes_from_stems(stems)
-        return stems
-
-    def run_vector_phase(self, plan, pred_path=None, pred=None, profile=None):
+    def run_vector_phase(self, plan, pred_path=None):
         if self.process_type == 'Stems':
             return None
 
@@ -250,8 +233,7 @@ class ImageProcessing:
 
     def run_tree_pipeline(self, plan):
         pred, profile, pred_path = self.run_prediction_phase(plan)
-        return self.run_vector_phase(
-            plan, pred_path=pred_path, pred=pred, profile=profile)
+        return self.run_vector_phase(plan, pred_path=pred_path)
 
     def check_DL_env(self):
         tf = _import_tensorflow()
