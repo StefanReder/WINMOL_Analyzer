@@ -6,7 +6,7 @@ class Config(object):
     tile_inner_px = 4096
     tile_overlap_m = 12.0
     prediction_prefetch = 2
-    producer_queue_batches = 12
+    producer_queue_batches = 4
     prediction_producer_workers_cpu = 1
     prediction_producer_workers_gpu = 6
     prediction_producer_workers_multi_gpu = 6
@@ -18,8 +18,8 @@ class Config(object):
 
     # runtime worker / batching knobs
     prediction_batch_cpu = 1
-    prediction_batch_gpu = 8
-    prediction_batch_max_gpu = 32
+    prediction_batch_gpu = 4
+    prediction_batch_max_gpu = 16
     prediction_batch_multi_gpu = 12     # local per-worker batch
     prediction_batch_autotune = True
     prediction_batch_autotune_patience = 4
