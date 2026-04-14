@@ -306,6 +306,37 @@ def _measurement_vector(node_xy, normal_xy, half_len):
     return LineString([p1, p2])
 
 
+def _diameter_sample_indices(coord_count: int):
+    if coord_count <= 2:
+        return list(range(coord_count))
+    return list(range(1, coord_count - 1))
+
+
+def _restore_endpoint_diameters(diameters, coord_count: int):
+    if coord_count <= 0:
+        return []
+    if len(diameters) == coord_count:
+        return list(diameters)
+    if coord_count == 1:
+        return [float(diameters[0])] if diameters else [0.0]
+    if coord_count == 2:
+        if len(diameters) >= 2:
+            return [float(diameters[0]), float(diameters[1])]
+        if len(diameters) == 1:
+            value = float(diameters[0])
+            return [value, value]
+        return [0.0, 0.0]
+    if not diameters:
+        return [0.0] * coord_count
+    restored = [float(diameters[0])]
+    restored.extend(float(value) for value in diameters)
+    restored.append(float(diameters[-1]))
+    if len(restored) < coord_count:
+        fill = restored[-1] if restored else 0.0
+        restored.extend([fill] * (coord_count - len(restored)))
+    return restored[:coord_count]
+
+
 def _cumulative_distances(coords):
     if not coords:
         return np.array([], dtype=float)
@@ -568,18 +599,27 @@ def rebuild_connected_stem_profile(merged_stem: Stem, contributors, config=None,
 
 def calc_v_d_contour(stem, contours, config=None):
     coords = list(stem.path.coords)
-    half_len = float(getattr(config, 'diameter_vector_half_length_m', 1.0)) \
+    half_len = (
+        float(getattr(config, 'diameter_vector_half_length_m', 1.0))
         if config is not None else 1.0
-    stem.vector = []
-    stem.segment_diameter_list = []
+    )
+    sample_indices = _diameter_sample_indices(len(coords))
+    diameters = []
 
+    for i in sample_indices:
+        xy = coords[i]
+        normal = _local_normal(coords, i)
+        vector = _measurement_vector(xy, normal, half_len)
+        diameters.append(calc_d(xy, vector, contours))
+
+    stem.segment_diameter_list = _restore_endpoint_diameters(
+        diameters, len(coords))
+    stem.vector = []
     for i, xy in enumerate(coords):
         normal = _local_normal(coords, i)
         vector = _measurement_vector(xy, normal, half_len)
-        stem.segment_diameter_list.append(calc_d(xy, vector, contours))
         stem.vector.append(vector)
     return stem
-
 
 def _distance_transform_m(pred_bin, profile):
     px, py = _pixel_size(profile)
@@ -596,16 +636,21 @@ def _xy_to_rowcol(x, y, profile) -> Tuple[int, int]:
 
 def calc_v_d_edt(stem, edt_map, profile, config=None):
     coords = list(stem.path.coords)
-    default_half = \
-        float(getattr(config, 'diameter_vector_half_length_m', 1.0)) \
+    default_half = (
+        float(getattr(config, 'diameter_vector_half_length_m', 1.0))
         if config is not None else 1.0
-    clip_max = getattr(config, 'edt_clip_max_m', None) \
+    )
+    clip_max = (
+        getattr(config, 'edt_clip_max_m', None)
         if config is not None else None
-    stem.vector = []
-    stem.segment_diameter_list = []
+    )
+    sample_indices = _diameter_sample_indices(len(coords))
+    diameters = []
+    radii_by_index = {}
 
     h, w = edt_map.shape
-    for i, xy in enumerate(coords):
+    for i in sample_indices:
+        xy = coords[i]
         row, col = _xy_to_rowcol(xy[0], xy[1], profile)
         if row < 0 or row >= h or col < 0 or col >= w:
             radius = 0.0
@@ -613,13 +658,18 @@ def calc_v_d_edt(stem, edt_map, profile, config=None):
             radius = float(edt_map[row, col])
             if clip_max is not None:
                 radius = min(radius, float(clip_max))
-        diameter = max(0.0, 2.0 * radius)
+        radii_by_index[i] = radius
+        diameters.append(max(0.0, 2.0 * radius))
+
+    stem.segment_diameter_list = _restore_endpoint_diameters(
+        diameters, len(coords))
+    stem.vector = []
+    for i, xy in enumerate(coords):
+        radius = radii_by_index.get(i, 0.5 * stem.segment_diameter_list[i])
         normal = _local_normal(coords, i)
         half_len = max(default_half, radius)
         stem.vector.append(_measurement_vector(xy, normal, half_len))
-        stem.segment_diameter_list.append(diameter)
     return stem
-
 
 # Backward-compatible name
 calc_v_d = calc_v_d_contour
