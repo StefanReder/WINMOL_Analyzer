@@ -338,6 +338,7 @@ def _jsonify_list(x):
 
 def stems_to_gdf(stems, profile):
     crs = _crs_from_profile(profile)
+    stems = Quant.ensure_stem_ids(list(stems), prefix='stem', preserve_existing=True)
 
     rows = []
     geoms = []
@@ -357,10 +358,17 @@ def stems_to_gdf(stems, profile):
             geom = LineString(list(s.path.coords))
         geoms.append(geom)
 
+        tree_x = getattr(s, "tree_x", sx)
+        tree_y = getattr(s, "tree_y", sy)
         rows.append({
-            "stem_id": i,
+            "stem_id": s.stem_id,
             "start_x": sx, "start_y": sy,
             "stop_x": ex, "stop_y": ey,
+            "tree_x": tree_x, "tree_y": tree_y,
+            "dir_x": float(getattr(s, "direction_x", 0.0) or 0.0),
+            "dir_y": float(getattr(s, "direction_y", 0.0) or 0.0),
+            "dir_deg": getattr(s, "direction_deg", None),
+            "dir_conf": float(getattr(s, "direction_confidence", 0.0) or 0.0),
             "length": float(getattr(s, "length", 0.0)),
             "volume": float(getattr(s, "volume", 0.0)),
             "d_json": _jsonify_list(getattr(s, "segment_diameter_list", [])),
@@ -373,6 +381,7 @@ def stems_to_gdf(stems, profile):
 
 def nodes_to_gdf(stems, profile):
     crs = _crs_from_profile(profile)
+    stems = Quant.ensure_stem_ids(list(stems), prefix='stem', preserve_existing=True)
 
     rows = []
     geoms = []
@@ -386,7 +395,7 @@ def nodes_to_gdf(stems, profile):
             except Exception:
                 pass
             rows.append({
-                "stem_id": i,
+                "stem_id": s.stem_id,
                 "node": j,
                 "d": d,
             })
@@ -396,6 +405,7 @@ def nodes_to_gdf(stems, profile):
 
 def vectors_to_gdf(stems, profile):
     crs = _crs_from_profile(profile)
+    stems = Quant.ensure_stem_ids(list(stems), prefix='stem', preserve_existing=True)
 
     rows = []
     geoms = []
@@ -403,6 +413,12 @@ def vectors_to_gdf(stems, profile):
     for i in range(len(stems)):
         n_path = len(getattr(stems[i].path, "coords", []))
         vecs = getattr(stems[i], "vector", []) or []
+        if len(vecs) < n_path:
+            try:
+                stems[i] = Quant.refresh_measurement_vectors(stems[i])
+                vecs = getattr(stems[i], "vector", []) or []
+            except Exception:
+                vecs = getattr(stems[i], "vector", []) or []
         diams = getattr(stems[i], "segment_diameter_list", []) or []
 
         for j in range(n_path):
@@ -450,7 +466,7 @@ def vectors_to_gdf(stems, profile):
                 d = None
 
             rows.append({
-                "stem_id": int(i),
+                "stem_id": stems[i].stem_id,
                 "node": int(j),
                 "d": d,
             })
@@ -1259,7 +1275,7 @@ def _stem_from_row(row):
     ey = getattr(row, 'stop_y', None)
     start_xy = coords[0] if sx is None or sy is None else (float(sx), float(sy))
     stop_xy = coords[-1] if ex is None or ey is None else (float(ex), float(ey))
-    return Stem(
+    stem = Stem(
         start=Point(start_xy),
         stop=Point(stop_xy),
         path=LineString(coords),
@@ -1267,8 +1283,18 @@ def _stem_from_row(row):
         segment_diameter_list=[float(v) for v in _json_list_or_empty(getattr(row, 'd_json', []))],
         segment_length_list=[float(v) for v in _json_list_or_empty(getattr(row, 'l_json', []))],
         segment_volume_list=[float(v) for v in _json_list_or_empty(getattr(row, 'v_json', []))],
+        stem_id=getattr(row, 'stem_id', None),
         crs=getattr(row, 'crs', None),
+        tree_x=getattr(row, 'tree_x', None),
+        tree_y=getattr(row, 'tree_y', None),
+        direction_x=float(getattr(row, 'dir_x', 0.0) or 0.0),
+        direction_y=float(getattr(row, 'dir_y', 0.0) or 0.0),
+        direction_deg=getattr(row, 'dir_deg', None),
+        direction_confidence=float(getattr(row, 'dir_conf', 0.0) or 0.0),
     )
+    stem = Quant.refresh_stem_direction(stem)
+    stem = Quant.refresh_measurement_vectors(stem)
+    return stem
 
 
 def _stems_from_gdf(stems_gdf):
@@ -1323,6 +1349,7 @@ def _reverse_stem_profile(stem):
         segment_diameter_list=rev_d,
         segment_length_list=rev_l,
         segment_volume_list=rev_v,
+        stem_id=getattr(stem, 'stem_id', None),
         crs=getattr(stem, 'crs', None),
     )
 
@@ -1377,6 +1404,7 @@ def _rebuild_connected_stem_profile(merged_stem, contributors):
             segment_diameter_list=list(getattr(merged_stem, 'segment_diameter_list', [])),
             segment_length_list=list(getattr(merged_stem, 'segment_length_list', [])),
             segment_volume_list=list(getattr(merged_stem, 'segment_volume_list', [])),
+            stem_id=getattr(merged_stem, 'stem_id', None),
             crs=getattr(merged_stem, 'crs', None),
         )
         return Quant.quantify_stem(stem)
@@ -1436,6 +1464,7 @@ def _rebuild_connected_stem_profile(merged_stem, contributors):
         segment_diameter_list=diameters,
         segment_length_list=[],
         segment_volume_list=[],
+        stem_id=getattr(merged_stem, 'stem_id', None),
         crs=getattr(merged_stem, 'crs', None),
     )
     return Quant.quantify_stem(rebuilt)
@@ -1552,9 +1581,6 @@ def merge_and_filter_tiled_results(
 
     target_crs = None
     tile_count = 0
-    total_stems = 0
-    total_nodes = 0
-    total_vectors = 0
 
     for prefix, gpkg_path, raster_path in tiles:
         out, target_crs = _process_tile(
@@ -1567,31 +1593,35 @@ def merge_and_filter_tiled_results(
         if out is None:
             continue
 
-        stems, nodes, vectors, (n_s, n_n, n_v) = out
+        stems, nodes, vectors, _counts = out
         merged_stems.append(stems)
         if not nodes.empty:
             merged_nodes.append(nodes)
         if not vectors.empty:
             merged_vectors.append(vectors)
-
         tile_count += 1
-        total_stems += n_s
-        total_nodes += n_n
-        total_vectors += n_v
 
     if merged_stems or merged_nodes or merged_vectors:
-        stems_gdf, nodes_gdf, vectors_gdf = _reconstruct_edge_stems_for_tiled_merge(
-            merged_stems,
-            tiles,
-            target_crs,
-            edge_buffer_m,
-            config=config,
-            stem_map_path=stem_map_path,
-        )
-        final_stems = [stems_gdf] if stems_gdf is not None and not stems_gdf.empty else []
-        final_nodes = [nodes_gdf] if nodes_gdf is not None and not nodes_gdf.empty else []
-        # final_vectors = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
-        written_gpkg = _write_merged(output_gpkg, final_stems, final_nodes, merged_vectors)
+        stems_gdf = _concat_merged_layer(merged_stems)
+        all_stems = _stems_from_gdf(stems_gdf)
+        import utils.Vectorization as Vec
+
+        if config is None:
+            from classes.Config import Config
+            config = Config()
+
+        all_stems = [Quant.refresh_stem_direction(stem, config=config)
+                     for stem in all_stems]
+        all_stems, dup_count_0 = Vec.remove_duplicates(all_stems)
+        print(f"MERGE GLOBAL CONNECT | input {len(all_stems)} | duplicates_removed {dup_count_0}", flush=True)
+        connected_stems = Vec.connect_stems(all_stems, config)
+        final_stems = Quant.compute_stem_volumes(connected_stems, config=config)
+        stems_gdf, nodes_gdf, vectors_gdf = _stems_to_layer_gdfs(final_stems, target_crs)
+
+        final_stems_layers = [stems_gdf] if stems_gdf is not None and not stems_gdf.empty else []
+        final_nodes_layers = [nodes_gdf] if nodes_gdf is not None and not nodes_gdf.empty else []
+        final_vectors_layers = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
+        written_gpkg = _write_merged(output_gpkg, final_stems_layers, final_nodes_layers, final_vectors_layers)
         written_layers = []
         try:
             written_layers = list(fiona.listlayers(written_gpkg))

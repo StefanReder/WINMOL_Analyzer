@@ -17,7 +17,18 @@ class Stem:
     segment_diameter_list: List[float]
     segment_length_list: List[float]
     segment_volume_list: List[float]
-    crs: Optional[str] = None  # Default to undefined
+    stem_id: Optional[str] = None
+    crs: Optional[str] = None
+    tree_x: Optional[float] = None
+    tree_y: Optional[float] = None
+    direction_x: float = 0.0
+    direction_y: float = 0.0
+    direction_deg: Optional[float] = None
+    direction_confidence: float = 0.0
+
+    def __post_init__(self):
+        if self.stem_id is not None:
+            self.stem_id = str(self.stem_id)
 
     def __eq__(self, other):
         return (self.start == other.start and self.stop == other.stop
@@ -34,6 +45,11 @@ class Stem:
     @property
     def length(self):
         if len(self.segment_length_list) == 0:
+            if self.path is not None:
+                try:
+                    return float(self.path.length)
+                except Exception:
+                    pass
             if self.start is not None and self.stop is not None:
                 return self.start.distance(self.stop)
             return 0
@@ -51,13 +67,17 @@ class Stem:
             return []
         node_list = []
         for j in range(len(self.path.coords)):
+            diameter = None
+            try:
+                diameter = self.segment_diameter_list[j]
+            except Exception:
+                diameter = None
             node_list.append(Node(
-                diameter=self.segment_diameter_list[j],
+                diameter=diameter,
                 geom=Point(self.path.coords[j]),
-                # TODO: check this
                 vector=self.vector,
                 stem_id=self.stem_id,
-                node_id=j
+                node_id=j,
             ))
         return node_list
 
@@ -66,12 +86,16 @@ class Stem:
             return []
         vector_list = []
         for j in range(len(self.path.coords)):
+            diameter = None
+            try:
+                diameter = self.segment_diameter_list[j]
+            except Exception:
+                diameter = None
             vector_list.append(Vector(
-                diameter=self.segment_diameter_list[j],
+                diameter=diameter,
                 geom=self.path,
-                # TODO: check this
                 vector=self.vector,
                 stem_id=self.stem_id,
-                node_id=j
+                node_id=j,
             ))
         return vector_list

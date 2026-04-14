@@ -97,19 +97,10 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
             _vector_summary(tile_label, fg_count, segment_count, 0, timings, None)
         return _vector_result(tile_label, None, fg_count, segment_count, 0, timings)
 
-    t0 = time.perf_counter()
-    stems = Vec.connect_stems(stems, config)
-    timings['connect_s'] = time.perf_counter() - t0
-    if not stems:
-        timings['total_s'] = time.perf_counter() - total_t0
-        if bool(getattr(config, 'vector_summary_log', True)):
-            _vector_summary(tile_label, fg_count, segment_count, 0, timings, None)
-        return _vector_result(tile_label, None, fg_count, segment_count, 0, timings)
-
-    Vec.rebuild_endnodes_from_stems(stems)
+    timings['connect_s'] = 0.0
 
     t0 = time.perf_counter()
-    stems = Quant.quantify_stems(stems, pred, profile, config=config)
+    stems = Quant.determine_stem_diameters(stems, pred, profile, config=config)
     timings['quant_s'] = time.perf_counter() - t0
     if not stems:
         timings['total_s'] = time.perf_counter() - total_t0

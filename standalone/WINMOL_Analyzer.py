@@ -66,14 +66,17 @@ if __name__ == '__main__':
     # Build stem parts from the segments using Vectorization module
     stems = Vec.build_stem_parts(segments)
 
-    # Connect individual stems to form complete structures
+    # Stage 1: determine diameters and biological stem direction
+    stems = Quant.determine_stem_diameters(stems, pred, profile, config=config)
+
+    # Stage 2: connect directed stem parts globally
     stems = Vec.connect_stems(stems, config)
+
+    # Stage 3: compute volume only once on the final merged stems
+    stems = Quant.compute_stem_volumes(stems, config=config)
 
     # Rebuild endnodes from the connected stems
     end_nodes = Vec.rebuild_endnodes_from_stems(stems)
-
-    # Quantify the properties of the identified stems
-    stems = Quant.quantify_stems(stems, pred, profile)
 
     # Export the predicted stem map and stems information to GeoJSON
     IO.export_stem_map(pred, profile, pred_dir, file_name)

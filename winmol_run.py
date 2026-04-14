@@ -176,12 +176,14 @@ class ImageProcessing:
         segments = Vec.restore_geoinformation(segments, self.config, profile)
         print("\nBuilding Stem Parts...")
         stems = Vec.build_stem_parts(segments)
-        print("\nConnecting Stem Parts...")
+        print("\nDetermining Stem Diameters and Direction...")
+        stems = Quant.determine_stem_diameters(stems, pred, profile, config=self.config)
+        print("\nConnecting Directed Stem Parts...")
         stems = Vec.connect_stems(stems, self.config)
+        print("\nComputing Final Stem Volumes...")
+        stems = Quant.compute_stem_volumes(stems, config=self.config)
         print("\nRebuilding End Nodes...")
         Vec.rebuild_endnodes_from_stems(stems)
-        print("\nQuantifying Stems...")
-        stems = Quant.quantify_stems(stems, pred, profile, config=self.config)
         return stems
 
     def run_vector_phase(self, plan, pred_path=None, pred=None, profile=None):

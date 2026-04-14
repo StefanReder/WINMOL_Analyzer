@@ -8,7 +8,7 @@ class Config(object):
     prediction_prefetch = 2
     producer_queue_batches = 4
     prediction_producer_workers_cpu = 1
-    prediction_producer_workers_gpu = 6
+    prediction_producer_workers_gpu = 4
     prediction_producer_workers_multi_gpu = 6
 
     # resources
@@ -19,7 +19,7 @@ class Config(object):
     # runtime worker / batching knobs
     prediction_batch_cpu = 1
     prediction_batch_gpu = 4
-    prediction_batch_max_gpu = 16
+    prediction_batch_max_gpu = 12
     prediction_batch_multi_gpu = 12     # local per-worker batch
     prediction_batch_autotune = True
     prediction_batch_autotune_patience = 4
@@ -75,6 +75,7 @@ class Config(object):
     diameter_method = "contour"         # contour | edt
     diameter_vector_half_length_m = 1.0
     edt_clip_max_m = None                # optional clip for extreme EDT radii
+    direction_confidence_threshold = 0.15
 
     def __init__(self):
         pass

@@ -9,7 +9,6 @@ from typing import List, Sequence, Set
 
 import numpy as np
 from shapely.geometry import LineString, Point
-from shapely.ops import linemerge
 from shapely.strtree import STRtree
 
 from classes.Part import Part
@@ -17,6 +16,7 @@ from classes.Stem import Stem
 from classes.Timer import Timer
 from utils.Geometry import ang
 from utils.IO import get_bounds_from_profile
+import utils.Quantification as Quant
 
 # System epsilon
 epsilon = np.finfo(float).eps
@@ -38,7 +38,7 @@ def _worker_count(config=None):
 
 
 def _clone_stem(stem: Stem) -> Stem:
-    return Stem(
+    cloned = Stem(
         start=Point(stem.start.coords[0]),
         stop=Point(stem.stop.coords[0]),
         path=LineString(list(stem.path.coords)),
@@ -46,8 +46,74 @@ def _clone_stem(stem: Stem) -> Stem:
         segment_diameter_list=list(getattr(stem, 'segment_diameter_list', [])),
         segment_length_list=list(getattr(stem, 'segment_length_list', [])),
         segment_volume_list=list(getattr(stem, 'segment_volume_list', [])),
+        stem_id=getattr(stem, 'stem_id', None),
         crs=getattr(stem, 'crs', None),
+        tree_x=getattr(stem, 'tree_x', None),
+        tree_y=getattr(stem, 'tree_y', None),
+        direction_x=float(getattr(stem, 'direction_x', 0.0) or 0.0),
+        direction_y=float(getattr(stem, 'direction_y', 0.0) or 0.0),
+        direction_deg=getattr(stem, 'direction_deg', None),
+        direction_confidence=float(getattr(stem, 'direction_confidence', 0.0) or 0.0),
     )
+    if hasattr(stem, '_contributors'):
+        cloned._contributors = list(getattr(stem, '_contributors', []))
+    return cloned
+
+
+def _direction_variants(stem: Stem, config=None):
+    variants = [_clone_stem(stem)]
+    if Quant.is_direction_ambiguous(stem, config=config):
+        variants.append(Quant.reverse_stem_profile(_clone_stem(stem)))
+    return variants
+
+
+def _contributors_of(stem: Stem):
+    contributors = getattr(stem, '_contributors', None)
+    if contributors:
+        return list(contributors)
+    base = _clone_stem(stem)
+    if hasattr(base, '_contributors'):
+        delattr(base, '_contributors')
+    return [base]
+
+
+def _set_contributors(stem: Stem, contributors):
+    stem._contributors = list(contributors or [])
+    return stem
+
+
+def _merged_candidate_stub(base_stem: Stem, candidate_stem: Stem, new_path: LineString):
+    merged = Stem(
+        start=Point(list(new_path.coords)[0]),
+        stop=Point(list(new_path.coords)[-1]),
+        path=LineString(list(new_path.coords)),
+        vector=[],
+        segment_diameter_list=[],
+        segment_length_list=[],
+        segment_volume_list=[],
+        stem_id=getattr(base_stem, 'stem_id', None),
+        crs=getattr(base_stem, 'crs', getattr(candidate_stem, 'crs', None)),
+    )
+    contributors = _contributors_of(base_stem) + _contributors_of(candidate_stem)
+    merged = Quant.rebuild_connected_stem_profile(
+        merged, contributors, config=None, compute_volume=False)
+    merged = _set_contributors(merged, contributors)
+    return merged
+
+
+def _build_join_path(base_stem: Stem, candidate_stem: Stem):
+    coords_a = list(base_stem.path.coords)
+    coords_b = list(candidate_stem.path.coords)
+    if len(coords_a) < 2 or len(coords_b) < 2:
+        return None
+    merged = list(coords_a)
+    if tuple(coords_a[-1]) == tuple(coords_b[0]):
+        merged.extend(coords_b[1:])
+    else:
+        merged.extend(coords_b)
+    if len(merged) < 2:
+        return None
+    return LineString(merged)
 
 
 def _stem_end_lines(stem: Stem):
@@ -122,6 +188,9 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
     count_stem_parts = len(stems)
     global_change = True
 
+    stems = [Quant.refresh_stem_direction(_clone_stem(stem), config=config)
+             for stem in stems]
+
     while global_change:
         global_change = False
         print("Cycle ", cycle_nbr)
@@ -142,25 +211,24 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
 
             while True:
                 line_start, line_stop = _stem_end_lines(base_stem)
-                start_buffer = base_stem.start.buffer(
-                    max_distance, resolution=32)
-                end_buffer = base_stem.stop.buffer(
-                    max_distance, resolution=32)
+                start_buffer = base_stem.start.buffer(max_distance, resolution=32)
+                end_buffer = base_stem.stop.buffer(max_distance, resolution=32)
 
-                candidate_indices = set(
-                    _query_tree_indices(stop_tree, start_buffer, stop_points))
-                candidate_indices.update(
-                    _query_tree_indices(start_tree, end_buffer, start_points))
+                candidate_indices = set(_query_tree_indices(stop_tree, start_buffer, stop_points))
+                candidate_indices.update(_query_tree_indices(start_tree, start_buffer, start_points))
+                candidate_indices.update(_query_tree_indices(stop_tree, end_buffer, stop_points))
+                candidate_indices.update(_query_tree_indices(start_tree, end_buffer, start_points))
                 candidate_indices.intersection_update(remaining)
                 candidate_indices.discard(base_idx)
 
-                # exact endpoint filter
                 filtered_indices = []
                 for idx in candidate_indices:
                     candidate = cycle_stems[idx]
                     if (
-                        start_buffer.contains(candidate.stop)
+                        start_buffer.contains(candidate.start)
+                        or start_buffer.contains(candidate.stop)
                         or end_buffer.contains(candidate.start)
+                        or end_buffer.contains(candidate.stop)
                     ):
                         filtered_indices.append(idx)
 
@@ -169,24 +237,33 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                 best_slave_idx = None
 
                 for idx in filtered_indices:
-                    changed, vote, candidate_stem, _ = calc_connectivity_votes(
-                        base_stem,
-                        line_start,
-                        line_stop,
-                        start_buffer,
-                        end_buffer,
-                        max_distance,
-                        max_tree_height,
-                        tolerance_angle,
-                        cycle_stems[idx],
-                    )
-                    if changed and vote < best_vote:
-                        best_vote = vote
-                        best_candidate = candidate_stem
-                        best_slave_idx = idx
+                    raw_candidate = cycle_stems[idx]
+                    for base_variant in _direction_variants(base_stem, config=config):
+                        lv_start, lv_stop = _stem_end_lines(base_variant)
+                        sv_start_buffer = base_variant.start.buffer(max_distance, resolution=32)
+                        sv_end_buffer = base_variant.stop.buffer(max_distance, resolution=32)
+                        for cand_variant in _direction_variants(raw_candidate, config=config):
+                            changed, vote, candidate_stem, _ = calc_connectivity_votes(
+                                base_variant,
+                                lv_start,
+                                lv_stop,
+                                sv_start_buffer,
+                                sv_end_buffer,
+                                max_distance,
+                                max_tree_height,
+                                tolerance_angle,
+                                cand_variant,
+                                config=config,
+                            )
+                            if changed and vote < best_vote:
+                                best_vote = vote
+                                best_candidate = candidate_stem
+                                best_slave_idx = idx
 
                 if best_candidate is not None and best_slave_idx is not None:
-                    base_stem = best_candidate
+                    best_candidate.stem_id = getattr(base_stem, 'stem_id', None)
+                    base_stem = Quant.refresh_stem_direction(best_candidate, config=config)
+                    base_stem = Quant.refresh_measurement_vectors(base_stem, config=config)
                     cycle_stems[base_idx] = base_stem
                     remaining.discard(best_slave_idx)
                     global_change = True
@@ -205,6 +282,8 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
 
     connected_stems = []
     for stem in stems:
+        stem = Quant.refresh_stem_direction(stem, config=config)
+        stem = Quant.refresh_measurement_vectors(stem, config=config)
         if stem.length > config.min_length:
             connected_stems.append(stem)
         else:
@@ -222,7 +301,7 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
     t.stop()
     print("#######################################################")
     print("")
-    return connected_stems
+    return Quant.ensure_stem_ids(connected_stems, prefix='stem', preserve_existing=False)
 
 
 def calc_connectivity_votes(
@@ -234,12 +313,12 @@ def calc_connectivity_votes(
         max_distance,
         max_tree_height,
         tolerance_angle,
-        stem: Stem
+        stem: Stem,
+        config=None,
 ) -> (bool, List[float], List[Stem], List[Stem]):
-    # Calculate votes for the aggregation of stem parts to stems
     if stem == stems0:
-        # if the stems are identical return no change and infinite vote
         return False, math.inf, None, None
+
     change = False
     votes = []
     candidates = []
@@ -249,224 +328,81 @@ def calc_connectivity_votes(
         e_line_start = LineString([stem.path.coords[0], stem.path.coords[-1]])
         e_line_stop = LineString([stem.path.coords[0], stem.path.coords[-1]])
     else:
-        if len(stem.path.coords) < 8:
-            k = len(stem.path.coords) - 2
-        else:
-            k = 6
+        k = len(stem.path.coords) - 2 if len(stem.path.coords) < 8 else 6
         e_line_start = LineString([stem.path.coords[1], stem.path.coords[k]])
-        e_line_stop = LineString(
-            [stem.path.coords[-(k + 1)], stem.path.coords[-2]])
+        e_line_stop = LineString([stem.path.coords[-(k + 1)], stem.path.coords[-2]])
 
     ang_l_sp_el_st = abs(ang(line_stop.coords, e_line_start.coords))
     ang_el_sp_l_st = abs(ang(e_line_stop.coords, line_start.coords))
 
-    has_length_2 = len(stem.path.coords) == 2
-    # if end_buffer.contains(stem.start) and ang_l_sp_el_st < tolerance_angle:
-    #     missing_part_ = LineString(
-    #         [stems0.path.coords[-2],
-    #          stem.path.coords[1]]
-    #     )
-    #     dist_f = 1 - (
-    #         1 / (3 + max_distance - stems0.stop.distance(stem.start))
-    #         ** 0.5
-    #     )
-    #     ang_l_sp_mp = abs(ang(line_stop.coords, missing_part_.coords))
-    #     ang_mp_el_st = abs(ang(missing_part_.coords, e_line_start.coords))
-
-    #     if (ang_l_sp_el_st < (tolerance_angle * dist_f) and ang_l_sp_mp < (
-    #             tolerance_angle * dist_f) and ang_mp_el_st < (
-    #             tolerance_angle * dist_f) and stems0.start.distance(
-    #             stem.stop) < max_tree_height):
-
-    #         if len(stems0.path.coords) > 2 and len(stem.path.coords) > 2:
-    #             start = LineString(stems0.path.coords[:-1])
-    #             end = LineString(stem.path.coords[1:])
-    #             new_path = linemerge([start, missing_part_, end])
-    #         else:
-    #             if len(stems0.path.coords) > 2 and has_length_2:
-    #                 start = LineString(stems0.path.coords[:-1])
-    #                 new_path = linemerge([start, missing_part_])
-    #             else:
-    #                 if (len(stems0.path.coords) == 2 and len(
-    #                         stem.path.coords) > 2):
-    #                     end = LineString(stem.path.coords[1:])
-    #                     new_path = linemerge([missing_part_, end])
-    #                 else:
-    #                     if (len(stems0.path.coords) == 2 and has_length_2):
-    #                         new_path = missing_part_
-
-    #         change = True
-    #         candidate = _clone_stem(stems0)
-    #         candidate.path = new_path
-    #         candidate.stop = stem.stop
-    #         slave = stem
-    #         vote = calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st,
-    #                          candidate, stem, stems0, tolerance_angle)
-    #         candidates.append(candidate)
-    #         votes.append(vote)
-    #         slaves.append(slave)
+    gap_forward = stems0.stop.distance(stem.start)
     if end_buffer.contains(stem.start) and ang_l_sp_el_st <= tolerance_angle:
-        missing_part_ = LineString(
-            [stems0.path.coords[-2], stem.path.coords[1]]
-        )
-        ang_l_sp_mp = abs(ang(line_stop.coords, missing_part_.coords))
-        ang_mp_el_st = abs(ang(missing_part_.coords, e_line_start.coords))
-
-        if len(stems0.path.coords) > 2 and len(stem.path.coords) > 2:
-            start = LineString(stems0.path.coords[:-1])
-            end = LineString(stem.path.coords[1:])
-            new_path = linemerge([start, missing_part_, end])
-        else:
-            if len(stems0.path.coords) > 2 and has_length_2:
-                start = LineString(stems0.path.coords[:-1])
-                new_path = linemerge([start, missing_part_])
-            else:
-                if len(stems0.path.coords) == 2 and len(stem.path.coords) > 2:
-                    end = LineString(stem.path.coords[1:])
-                    new_path = linemerge([missing_part_, end])
-                else:
-                    if len(stems0.path.coords) == 2 and has_length_2:
-                        new_path = missing_part_
-
-        gap = stems0.stop.distance(stem.start)
-        merged_length = new_path.length
-        merged_span = stems0.start.distance(stem.stop)
-
-        if (
-                gap <= max_distance
+        bridge = LineString([stems0.path.coords[-2], stem.path.coords[1]]) if (
+            len(stems0.path.coords) > 1 and len(stem.path.coords) > 1
+        ) else LineString([stems0.stop.coords[0], stem.start.coords[0]])
+        ang_l_sp_mp = abs(ang(line_stop.coords, bridge.coords))
+        ang_mp_el_st = abs(ang(bridge.coords, e_line_start.coords))
+        new_path = _build_join_path(stems0, stem)
+        if new_path is not None:
+            merged_length = new_path.length
+            merged_span = Point(new_path.coords[0]).distance(Point(new_path.coords[-1]))
+            if (
+                gap_forward <= max_distance
                 and ang_l_sp_el_st <= tolerance_angle
                 and ang_l_sp_mp <= tolerance_angle
                 and ang_mp_el_st <= tolerance_angle
                 and merged_length <= max_tree_height
-                and merged_span <= max_tree_height):
+                and merged_span <= max_tree_height
+            ):
+                change = True
+                candidate = _merged_candidate_stub(stems0, stem, new_path)
+                vote = calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st,
+                                 candidate, stem, stems0, tolerance_angle)
+                candidates.append(candidate)
+                votes.append(vote)
+                slaves.append(stem)
 
-            change = True
-            candidate = _clone_stem(stems0)
-            candidate.path = new_path
-            candidate.stop = stem.stop
-            slave = stem
-            vote = calc_vote(
-                ang_l_sp_el_st,
-                ang_l_sp_mp,
-                ang_mp_el_st,
-                candidate,
-                stem,
-                stems0,
-                tolerance_angle,
-            )
-            candidates.append(candidate)
-            votes.append(vote)
-            slaves.append(slave)
-
-    # if start_buffer.contains(stem.stop) and ang_el_sp_l_st < tolerance_angle:
-    #     missing_part_ = LineString(
-    #         [stem.path.coords[-2], stems0.path.coords[1]])
-    #     dist_f = 1 - (
-    #         1 / (3 + max_distance - stem.stop.distance(stems0.start))
-    #         ** 0.5
-    #     )
-    #     ang_el_sp_mp = abs(ang(e_line_stop.coords, missing_part_.coords))
-    #     ang_mp_l_st = abs(ang(missing_part_.coords, line_start.coords))
-
-    #     if (ang_el_sp_l_st < (tolerance_angle * dist_f) and ang_el_sp_mp < (
-    #             tolerance_angle * dist_f) and abs(
-    #             ang(missing_part_.coords, line_start.coords)) < (
-    #             tolerance_angle * dist_f) and stem.start.distance(
-    #             stems0.stop) < max_tree_height):
-    #         if len(stem.path.coords) > 2 and len(stems0.path.coords) > 2:
-    #             start = LineString(stem.path.coords[:-1])
-    #             end = LineString(stems0.path.coords[1:])
-    #             new_path = linemerge([start, missing_part_, end])
-    #         else:
-    #             if len(stem.path.coords) > 2 and len(stems0.path.coords) == 2:
-    #                 start = LineString(stem.path.coords[:-1])
-    #                 new_path = linemerge([start, missing_part_])
-    #             else:
-    #                 if has_length_2 and len(stems0.path.coords) > 2:
-    #                     end = LineString(stems0.path.coords[1:])
-    #                     new_path = linemerge([missing_part_, end])
-    #                 else:
-    #                     if (has_length_2 and len(
-    #                             stems0.path.coords) == 2):
-    #                         new_path = missing_part_
-
-    #         change = True
-    #         candidate = _clone_stem(stems0)
-    #         candidate.path = new_path
-    #         candidate.start = stem.start
-    #         slave = stem
-    #         vote = calc_vote(ang_el_sp_l_st, ang_el_sp_mp, ang_mp_l_st,
-    #                          candidate, stems0, stem, tolerance_angle)
-    #         candidates.append(candidate)
-    #         votes.append(vote)
-    #         slaves.append(slave)
+    gap_reverse = stem.stop.distance(stems0.start)
     if start_buffer.contains(stem.stop) and ang_el_sp_l_st <= tolerance_angle:
-        missing_part_ = LineString(
-            [stem.path.coords[-2], stems0.path.coords[1]]
-        )
-        ang_el_sp_mp = abs(ang(e_line_stop.coords, missing_part_.coords))
-        ang_mp_l_st = abs(ang(missing_part_.coords, line_start.coords))
-
-        if len(stem.path.coords) > 2 and len(stems0.path.coords) > 2:
-            start = LineString(stem.path.coords[:-1])
-            end = LineString(stems0.path.coords[1:])
-            new_path = linemerge([start, missing_part_, end])
-        else:
-            if len(stem.path.coords) > 2 and len(stems0.path.coords) == 2:
-                start = LineString(stem.path.coords[:-1])
-                new_path = linemerge([start, missing_part_])
-            else:
-                if has_length_2 and len(stems0.path.coords) > 2:
-                    end = LineString(stems0.path.coords[1:])
-                    new_path = linemerge([missing_part_, end])
-                else:
-                    if has_length_2 and len(stems0.path.coords) == 2:
-                        new_path = missing_part_
-
-        gap = stem.stop.distance(stems0.start)
-        merged_length = new_path.length
-        merged_span = stem.start.distance(stems0.stop)
-
-        if (
-                gap <= max_distance
+        bridge = LineString([stem.path.coords[-2], stems0.path.coords[1]]) if (
+            len(stem.path.coords) > 1 and len(stems0.path.coords) > 1
+        ) else LineString([stem.stop.coords[0], stems0.start.coords[0]])
+        ang_el_sp_mp = abs(ang(e_line_stop.coords, bridge.coords))
+        ang_mp_l_st = abs(ang(bridge.coords, line_start.coords))
+        new_path = _build_join_path(stem, stems0)
+        if new_path is not None:
+            merged_length = new_path.length
+            merged_span = Point(new_path.coords[0]).distance(Point(new_path.coords[-1]))
+            if (
+                gap_reverse <= max_distance
                 and ang_el_sp_l_st <= tolerance_angle
                 and ang_el_sp_mp <= tolerance_angle
                 and ang_mp_l_st <= tolerance_angle
                 and merged_length <= max_tree_height
-                and merged_span <= max_tree_height):
-            change = True
-            candidate = _clone_stem(stems0)
-            candidate.path = new_path
-            candidate.start = stem.start
-            slave = stem
-            vote = calc_vote(
-                ang_el_sp_l_st,
-                ang_el_sp_mp,
-                ang_mp_l_st,
-                candidate,
-                stems0,
-                stem,
-                tolerance_angle,
-            )
-            candidates.append(candidate)
-            votes.append(vote)
-            slaves.append(slave)
+                and merged_span <= max_tree_height
+            ):
+                change = True
+                candidate = _merged_candidate_stub(stem, stems0, new_path)
+                vote = calc_vote(ang_el_sp_l_st, ang_el_sp_mp, ang_mp_l_st,
+                                 candidate, stems0, stem, tolerance_angle)
+                candidates.append(candidate)
+                votes.append(vote)
+                slaves.append(stem)
 
     if change:
         index_min = min(range(len(votes)), key=votes.__getitem__)
         return True, votes[index_min], candidates[index_min], slaves[index_min]
-    else:
-        return False, math.inf, None, None
+    return False, math.inf, None, None
 
 
 # calculate vote
 def calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st, candidate, stem,
               stems0, tolerance_angle):
     return (
-        ((1 + ang_l_sp_el_st + ang_l_sp_mp + ang_mp_el_st) / tolerance_angle) *
+        ((1 + ang_l_sp_el_st + ang_l_sp_mp + ang_mp_el_st) / max(tolerance_angle, epsilon)) *
         candidate.start.distance(candidate.stop) ** 2
         + stems0.stop.distance(stem.start) ** 2 *
-        (1 + ang_l_sp_el_st + ang_l_sp_mp + ang_mp_el_st) / tolerance_angle
+        (1 + ang_l_sp_el_st + ang_l_sp_mp + ang_mp_el_st) / max(tolerance_angle, epsilon)
     )
 
 
@@ -480,22 +416,24 @@ def build_stem_parts(segments: List[Part]):
     print("#######################################################")
     print("Build stem segments")
     stems = []
-    for i in range(len(segments)):
-        if segments[i].start[1] >= segments[i].stop[1]:
-            h = segments[i].start
-            segments[i].start = segments[i].stop
-            segments[i].stop = h
-            segments[i].path.reverse()
-     #   else:
-     #       h = segments[i].start
-     #       segments[i].start = segments[i].stop
-     #       segments[i].stop = h
-     #       segments[i].path.reverse()
     segments = set(segments)
     for seg in segments:
-        stem = Stem(Point(seg.start), Point(seg.stop), LineString(seg.path), [],
-                    [], [], [])
+        path_coords = list(seg.path)
+        if len(path_coords) < 2:
+            continue
+        stem = Stem(
+            start=Point(path_coords[0]),
+            stop=Point(path_coords[-1]),
+            path=LineString(path_coords),
+            vector=[],
+            segment_diameter_list=[],
+            segment_length_list=[],
+            segment_volume_list=[],
+            stem_id=None,
+        )
         stems.append(stem)
+
+    stems = Quant.ensure_stem_ids(stems, prefix='part', preserve_existing=False)
 
     print(len(stems), "stems segments build")
 
