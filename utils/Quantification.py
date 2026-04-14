@@ -258,7 +258,7 @@ def clean_diameter(stem):
     lw = q1 - 1.5 * iqr
     uw = q3 + 1.5 * iqr
     if len(stem.segment_diameter_list) > 4:
-        for i in range(1, len(stem.segment_diameter_list) - 2):
+        for i in range(1, len(stem.segment_diameter_list) - 1):
             i_uw = stem.segment_diameter_list[i] > uw
             i_lw = stem.segment_diameter_list[i] < lw
             if i_uw or i_lw:

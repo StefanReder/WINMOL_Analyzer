@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import io
-import multiprocessing as mp
 import os
 import time
 
@@ -26,13 +23,6 @@ def _clone_config(config, **updates):
     for key, value in updates.items():
         setattr(cfg, key, value)
     return cfg
-
-
-def export_tile_results(stems, profile, process_type: str, output_prefix: str, config=None):
-    write_stems_only = bool(getattr(config, 'write_tile_stems_only', True))
-    if write_stems_only or process_type == 'Trees':
-        return write_stems_to_gpkg(stems, profile, output_prefix)
-    return write_stems_to_gpkg(stems, profile, output_prefix)
 
 
 
@@ -119,7 +109,7 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
     stem_count = len(stems)
 
     t0 = time.perf_counter()
-    output_path = export_tile_results(stems, profile, process_type, output_prefix, config=config)
+    output_path = write_stems_to_gpkg(stems, profile, output_prefix)
     timings['write_s'] = time.perf_counter() - t0
     timings['total_s'] = time.perf_counter() - total_t0
     output_exists = bool(output_path) and os.path.exists(output_path)
@@ -138,13 +128,6 @@ def _run_vector_pipeline(pred, profile, config, process_type: str, output_prefix
         stem_count,
         timings,
     )
-
-
-def _run_with_debug_control(fn, config, *args, **kwargs):
-    vector_mode = str(getattr(config, 'vector_mode', 'tiled') or 'tiled').lower()
-    if vector_mode != 'tiled' or bool(getattr(config, 'vector_debug', False)):
-        return fn(*args, **kwargs)
-    return fn(*args, **kwargs)
 
 
 def process_prediction_array_to_gpkg(
@@ -168,9 +151,7 @@ def process_prediction_array_to_gpkg(
         return None
 
     tile_label = os.path.basename(output_prefix)
-    return _run_with_debug_control(
-        _run_vector_pipeline,
-        config,
+    return _run_vector_pipeline(
         pred,
         profile,
         config,
@@ -191,9 +172,7 @@ def process_prediction_tile(
     if pred_arr.size == 0 or not np.any(pred_arr >= 1):
         return None
     tile_label = os.path.splitext(os.path.basename(pred_tile_path))[0]
-    return _run_with_debug_control(
-        _run_vector_pipeline,
-        config,
+    return _run_vector_pipeline(
         pred,
         profile,
         config,
@@ -217,7 +196,6 @@ def process_prediction_tiles(
     os.makedirs(output_dir, exist_ok=True)
     total_workers = \
         max(1, int(cpu_workers or getattr(config, 'cpu_workers', 1) or 1))
-    tile_workers = 1
     inner_workers = total_workers
     progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
 
@@ -234,31 +212,14 @@ def process_prediction_tiles(
     last_report = start
     results = []
 
-    if tile_workers <= 1 or len(tasks) <= 1:
-        for idx, task in enumerate(tasks, start=1):
-            results.append(_process_prediction_tile_star(task))
-            now = time.monotonic()
-            if idx == len(tasks) or (now - last_report) >= progress_interval_s:
-                rate = idx / max(now - start, 1e-9)
-                eta = (len(tasks) - idx) / rate if rate > 0 else float('inf')
-                print(f"Vector tiles {idx}/{len(tasks)} | "
-                      f"{idx / len(tasks):.1%} | {rate * 60:.2f} tiles/min "
-                      f"| ETA {eta / 60:.1f} min", flush=True)
-                last_report = now
-        return results
-
-    with mp.Pool(tile_workers) as pool:
-        for idx, result in enumerate(
-            pool.imap_unordered(_process_prediction_tile_star, tasks),
-            start=1,
-        ):
-            results.append(result)
-            now = time.monotonic()
-            if idx == len(tasks) or (now - last_report) >= progress_interval_s:
-                rate = idx / max(now - start, 1e-9)
-                eta = (len(tasks) - idx) / rate if rate > 0 else float('inf')
-                print(f"Vector tiles {idx}/{len(tasks)} | "
-                      f"{idx / len(tasks):.1%} | {rate * 60:.2f}"
-                      f" tiles/min | ETA {eta / 60:.1f} min", flush=True)
-                last_report = now
+    for idx, task in enumerate(tasks, start=1):
+        results.append(_process_prediction_tile_star(task))
+        now = time.monotonic()
+        if idx == len(tasks) or (now - last_report) >= progress_interval_s:
+            rate = idx / max(now - start, 1e-9)
+            eta = (len(tasks) - idx) / rate if rate > 0 else float('inf')
+            print(f"Vector tiles {idx}/{len(tasks)} | "
+                  f"{idx / len(tasks):.1%} | {rate * 60:.2f} tiles/min "
+                  f"| ETA {eta / 60:.1f} min", flush=True)
+            last_report = now
     return results
