@@ -189,10 +189,12 @@ def build_execution_plan(config: Any, hardware: Any, raster_info: Any,
     else:
         gpu_available = int(getattr(hardware, 'gpu_count', 0) or 0)
         gpu_workers = max(1, min(max_gpu_workers, gpu_available))
-        if tiles < 1500:
+        if tiles < 1000:
             gpu_workers = min(gpu_workers, 2)
-        elif tiles < 5000:
+        elif tiles < 2500:
             gpu_workers = min(gpu_workers, 4)
+        else:
+            gpu_workers = min(gpu_workers, 8)
         cpu_workers = max(1, min(
             max_cpu_workers,
             int(_cfg(config, 'multi_gpu_cpu_workers', max(24, int(max_cpu_workers * 0.75)))),
