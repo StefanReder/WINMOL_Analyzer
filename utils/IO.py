@@ -1590,8 +1590,8 @@ def merge_and_filter_tiled_results(
         )
         final_stems = [stems_gdf] if stems_gdf is not None and not stems_gdf.empty else []
         final_nodes = [nodes_gdf] if nodes_gdf is not None and not nodes_gdf.empty else []
-        final_vectors = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
-        written_gpkg = _write_merged(output_gpkg, final_stems, final_nodes, final_vectors)
+        # final_vectors = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
+        written_gpkg = _write_merged(output_gpkg, final_stems, final_nodes, merged_vectors)
         written_layers = []
         try:
             written_layers = list(fiona.listlayers(written_gpkg))

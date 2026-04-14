@@ -261,90 +261,193 @@ def calc_connectivity_votes(
     ang_el_sp_l_st = abs(ang(e_line_stop.coords, line_start.coords))
 
     has_length_2 = len(stem.path.coords) == 2
-    if end_buffer.contains(stem.start) and ang_l_sp_el_st < tolerance_angle:
+    # if end_buffer.contains(stem.start) and ang_l_sp_el_st < tolerance_angle:
+    #     missing_part_ = LineString(
+    #         [stems0.path.coords[-2],
+    #          stem.path.coords[1]]
+    #     )
+    #     dist_f = 1 - (
+    #         1 / (3 + max_distance - stems0.stop.distance(stem.start))
+    #         ** 0.5
+    #     )
+    #     ang_l_sp_mp = abs(ang(line_stop.coords, missing_part_.coords))
+    #     ang_mp_el_st = abs(ang(missing_part_.coords, e_line_start.coords))
+
+    #     if (ang_l_sp_el_st < (tolerance_angle * dist_f) and ang_l_sp_mp < (
+    #             tolerance_angle * dist_f) and ang_mp_el_st < (
+    #             tolerance_angle * dist_f) and stems0.start.distance(
+    #             stem.stop) < max_tree_height):
+
+    #         if len(stems0.path.coords) > 2 and len(stem.path.coords) > 2:
+    #             start = LineString(stems0.path.coords[:-1])
+    #             end = LineString(stem.path.coords[1:])
+    #             new_path = linemerge([start, missing_part_, end])
+    #         else:
+    #             if len(stems0.path.coords) > 2 and has_length_2:
+    #                 start = LineString(stems0.path.coords[:-1])
+    #                 new_path = linemerge([start, missing_part_])
+    #             else:
+    #                 if (len(stems0.path.coords) == 2 and len(
+    #                         stem.path.coords) > 2):
+    #                     end = LineString(stem.path.coords[1:])
+    #                     new_path = linemerge([missing_part_, end])
+    #                 else:
+    #                     if (len(stems0.path.coords) == 2 and has_length_2):
+    #                         new_path = missing_part_
+
+    #         change = True
+    #         candidate = _clone_stem(stems0)
+    #         candidate.path = new_path
+    #         candidate.stop = stem.stop
+    #         slave = stem
+    #         vote = calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st,
+    #                          candidate, stem, stems0, tolerance_angle)
+    #         candidates.append(candidate)
+    #         votes.append(vote)
+    #         slaves.append(slave)
+    if end_buffer.contains(stem.start) and ang_l_sp_el_st <= tolerance_angle:
         missing_part_ = LineString(
-            [stems0.path.coords[-2],
-             stem.path.coords[1]]
-        )
-        dist_f = 1 - (
-            1 / (3 + max_distance - stems0.stop.distance(stem.start))
-            ** 0.5
+            [stems0.path.coords[-2], stem.path.coords[1]]
         )
         ang_l_sp_mp = abs(ang(line_stop.coords, missing_part_.coords))
         ang_mp_el_st = abs(ang(missing_part_.coords, e_line_start.coords))
 
-        if (ang_l_sp_el_st < (tolerance_angle * dist_f) and ang_l_sp_mp < (
-                tolerance_angle * dist_f) and ang_mp_el_st < (
-                tolerance_angle * dist_f) and stems0.start.distance(
-                stem.stop) < max_tree_height):
-
-            if len(stems0.path.coords) > 2 and len(stem.path.coords) > 2:
+        if len(stems0.path.coords) > 2 and len(stem.path.coords) > 2:
+            start = LineString(stems0.path.coords[:-1])
+            end = LineString(stem.path.coords[1:])
+            new_path = linemerge([start, missing_part_, end])
+        else:
+            if len(stems0.path.coords) > 2 and has_length_2:
                 start = LineString(stems0.path.coords[:-1])
-                end = LineString(stem.path.coords[1:])
-                new_path = linemerge([start, missing_part_, end])
+                new_path = linemerge([start, missing_part_])
             else:
-                if len(stems0.path.coords) > 2 and has_length_2:
-                    start = LineString(stems0.path.coords[:-1])
-                    new_path = linemerge([start, missing_part_])
+                if len(stems0.path.coords) == 2 and len(stem.path.coords) > 2:
+                    end = LineString(stem.path.coords[1:])
+                    new_path = linemerge([missing_part_, end])
                 else:
-                    if (len(stems0.path.coords) == 2 and len(
-                            stem.path.coords) > 2):
-                        end = LineString(stem.path.coords[1:])
-                        new_path = linemerge([missing_part_, end])
-                    else:
-                        if (len(stems0.path.coords) == 2 and has_length_2):
-                            new_path = missing_part_
+                    if len(stems0.path.coords) == 2 and has_length_2:
+                        new_path = missing_part_
+
+        gap = stems0.stop.distance(stem.start)
+        merged_length = new_path.length
+        merged_span = stems0.start.distance(stem.stop)
+
+        if (
+                gap <= max_distance
+                and ang_l_sp_el_st <= tolerance_angle
+                and ang_l_sp_mp <= tolerance_angle
+                and ang_mp_el_st <= tolerance_angle
+                and merged_length <= max_tree_height
+                and merged_span <= max_tree_height):
 
             change = True
             candidate = _clone_stem(stems0)
             candidate.path = new_path
             candidate.stop = stem.stop
             slave = stem
-            vote = calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st,
-                             candidate, stem, stems0, tolerance_angle)
+            vote = calc_vote(
+                ang_l_sp_el_st,
+                ang_l_sp_mp,
+                ang_mp_el_st,
+                candidate,
+                stem,
+                stems0,
+                tolerance_angle,
+            )
             candidates.append(candidate)
             votes.append(vote)
             slaves.append(slave)
 
-    if start_buffer.contains(stem.stop) and ang_el_sp_l_st < tolerance_angle:
+    # if start_buffer.contains(stem.stop) and ang_el_sp_l_st < tolerance_angle:
+    #     missing_part_ = LineString(
+    #         [stem.path.coords[-2], stems0.path.coords[1]])
+    #     dist_f = 1 - (
+    #         1 / (3 + max_distance - stem.stop.distance(stems0.start))
+    #         ** 0.5
+    #     )
+    #     ang_el_sp_mp = abs(ang(e_line_stop.coords, missing_part_.coords))
+    #     ang_mp_l_st = abs(ang(missing_part_.coords, line_start.coords))
+
+    #     if (ang_el_sp_l_st < (tolerance_angle * dist_f) and ang_el_sp_mp < (
+    #             tolerance_angle * dist_f) and abs(
+    #             ang(missing_part_.coords, line_start.coords)) < (
+    #             tolerance_angle * dist_f) and stem.start.distance(
+    #             stems0.stop) < max_tree_height):
+    #         if len(stem.path.coords) > 2 and len(stems0.path.coords) > 2:
+    #             start = LineString(stem.path.coords[:-1])
+    #             end = LineString(stems0.path.coords[1:])
+    #             new_path = linemerge([start, missing_part_, end])
+    #         else:
+    #             if len(stem.path.coords) > 2 and len(stems0.path.coords) == 2:
+    #                 start = LineString(stem.path.coords[:-1])
+    #                 new_path = linemerge([start, missing_part_])
+    #             else:
+    #                 if has_length_2 and len(stems0.path.coords) > 2:
+    #                     end = LineString(stems0.path.coords[1:])
+    #                     new_path = linemerge([missing_part_, end])
+    #                 else:
+    #                     if (has_length_2 and len(
+    #                             stems0.path.coords) == 2):
+    #                         new_path = missing_part_
+
+    #         change = True
+    #         candidate = _clone_stem(stems0)
+    #         candidate.path = new_path
+    #         candidate.start = stem.start
+    #         slave = stem
+    #         vote = calc_vote(ang_el_sp_l_st, ang_el_sp_mp, ang_mp_l_st,
+    #                          candidate, stems0, stem, tolerance_angle)
+    #         candidates.append(candidate)
+    #         votes.append(vote)
+    #         slaves.append(slave)
+    if start_buffer.contains(stem.stop) and ang_el_sp_l_st <= tolerance_angle:
         missing_part_ = LineString(
-            [stem.path.coords[-2], stems0.path.coords[1]])
-        dist_f = 1 - (
-            1 / (3 + max_distance - stem.stop.distance(stems0.start))
-            ** 0.5
+            [stem.path.coords[-2], stems0.path.coords[1]]
         )
         ang_el_sp_mp = abs(ang(e_line_stop.coords, missing_part_.coords))
         ang_mp_l_st = abs(ang(missing_part_.coords, line_start.coords))
 
-        if (ang_el_sp_l_st < (tolerance_angle * dist_f) and ang_el_sp_mp < (
-                tolerance_angle * dist_f) and abs(
-                ang(missing_part_.coords, line_start.coords)) < (
-                tolerance_angle * dist_f) and stem.start.distance(
-                stems0.stop) < max_tree_height):
-            if len(stem.path.coords) > 2 and len(stems0.path.coords) > 2:
+        if len(stem.path.coords) > 2 and len(stems0.path.coords) > 2:
+            start = LineString(stem.path.coords[:-1])
+            end = LineString(stems0.path.coords[1:])
+            new_path = linemerge([start, missing_part_, end])
+        else:
+            if len(stem.path.coords) > 2 and len(stems0.path.coords) == 2:
                 start = LineString(stem.path.coords[:-1])
-                end = LineString(stems0.path.coords[1:])
-                new_path = linemerge([start, missing_part_, end])
+                new_path = linemerge([start, missing_part_])
             else:
-                if len(stem.path.coords) > 2 and len(stems0.path.coords) == 2:
-                    start = LineString(stem.path.coords[:-1])
-                    new_path = linemerge([start, missing_part_])
+                if has_length_2 and len(stems0.path.coords) > 2:
+                    end = LineString(stems0.path.coords[1:])
+                    new_path = linemerge([missing_part_, end])
                 else:
-                    if has_length_2 and len(stems0.path.coords) > 2:
-                        end = LineString(stems0.path.coords[1:])
-                        new_path = linemerge([missing_part_, end])
-                    else:
-                        if (has_length_2 and len(
-                                stems0.path.coords) == 2):
-                            new_path = missing_part_
+                    if has_length_2 and len(stems0.path.coords) == 2:
+                        new_path = missing_part_
 
+        gap = stem.stop.distance(stems0.start)
+        merged_length = new_path.length
+        merged_span = stem.start.distance(stems0.stop)
+
+        if (
+                gap <= max_distance
+                and ang_el_sp_l_st <= tolerance_angle
+                and ang_el_sp_mp <= tolerance_angle
+                and ang_mp_l_st <= tolerance_angle
+                and merged_length <= max_tree_height
+                and merged_span <= max_tree_height):
             change = True
             candidate = _clone_stem(stems0)
             candidate.path = new_path
             candidate.start = stem.start
             slave = stem
-            vote = calc_vote(ang_el_sp_l_st, ang_el_sp_mp, ang_mp_l_st,
-                             candidate, stems0, stem, tolerance_angle)
+            vote = calc_vote(
+                ang_el_sp_l_st,
+                ang_el_sp_mp,
+                ang_mp_l_st,
+                candidate,
+                stems0,
+                stem,
+                tolerance_angle,
+            )
             candidates.append(candidate)
             votes.append(vote)
             slaves.append(slave)
