@@ -89,6 +89,7 @@ class Config(object):
     # tile/vector export behavior
     write_tile_nodes_vectors = False
     write_tile_stems_only = True
+    tiled_merge_mode = "edge_only"      # edge_only | partitioned
 
     # direction confidence bands
     direction_confidence_high = 0.75
