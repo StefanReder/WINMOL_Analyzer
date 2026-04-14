@@ -8,7 +8,7 @@ class Config(object):
     prediction_prefetch = 2
     producer_queue_batches = 12
     prediction_producer_workers_cpu = 1
-    prediction_producer_workers_gpu = 3
+    prediction_producer_workers_gpu = 6
     prediction_producer_workers_multi_gpu = 6
 
     # resources
