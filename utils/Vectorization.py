@@ -486,11 +486,11 @@ def build_stem_parts(segments: List[Part]):
             segments[i].start = segments[i].stop
             segments[i].stop = h
             segments[i].path.reverse()
-        else:
-            h = segments[i].start
-            segments[i].start = segments[i].stop
-            segments[i].stop = h
-            segments[i].path.reverse()
+     #   else:
+     #       h = segments[i].start
+     #       segments[i].start = segments[i].stop
+     #       segments[i].stop = h
+     #       segments[i].path.reverse()
     segments = set(segments)
     for seg in segments:
         stem = Stem(Point(seg.start), Point(seg.stop), LineString(seg.path), [],
