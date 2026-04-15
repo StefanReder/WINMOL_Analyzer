@@ -884,6 +884,99 @@ def _tile_id_from_prefix(prefix):
     return prefix
 
 
+def _default_output_gpkg(
+    work_dir,
+    output_gpkg=None,
+    input_raster_path=None,
+    stem_map_path=None,
+):
+    if output_gpkg:
+        out_path = Path(output_gpkg)
+        if out_path.suffix.lower() != ".gpkg":
+            out_path = out_path.with_suffix(".gpkg")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        return str(out_path)
+
+    base = "winmol_merged"
+    if input_raster_path:
+        try:
+            base = Path(input_raster_path).stem
+        except Exception:
+            base = "winmol_merged"
+
+    out_dir = Path(stem_map_path).parent if stem_map_path else Path(work_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return str(out_dir / f"{base}.gpkg")
+
+
+def _remove_existing_output(output_gpkg):
+    if not output_gpkg:
+        return
+    base = Path(output_gpkg)
+    for ext in ("", "-wal", "-shm", ".gpkg-journal"):
+        candidate = Path(str(base) + ext) if ext.startswith('-') else Path(str(base) + ext)
+        try:
+            if candidate.exists():
+                candidate.unlink()
+        except Exception:
+            pass
+
+
+def _ensure_crs(gdf, target_crs):
+    if gdf is None or gdf.empty or target_crs is None:
+        return gdf
+    try:
+        if gdf.crs is None:
+            gdf = gdf.set_crs(target_crs, allow_override=True)
+            return gdf
+        if str(gdf.crs) != str(target_crs):
+            return gdf.to_crs(target_crs)
+    except Exception:
+        return gdf
+    return gdf
+
+
+def _detect_tiles(work_dir, output_gpkg=None):
+    root = Path(work_dir)
+    output_path = Path(output_gpkg).resolve() if output_gpkg else None
+    gpkg_paths = sorted(root.rglob('*.gpkg'))
+    tiles = []
+    for gpkg_path in gpkg_paths:
+        try:
+            if output_path is not None and gpkg_path.resolve() == output_path:
+                continue
+        except Exception:
+            pass
+        prefix = gpkg_path.stem
+        raster_path = gpkg_path.with_name(f"{prefix}_roi_stem_map.tif")
+        if not raster_path.exists():
+            alt = root / f"{prefix}_roi_stem_map.tif"
+            raster_path = alt if alt.exists() else None
+        tiles.append((prefix, str(gpkg_path), str(raster_path) if raster_path else None))
+    return tiles
+
+
+def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
+    stems_gdf = _read_gpkg_layer(gpkg_path, ['stems'])
+    if stems_gdf is None or stems_gdf.empty:
+        return None, target_crs
+    current_crs = target_crs
+    if current_crs is None:
+        current_crs = getattr(stems_gdf, 'crs', None)
+        if current_crs is None and raster_path:
+            try:
+                with rasterio.open(raster_path) as src:
+                    current_crs = src.crs
+            except Exception:
+                current_crs = None
+    stems_gdf = _ensure_crs(stems_gdf, current_crs)
+    if 'tile_id' not in stems_gdf.columns:
+        stems_gdf['tile_id'] = _tile_id_from_prefix(prefix)
+    if 'src_tile' not in stems_gdf.columns:
+        stems_gdf['src_tile'] = _tile_id_from_prefix(prefix)
+    return stems_gdf, current_crs
+
+
 def _read_gpkg_layer(gpkg_path, layer_names):
     errors = []
     for ln in layer_names:
@@ -1521,107 +1614,22 @@ def _stitch_partition_border_pair_star(args):
     return stitch_partition_border_pair(*args)
 
 
-def _default_output_gpkg(work_dir, output_gpkg):
-    if output_gpkg is not None:
-        return output_gpkg
-    folder = os.path.basename(os.path.normpath(work_dir))
-    return os.path.join(work_dir, f"{folder}_merged_data.gpkg")
-
-
-def _remove_existing_output(path):
-    if not os.path.exists(path):
-        return
-    try:
-        os.remove(path)
-    except PermissionError:
-        print(
-            f"MERGE OUTPUT LOCKED | keeping existing file and writing fallback if needed: {path}",
-            flush=True,
-        )
-
-
-def _ensure_crs(gdf, target_crs):
-    if gdf is None or gdf.empty:
-        return gpd.GeoDataFrame()
-    if target_crs is None:
-        return gdf
-    if gdf.crs is None:
-        gdf = gdf.copy()
-        gdf.set_crs(target_crs, inplace=True)
-        return gdf
-    if gdf.crs != target_crs:
-        return gdf.to_crs(target_crs)
-    return gdf
-
-
-def _detect_tiles(work_dir, output_gpkg):
-    rasters = [
-        f
-        for f in os.listdir(work_dir)
-        if f.lower().endswith((".tif", ".tiff")) and "_roi_stem_map" in f
-    ]
-
-    tiles = []
-    work_dir_path = Path(work_dir)
-
-    if rasters:
-        for rf in sorted(rasters):
-            prefix = rf
-            for ext in ("_roi_stem_map.tif", "_roi_stem_map.tiff"):
-                if rf.endswith(ext):
-                    prefix = rf.replace(ext, "")
-                    break
-
-            gpkg = sorted(
-                str(p) for p in work_dir_path.rglob(f"{prefix}*.gpkg")
-            )
-            if not gpkg:
-                continue
-
-            if len(gpkg) > 1:
-                raise RuntimeError(
-                    f"Multiple GPKG candidates found for tile '{prefix}': {gpkg}"
-                )
-
-            tiles.append((prefix, gpkg[0], os.path.join(work_dir, rf)))
-
-        return tiles
-
-
-def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
-    tile_id = _tile_id_from_prefix(prefix)
-
-    filter_geom, raster_crs = _raster_filter_geom(raster_path, edge_buffer_m)
-
-    stems = _read_tile_stems_gpkg(gpkg_path)
-    print(
-        f"MERGE TILE READ | tile {tile_id} | file {gpkg_path} | stems {0 if stems is None else len(stems)} | raster {raster_path}",
-        flush=True,
-    )
-    if stems is None or stems.empty:
-        return None, target_crs
-
-    if target_crs is None:
-        target_crs = stems.crs or raster_crs
-
-    stems = _ensure_crs(stems, target_crs)
-    stems, _kept_local = _globalize_stems(stems, tile_id, filter_geom)
-    if stems.empty:
-        return None, target_crs
-    stems['source_tile_id'] = tile_id
-    return stems, target_crs
-
 def merge_and_filter_tiled_results(
     work_dir: str,
     output_gpkg: str | None = None,
     edge_buffer_m: float = 1.0,
     config=None,
     stem_map_path: str | None = None,
+    input_raster_path: str | None = None,
 ):
     merge_total_t0 = time.perf_counter()
     work_dir = os.path.abspath(work_dir)
-    output_gpkg = _default_output_gpkg(work_dir=work_dir,
-                                       output_gpkg=output_gpkg)
+    output_gpkg = _default_output_gpkg(
+        work_dir=work_dir,
+        output_gpkg=output_gpkg,
+        input_raster_path=input_raster_path,
+        stem_map_path=stem_map_path,
+    )
 
     _remove_existing_output(output_gpkg)
 

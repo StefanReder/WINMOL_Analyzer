@@ -239,8 +239,10 @@ class ImageProcessing:
             raise
 
     def run_merge_phase(self, plan, work_dir):
-        out_path = self.trees_path if self.trees_path.lower().endswith(
-            '.gpkg') else f"{self.trees_path}.gpkg"
+        out_path = None
+        if self.trees_path:
+            out_path = self.trees_path if self.trees_path.lower().endswith(
+                '.gpkg') else f"{self.trees_path}.gpkg"
         edge_buffer_m = getattr(self.config, 'tiled_merge_edge_buffer_m', None)
         if edge_buffer_m in (None, ''):
             edge_buffer_m = min(
@@ -254,6 +256,8 @@ class ImageProcessing:
             output_gpkg=out_path,
             edge_buffer_m=edge_buffer_m,
             config=self.config,
+            stem_map_path=self.stem_path,
+            input_raster_path=self.uav_path,
         )
 
     def run_stem_pipeline(self, plan):
