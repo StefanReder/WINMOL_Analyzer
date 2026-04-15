@@ -15,6 +15,7 @@ import rasterio
 import geopandas as gpd
 import fiona
 import pandas as pd
+import time
 try:
     import pyogrio
     _HAVE_PYOGRIO = True
@@ -1675,7 +1676,8 @@ def merge_and_filter_tiled_results(
         [final_nodes_gdf] if final_nodes_gdf is not None and not final_nodes_gdf.empty else [],
         [final_vectors_gdf] if final_vectors_gdf is not None and not final_vectors_gdf.empty else [],
     )
-
+    write_s = time.perf_counter() - write_t0
+    
     written_layers = []
     try:
         written_layers = list(fiona.listlayers(written_gpkg))
