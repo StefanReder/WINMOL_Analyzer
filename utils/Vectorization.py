@@ -64,15 +64,9 @@ def _clone_stem(stem: Stem) -> Stem:
 
 
 def _direction_variants(stem: Stem, config=None):
-    primary = _clone_stem(stem)
-    conf = float(getattr(stem, 'direction_confidence', 0.0) or 0.0)
-    try:
-        low = float(getattr(config, 'direction_confidence_low', 0.35))
-    except Exception:
-        low = 0.35
-    if conf <= low or Quant.is_direction_ambiguous(stem, config=config):
-        return [primary, Quant.reverse_stem_profile(_clone_stem(stem))]
-    return [primary]
+    # Direction is used as a soft ranking signal only. It must not expand the
+    # candidate space during matching.
+    return [_clone_stem(stem)]
 
 
 def _contributors_of(stem: Stem):
@@ -141,6 +135,78 @@ def _stem_end_lines(stem: Stem):
     line_start = LineString([coords[0], coords[start_idx]])
     line_stop = LineString([coords[stop_idx], coords[-1]])
     return line_start, line_stop
+
+
+def _distance_scaled_angle_limit(gap, max_distance, tolerance_angle):
+    denom = max(epsilon, 3.0 + float(max_distance) - float(gap))
+    dist_f = 1.0 - (1.0 / denom) ** 0.5
+    return max(epsilon, float(tolerance_angle) * dist_f)
+
+
+def _angle_similarity_score(angle_value, angle_limit):
+    if angle_limit <= epsilon:
+        return 0.0
+    score = 1.0 - (float(angle_value) / float(angle_limit))
+    return max(0.0, min(1.0, score))
+
+
+def _stem_endpoint_diameter(stem: Stem, endpoint: str):
+    diams = list(getattr(stem, 'segment_diameter_list', []) or [])
+    if not diams:
+        return None
+    try:
+        if endpoint == 'start':
+            value = float(diams[0])
+        else:
+            value = float(diams[-1])
+    except Exception:
+        return None
+    if not np.isfinite(value):
+        return None
+    return value
+
+
+def _direction_soft_bonus(stem_a: Stem, stem_b: Stem,
+                          ang_1, ang_2, angle_limit,
+                          config=None):
+    try:
+        weight = float(getattr(config, 'direction_soft_weight', 0.2))
+    except Exception:
+        weight = 0.2
+    conf_a = float(getattr(stem_a, 'direction_confidence', 0.0) or 0.0)
+    conf_b = float(getattr(stem_b, 'direction_confidence', 0.0) or 0.0)
+    conf = max(0.0, min(1.0, min(conf_a, conf_b)))
+    if conf <= 0.0:
+        return 0.0
+    align = 0.5 * (
+        _angle_similarity_score(ang_1, angle_limit)
+        + _angle_similarity_score(ang_2, angle_limit)
+    )
+    return weight * conf * align
+
+
+def _diameter_soft_bonus(lower_diam, upper_diam, config=None):
+    if lower_diam is None or upper_diam is None:
+        return 0.0
+    try:
+        lower = float(lower_diam)
+        upper = float(upper_diam)
+    except Exception:
+        return 0.0
+    if not np.isfinite(lower) or not np.isfinite(upper):
+        return 0.0
+    try:
+        weight = float(getattr(config, 'diameter_soft_weight', 0.1))
+    except Exception:
+        weight = 0.1
+    try:
+        scale = float(getattr(config, 'diameter_soft_scale_m', 0.05))
+    except Exception:
+        scale = 0.05
+    scale = max(scale, epsilon)
+    delta = lower - upper
+    norm = max(-1.0, min(1.0, delta / scale))
+    return weight * norm
 
 
 def _query_tree_indices(tree: STRtree, geom, fallback_geoms=None):
@@ -345,51 +411,73 @@ def calc_connectivity_votes(
     ang_el_sp_l_st = abs(ang(e_line_stop.coords, line_start.coords))
 
     gap_forward = stems0.stop.distance(stem.start)
-    if end_buffer.contains(stem.start) and ang_l_sp_el_st <= tolerance_angle:
+    if end_buffer.contains(stem.start):
         bridge = LineString([stems0.stop.coords[0], stem.start.coords[0]])
         ang_l_sp_mp = abs(ang(line_stop.coords, bridge.coords))
         ang_mp_el_st = abs(ang(bridge.coords, e_line_start.coords))
+        angle_limit_fwd = _distance_scaled_angle_limit(
+            gap_forward, max_distance, tolerance_angle)
         new_path = _build_join_path(stems0, stem)
         if new_path is not None:
             merged_length = new_path.length
             merged_span = Point(new_path.coords[0]).distance(Point(new_path.coords[-1]))
             if (
                 gap_forward <= max_distance
-                and ang_l_sp_el_st <= tolerance_angle
-                and ang_l_sp_mp <= tolerance_angle
-                and ang_mp_el_st <= tolerance_angle
+                and ang_l_sp_el_st <= angle_limit_fwd
+                and ang_l_sp_mp <= angle_limit_fwd
+                and ang_mp_el_st <= angle_limit_fwd
                 and merged_length <= max_tree_height
                 and merged_span <= max_tree_height
             ):
                 change = True
                 candidate = _merged_candidate_stub(stems0, stem, new_path)
-                vote = calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st,
-                                 candidate, stem, stems0, tolerance_angle)
+                vote = calc_vote(
+                    ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st,
+                    candidate, stem, stems0, angle_limit_fwd,
+                    direction_bonus=_direction_soft_bonus(
+                        stems0, stem, ang_l_sp_mp, ang_mp_el_st,
+                        angle_limit_fwd, config=config),
+                    diameter_bonus=_diameter_soft_bonus(
+                        _stem_endpoint_diameter(stem, 'start'),
+                        _stem_endpoint_diameter(stems0, 'stop'),
+                        config=config),
+                )
                 candidates.append(candidate)
                 votes.append(vote)
                 slaves.append(stem)
 
     gap_reverse = stem.stop.distance(stems0.start)
-    if start_buffer.contains(stem.stop) and ang_el_sp_l_st <= tolerance_angle:
+    if start_buffer.contains(stem.stop):
         bridge = LineString([stem.stop.coords[0], stems0.start.coords[0]])
         ang_el_sp_mp = abs(ang(e_line_stop.coords, bridge.coords))
         ang_mp_l_st = abs(ang(bridge.coords, line_start.coords))
+        angle_limit_rev = _distance_scaled_angle_limit(
+            gap_reverse, max_distance, tolerance_angle)
         new_path = _build_join_path(stem, stems0)
         if new_path is not None:
             merged_length = new_path.length
             merged_span = Point(new_path.coords[0]).distance(Point(new_path.coords[-1]))
             if (
                 gap_reverse <= max_distance
-                and ang_el_sp_l_st <= tolerance_angle
-                and ang_el_sp_mp <= tolerance_angle
-                and ang_mp_l_st <= tolerance_angle
+                and ang_el_sp_l_st <= angle_limit_rev
+                and ang_el_sp_mp <= angle_limit_rev
+                and ang_mp_l_st <= angle_limit_rev
                 and merged_length <= max_tree_height
                 and merged_span <= max_tree_height
             ):
                 change = True
                 candidate = _merged_candidate_stub(stem, stems0, new_path)
-                vote = calc_vote(ang_el_sp_l_st, ang_el_sp_mp, ang_mp_l_st,
-                                 candidate, stems0, stem, tolerance_angle)
+                vote = calc_vote(
+                    ang_el_sp_l_st, ang_el_sp_mp, ang_mp_l_st,
+                    candidate, stems0, stem, angle_limit_rev,
+                    direction_bonus=_direction_soft_bonus(
+                        stem, stems0, ang_el_sp_mp, ang_mp_l_st,
+                        angle_limit_rev, config=config),
+                    diameter_bonus=_diameter_soft_bonus(
+                        _stem_endpoint_diameter(stems0, 'start'),
+                        _stem_endpoint_diameter(stem, 'stop'),
+                        config=config),
+                )
                 candidates.append(candidate)
                 votes.append(vote)
                 slaves.append(stem)
@@ -402,13 +490,16 @@ def calc_connectivity_votes(
 
 # calculate vote
 def calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st, candidate, stem,
-              stems0, tolerance_angle):
-    return (
+              stems0, tolerance_angle, direction_bonus=0.0,
+              diameter_bonus=0.0):
+    base_vote = (
         ((1 + ang_l_sp_el_st + ang_l_sp_mp + ang_mp_el_st) / max(tolerance_angle, epsilon)) *
         candidate.start.distance(candidate.stop) ** 2
         + stems0.stop.distance(stem.start) ** 2 *
         (1 + ang_l_sp_el_st + ang_l_sp_mp + ang_mp_el_st) / max(tolerance_angle, epsilon)
     )
+    soft_bonus = float(direction_bonus or 0.0) + float(diameter_bonus or 0.0)
+    return base_vote / max(1.0 + soft_bonus, epsilon)
 
 
 # - Helper functions vector operations -
