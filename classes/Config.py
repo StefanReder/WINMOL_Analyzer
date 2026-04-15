@@ -83,6 +83,7 @@ class Config(object):
     vector_partition_overlap_m = None
     vector_partition_border_band_m = None
     vector_partition_workers = 1
+    tiled_merge_edge_buffer_m = None
     partition_connect_second_pass = True
     partition_dedup_buffer_m = 0.02
 

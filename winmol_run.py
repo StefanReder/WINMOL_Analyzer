@@ -177,6 +177,7 @@ class ImageProcessing:
         work_dir = tempfile.mkdtemp(
             prefix='winmol_tiles_',
             dir=os.path.dirname(self.trees_path) or None)
+        pipeline_t0 = time.perf_counter()
         try:
             raster_info = IO.get_raster_info(pred_path or self.stem_path)
             halo_px = meters_to_pixels(
@@ -190,6 +191,7 @@ class ImageProcessing:
                 plan.tile_inner_px,
                 halo_px,
             )
+            prep_t0 = time.perf_counter()
             tile_paths = []
             for job in jobs:
                 pred_tile, tile_profile = IO.load_raster_window_with_profile(
@@ -198,8 +200,14 @@ class ImageProcessing:
                     work_dir, f"{job.tile_id}_roi_stem_map.tif")
                 IO.write_tile_raster(pred_tile, tile_profile, tile_path)
                 tile_paths.append(tile_path)
+            prep_s = time.perf_counter() - prep_t0
+            print(
+                f"VECTOR PREP | tiles {len(tile_paths)} | halo_px {halo_px} | prep_s {prep_s:.3f}",
+                flush=True,
+            )
             from utils.VectorTilePipeline import process_prediction_tiles
 
+            vector_t0 = time.perf_counter()
             process_prediction_tiles(
                 tile_paths,
                 self.config,
@@ -207,7 +215,18 @@ class ImageProcessing:
                 work_dir,
                 plan.vector_inner_workers,
             )
+            vector_tiles_s = time.perf_counter() - vector_t0
+            print(f"VECTOR TILE PHASE | wall_s {vector_tiles_s:.3f}", flush=True)
+
+            merge_t0 = time.perf_counter()
             merged = self.run_merge_phase(plan, work_dir)
+            merge_s = time.perf_counter() - merge_t0
+            total_s = time.perf_counter() - pipeline_t0
+            print(
+                f"VECTOR PIPELINE TOTAL | prep_s {prep_s:.3f} | tile_phase_s {vector_tiles_s:.3f} | "
+                f"merge_s {merge_s:.3f} | total_s {total_s:.3f}",
+                flush=True,
+            )
             if plan.keep_temp:
                 print(f"Keeping tile work directory: {work_dir}")
             else:
@@ -221,10 +240,18 @@ class ImageProcessing:
     def run_merge_phase(self, plan, work_dir):
         out_path = self.trees_path if self.trees_path.lower().endswith(
             '.gpkg') else f"{self.trees_path}.gpkg"
+        edge_buffer_m = getattr(self.config, 'tiled_merge_edge_buffer_m', None)
+        if edge_buffer_m in (None, ''):
+            edge_buffer_m = min(
+                float(plan.tile_overlap_m),
+                float(getattr(self.config, 'max_distance', 8.0)) +
+                2.0 * float(getattr(self.config, 'measuring_point_spacing_m', 0.5)),
+            )
+        print(f"MERGE CONFIG | edge_buffer_m {edge_buffer_m}", flush=True)
         return IO.merge_and_filter_tiled_results(
             work_dir=work_dir,
             output_gpkg=out_path,
-            edge_buffer_m=plan.tile_overlap_m,
+            edge_buffer_m=edge_buffer_m,
             config=self.config,
         )
 

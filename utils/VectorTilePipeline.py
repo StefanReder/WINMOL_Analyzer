@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 
@@ -194,32 +195,117 @@ def process_prediction_tiles(
     cpu_workers: int,
 ):
     os.makedirs(output_dir, exist_ok=True)
-    total_workers = \
-        max(1, int(cpu_workers or getattr(config, 'cpu_workers', 1) or 1))
-    inner_workers = total_workers
+    total_workers = max(1, int(cpu_workers or getattr(config, 'cpu_workers', 1) or 1))
+    requested_outer = int(getattr(config, 'vector_tile_workers', 1) or 1)
+    if requested_outer <= 1:
+        if total_workers >= 36:
+            requested_outer = 6
+        elif total_workers >= 24:
+            requested_outer = 4
+        elif total_workers >= 12:
+            requested_outer = 2
+        else:
+            requested_outer = 1
+    outer_workers = max(1, min(len(pred_tile_paths), requested_outer))
+    inner_workers = max(1, total_workers // max(outer_workers, 1))
     progress_interval_s = float(getattr(config, 'progress_interval_s', 60.0))
 
     tasks = []
     for pred_tile_path in pred_tile_paths:
-        name = os.path.splitext(os.path.basename(
-            pred_tile_path))[0].replace('_roi_stem_map', '')
+        name = os.path.splitext(os.path.basename(pred_tile_path))[0].replace('_roi_stem_map', '')
         output_prefix = os.path.join(output_dir, name)
         tile_cfg = _clone_config(
-            config, cpu_workers=inner_workers, vector_tile_workers=1)
+            config,
+            cpu_workers=inner_workers,
+            vector_tile_workers=1,
+        )
         tasks.append((pred_tile_path, tile_cfg, process_type, output_prefix))
+
+    print(
+        f'VECTOR SCHEDULER | tiles {len(tasks)} | outer_workers {outer_workers} | '
+        f'inner_workers {inner_workers} | cpu_budget {total_workers}',
+        flush=True,
+    )
 
     start = time.monotonic()
     last_report = start
-    results = []
+    completed = 0
+    results = [None] * len(tasks)
 
-    for idx, task in enumerate(tasks, start=1):
-        results.append(_process_prediction_tile_star(task))
-        now = time.monotonic()
-        if idx == len(tasks) or (now - last_report) >= progress_interval_s:
-            rate = idx / max(now - start, 1e-9)
-            eta = (len(tasks) - idx) / rate if rate > 0 else float('inf')
-            print(f"Vector tiles {idx}/{len(tasks)} | "
-                  f"{idx / len(tasks):.1%} | {rate * 60:.2f} tiles/min "
-                  f"| ETA {eta / 60:.1f} min", flush=True)
-            last_report = now
+    def _emit_progress(now_ts):
+        rate = completed / max(now_ts - start, 1e-9)
+        eta = (len(tasks) - completed) / rate if rate > 0 else float('inf')
+        print(
+            f"Vector tiles {completed}/{len(tasks)} | {completed / max(len(tasks), 1):.1%} | "
+            f"{rate * 60:.2f} tiles/min | ETA {eta / 60:.1f} min",
+            flush=True,
+        )
+
+    if outer_workers <= 1:
+        for idx, task in enumerate(tasks, start=1):
+            results[idx - 1] = _process_prediction_tile_star(task)
+            completed = idx
+            now = time.monotonic()
+            if idx == len(tasks) or (now - last_report) >= progress_interval_s:
+                _emit_progress(now)
+                last_report = now
+    else:
+        with ThreadPoolExecutor(max_workers=outer_workers) as executor:
+            future_to_idx = {
+                executor.submit(_process_prediction_tile_star, task): idx
+                for idx, task in enumerate(tasks)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                results[idx] = future.result()
+                completed += 1
+                now = time.monotonic()
+                if completed == len(tasks) or (now - last_report) >= progress_interval_s:
+                    _emit_progress(now)
+                    last_report = now
+
+    wall_s = time.monotonic() - start
+    valid_results = [r for r in results if r]
+    tiles_with_output = sum(1 for r in valid_results if r.get('gpkg_path'))
+    total_fg = sum(int(r.get('fg_count', 0) or 0) for r in valid_results)
+    total_segments = sum(int(r.get('segment_count', 0) or 0) for r in valid_results)
+    total_stems = sum(int(r.get('stem_count', 0) or 0) for r in valid_results)
+    timings = {
+        'skel_s': 0.0,
+        'restore_s': 0.0,
+        'build_s': 0.0,
+        'connect_s': 0.0,
+        'quant_s': 0.0,
+        'write_s': 0.0,
+        'total_s': 0.0,
+    }
+    for result in valid_results:
+        for key in timings:
+            timings[key] += float(result.get('timings', {}).get(key, 0.0) or 0.0)
+
+    denom = max(len(valid_results), 1)
+    print(
+        f'VECTOR SUMMARY | tiles_total {len(tasks)} | completed {completed} | '
+        f'tiles_with_output {tiles_with_output} | fg_total {total_fg} | '
+        f'segments_total {total_segments} | stems_total {total_stems}',
+        flush=True,
+    )
+    print(
+        f'VECTOR STEP TOTALS | skel_s {timings["skel_s"]:.3f} | restore_s {timings["restore_s"]:.3f} | '
+        f'build_s {timings["build_s"]:.3f} | connect_s {timings["connect_s"]:.3f} | '
+        f'quant_s {timings["quant_s"]:.3f} | write_s {timings["write_s"]:.3f} | '
+        f'total_s {timings["total_s"]:.3f}',
+        flush=True,
+    )
+    print(
+        f'VECTOR STEP AVGS | skel_s {timings["skel_s"] / denom:.3f} | restore_s {timings["restore_s"] / denom:.3f} | '
+        f'build_s {timings["build_s"] / denom:.3f} | connect_s {timings["connect_s"] / denom:.3f} | '
+        f'quant_s {timings["quant_s"] / denom:.3f} | write_s {timings["write_s"] / denom:.3f} | '
+        f'total_s {timings["total_s"] / denom:.3f}',
+        flush=True,
+    )
+    print(
+        f'VECTOR WALL | outer_workers {outer_workers} | inner_workers {inner_workers} | wall_s {wall_s:.3f}',
+        flush=True,
+    )
     return results

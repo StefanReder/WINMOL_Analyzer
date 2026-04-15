@@ -1527,6 +1527,7 @@ def merge_and_filter_tiled_results(
     config=None,
     stem_map_path: str | None = None,
 ):
+    merge_total_t0 = time.perf_counter()
     work_dir = os.path.abspath(work_dir)
     output_gpkg = _default_output_gpkg(work_dir, output_gpkg)
 
@@ -1551,6 +1552,7 @@ def merge_and_filter_tiled_results(
     target_crs = None
     tile_count = 0
 
+    tile_scan_t0 = time.perf_counter()
     for prefix, gpkg_path, raster_path in tiles:
         out, target_crs = _process_tile(
             prefix,
@@ -1563,6 +1565,7 @@ def merge_and_filter_tiled_results(
             continue
         merged_stems.append(out)
         tile_count += 1
+    tile_scan_s = time.perf_counter() - tile_scan_t0
 
     if not merged_stems:
         print("")
@@ -1572,6 +1575,7 @@ def merge_and_filter_tiled_results(
         print("Total nodes written:   0")
         print("Total vectors written: 0")
         print(f"No output GPKG created: {output_gpkg} (0 features written)")
+        print(f"MERGE TIMINGS | tile_scan_s {tile_scan_s:.3f} | recon_s 0.000 | write_s 0.000 | total_s {time.perf_counter() - merge_total_t0:.3f}", flush=True)
         return output_gpkg
 
     merge_mode = str(getattr(config, 'tiled_merge_mode', 'edge_only') or 'edge_only').lower()
@@ -1614,7 +1618,16 @@ def merge_and_filter_tiled_results(
             for task in border_tasks:
                 border_outputs.append(_stitch_partition_border_pair_star((task, config, metadata)))
 
-        written_gpkg = finalize_partitioned_stems(core_outputs, border_outputs, output_gpkg, config, target_crs or metadata.get('crs'))
+        recon_t0 = time.perf_counter()
+        written_gpkg = finalize_partitioned_stems(
+            core_outputs,
+            border_outputs,
+            output_gpkg,
+            config,
+            target_crs or metadata.get('crs'),
+        )
+        recon_s = time.perf_counter() - recon_t0
+
         written_layers = []
         try:
             written_layers = list(fiona.listlayers(written_gpkg))
@@ -1638,8 +1651,13 @@ def merge_and_filter_tiled_results(
         print(f"Total vectors written: {0 if final_vectors is None else len(final_vectors)}")
         print(f"Layers written:        {written_layers}")
         print(f"Output saved to: {written_gpkg}")
+        print(
+            f"MERGE TIMINGS | tile_scan_s {tile_scan_s:.3f} | recon_s {recon_s:.3f} | write_s 0.000 | total_s {time.perf_counter() - merge_total_t0:.3f}",
+            flush=True,
+        )
         return written_gpkg
 
+    recon_t0 = time.perf_counter()
     final_stems_gdf, final_nodes_gdf, final_vectors_gdf = _reconstruct_edge_stems_for_tiled_merge(
         merged_stems=merged_stems,
         tiles=tiles,
@@ -1648,7 +1666,9 @@ def merge_and_filter_tiled_results(
         config=config,
         stem_map_path=stem_map_path,
     )
+    recon_s = time.perf_counter() - recon_t0
 
+    write_t0 = time.perf_counter()
     written_gpkg = _write_merged(
         output_gpkg,
         [final_stems_gdf] if final_stems_gdf is not None and not final_stems_gdf.empty else [],
@@ -1678,4 +1698,5 @@ def merge_and_filter_tiled_results(
     print(f"Total vectors written: {0 if final_vectors is None else len(final_vectors)}")
     print(f"Layers written:        {written_layers}")
     print(f"Output saved to: {written_gpkg}")
+    print(f"MERGE TIMINGS | tile_scan_s {tile_scan_s:.3f} | recon_s {recon_s:.3f} | write_s {write_s:.3f} | total_s {time.perf_counter() - merge_total_t0:.3f}", flush=True)
     return written_gpkg
