@@ -1,7 +1,24 @@
 #!/usr/bin/env python
 
 ################################################################################
-"""Imports"""
+"""Clean vector operations for stem connection.
+
+This version implements:
+- explicit endpoint-in-buffer candidate generation only
+- all 4 endpoint cases:
+    start->start, start->end, end->start, end->end
+- one hard local antiparallel filter using:
+    v_stem               [base endpoint -> base interior]
+    v_stem_bridge        [base endpoint -> candidate endpoint]
+    v_candidate_bridge   [candidate endpoint -> base endpoint]
+    v_candidate          [candidate endpoint -> candidate interior]
+  with all three angles tested near 180 degrees using:
+    tolerance_angle * dist_f
+    dist_f = 1 - (1 / (3 + max_distance - gap)) ** 0.5
+- unchanged vote function
+- best non-conflicting matches accepted per cycle
+- no self-connections
+"""
 
 import math
 import multiprocessing as mp
@@ -9,7 +26,6 @@ from typing import List, Sequence, Set
 
 import numpy as np
 from shapely.geometry import LineString, Point
-from shapely.ops import linemerge
 from shapely.strtree import STRtree
 
 from classes.Part import Part
@@ -27,8 +43,7 @@ def _worker_count(config=None):
     if proc.name != "MainProcess":
         return 1
 
-    value = getattr(config, 'cpu_workers', None) \
-        if config is not None else None
+    value = getattr(config, 'cpu_workers', None) if config is not None else None
     if value is None:
         value = max(mp.cpu_count() - 1, 1)
     try:
@@ -54,12 +69,20 @@ def _same_stem_identity(a: Stem, b: Stem) -> bool:
     try:
         if a is b:
             return True
-        if list(a.path.coords) == list(b.path.coords):
+        a_coords = list(a.path.coords)
+        b_coords = list(b.path.coords)
+        if a_coords == b_coords:
+            return True
+        if a_coords == list(reversed(b_coords)):
             return True
         if a.start.equals(b.start) and a.stop.equals(b.stop) and a.path.equals(b.path):
             return True
-        if a.start.equals(b.stop) and a.stop.equals(b.start) and a.path.equals(LineString(list(reversed(b.path.coords)))):
-            return True
+        if a.start.equals(b.stop) and a.stop.equals(b.start):
+            try:
+                if a.path.equals(LineString(list(reversed(b.path.coords)))):
+                    return True
+            except Exception:
+                pass
     except Exception:
         pass
     return False
@@ -73,27 +96,155 @@ def _endpoint_in_buffer(stem: Stem, endpoint_name: str, buffer_geom) -> bool:
         return buffer_geom.contains(point)
 
 
-def _orient_stem_for_candidate(stem: Stem, endpoint_name: str) -> Stem:
+def _distance_factor(gap: float, max_distance: float) -> float:
+    denom = max(epsilon, 3.0 + max_distance - gap)
+    return 1.0 - (1.0 / denom) ** 0.5
+
+
+def _safe_linestring(coords):
+    coords = list(coords)
+    if len(coords) >= 2:
+        for i in range(1, len(coords)):
+            if coords[i] != coords[0]:
+                return LineString(coords)
+    if not coords:
+        coords = [(0.0, 0.0), (0.0, 0.0)]
+    elif len(coords) == 1:
+        coords = [coords[0], coords[0]]
+    else:
+        coords = [coords[0], coords[0]]
+    return LineString(coords)
+
+
+def _first_distinct_from_start(coords):
+    p0 = coords[0]
+    for i in range(1, len(coords)):
+        if coords[i] != p0:
+            return coords[i]
+    return coords[-1]
+
+
+def _first_distinct_from_end(coords):
+    p0 = coords[-1]
+    for i in range(len(coords) - 2, -1, -1):
+        if coords[i] != p0:
+            return coords[i]
+    return coords[0]
+
+
+def _stem_endpoint_vector(stem: Stem, endpoint_name: str) -> LineString:
     coords = list(stem.path.coords)
-    if endpoint_name == 'end' or endpoint_name == 'stop':
+    if len(coords) < 2:
+        p0 = stem.start.coords[0]
+        p1 = stem.stop.coords[0]
+        return _safe_linestring([p0, p1])
+
+    if endpoint_name == 'start':
+        p0 = coords[0]
+        p1 = _first_distinct_from_start(coords)
+    else:
+        p0 = coords[-1]
+        p1 = _first_distinct_from_end(coords)
+    return _safe_linestring([p0, p1])
+
+
+def _orient_stem_for_base(stem: Stem, endpoint_name: str) -> Stem:
+    """Orient base stem so the tested endpoint becomes stop."""
+    coords = list(stem.path.coords)
+    if endpoint_name == 'start':
         coords = list(reversed(coords))
     oriented = _clone_stem(stem)
-    oriented.path = LineString(coords)
+    oriented.path = _safe_linestring(coords)
     oriented.start = Point(coords[0])
     oriented.stop = Point(coords[-1])
     return oriented
 
 
-def _stem_end_lines(stem: Stem):
-    if len(stem.path.coords) < 4:
-        line_start = LineString([stem.path.coords[0], stem.path.coords[-1]])
-        line_stop = LineString([stem.path.coords[0], stem.path.coords[-1]])
+def _orient_stem_for_candidate(stem: Stem, endpoint_name: str) -> Stem:
+    """Orient candidate stem so the tested endpoint becomes start."""
+    coords = list(stem.path.coords)
+    if endpoint_name in ('end', 'stop'):
+        coords = list(reversed(coords))
+    oriented = _clone_stem(stem)
+    oriented.path = _safe_linestring(coords)
+    oriented.start = Point(coords[0])
+    oriented.stop = Point(coords[-1])
+    return oriented
+
+
+def _merged_candidate_from_oriented(base_stem: Stem, candidate_stem: Stem) -> Stem:
+    base_coords = list(base_stem.path.coords)
+    cand_coords = list(candidate_stem.path.coords)
+
+    if not base_coords:
+        coords = cand_coords
+    elif not cand_coords:
+        coords = base_coords
+    elif base_coords[-1] == cand_coords[0]:
+        coords = base_coords + cand_coords[1:]
     else:
-        i = len(stem.path.coords) - 2 if len(stem.path.coords) < 8 else 6
-        line_start = LineString([stem.path.coords[1], stem.path.coords[i]])
-        line_stop = LineString([stem.path.coords[-(i + 1)],
-                                stem.path.coords[-2]])
-    return line_start, line_stop
+        coords = base_coords + cand_coords
+
+    new_path = _safe_linestring(coords)
+    merged = _clone_stem(base_stem)
+    merged.path = new_path
+    merged.start = Point(new_path.coords[0])
+    merged.stop = Point(new_path.coords[-1])
+    return merged
+
+
+def _passes_endpoint_gate(
+    base_oriented: Stem,
+    candidate_oriented: Stem,
+    max_distance: float,
+    tolerance_angle: float,
+):
+    """Hard local antiparallel gate for one oriented endpoint pair.
+
+    Assumes:
+    - tested base endpoint == base_oriented.stop
+    - tested candidate endpoint == candidate_oriented.start
+    """
+    if _same_stem_identity(base_oriented, candidate_oriented):
+        return False, math.inf, None, None
+
+    gap = base_oriented.stop.distance(candidate_oriented.start)
+    if gap > max_distance:
+        return False, math.inf, None, None
+
+    dist_f = _distance_factor(gap, max_distance)
+    tolerance_gate = tolerance_angle * dist_f
+
+    v_stem = _stem_endpoint_vector(base_oriented, 'end')
+    v_candidate = _stem_endpoint_vector(candidate_oriented, 'start')
+
+    base_endpoint = base_oriented.stop.coords[0]
+    cand_endpoint = candidate_oriented.start.coords[0]
+    v_stem_bridge = _safe_linestring([base_endpoint, cand_endpoint])
+    v_candidate_bridge = _safe_linestring([cand_endpoint, base_endpoint])
+
+    ang_stem_bridge = abs(180.0 - ang(v_stem.coords, v_stem_bridge.coords))
+    ang_candidate_bridge = abs(180.0 - ang(v_candidate_bridge.coords, v_candidate.coords))
+    ang_stem_candidate = abs(180.0 - ang(v_stem.coords, v_candidate.coords))
+
+    if not (
+        ang_stem_bridge < tolerance_gate
+        and ang_candidate_bridge < tolerance_gate
+        and ang_stem_candidate < tolerance_gate
+    ):
+        return False, math.inf, None, None
+
+    merged = _merged_candidate_from_oriented(base_oriented, candidate_oriented)
+    vote = calc_vote(
+        ang_stem_candidate,
+        ang_stem_bridge,
+        ang_candidate_bridge,
+        merged,
+        candidate_oriented,
+        base_oriented,
+        tolerance_angle,
+    )
+    return True, vote, merged, gap
 
 
 def _query_tree_indices(tree: STRtree, geom, fallback_geoms=None):
@@ -112,118 +263,12 @@ def _query_tree_indices(tree: STRtree, geom, fallback_geoms=None):
     return [geom_to_idx[id(g)] for g in matches if id(g) in geom_to_idx]
 
 
-def _heading_to_north_deg(p0, p1) -> float:
-    dr = float(p1[0] - p0[0])
-    dc = float(p1[1] - p0[1])
-    return math.degrees(math.atan2(dc, -dr)) % 360.0
-
-
-def _circular_diff_deg(a: float, b: float) -> float:
-    return abs(((a - b + 180.0) % 360.0) - 180.0)
-
-
-def _is_antiparallel(a: float, b: float, tolerance_deg: float) -> bool:
-    return abs(_circular_diff_deg(a, b) - 180.0) <= tolerance_deg
-
-
-def _attachment_heading(coords, attachment_idx: int, retained_side: str) -> float:
-    n = len(coords)
-    if n < 2:
-        return 0.0
-
-    if retained_side == 'prefix':
-        target_idx = attachment_idx - 1 if attachment_idx > 0 else 1
-    elif retained_side == 'suffix':
-        target_idx = attachment_idx + 1 if attachment_idx < n - 1 else n - 2
-    else:
-        raise ValueError(f"Unsupported retained_side: {retained_side}")
-
-    target_idx = min(max(target_idx, 0), n - 1)
-    if target_idx == attachment_idx:
-        if attachment_idx > 0:
-            target_idx = attachment_idx - 1
-        elif attachment_idx < n - 1:
-            target_idx = attachment_idx + 1
-        else:
-            return 0.0
-
-    return _heading_to_north_deg(coords[attachment_idx], coords[target_idx])
-
-
-def _attachment_heading_gate(
-        base_stem: Stem,
-        base_attachment_idx: int,
-        base_retained_side: str,
-        candidate_stem: Stem,
-        candidate_attachment_idx: int,
-        candidate_retained_side: str,
-        tolerance_deg: float,
-) -> bool:
-    base_coords = list(base_stem.path.coords)
-    candidate_coords = list(candidate_stem.path.coords)
-
-    base_heading = _attachment_heading(
-        base_coords,
-        base_attachment_idx,
-        base_retained_side,
-    )
-    candidate_heading = _attachment_heading(
-        candidate_coords,
-        candidate_attachment_idx,
-        candidate_retained_side,
-    )
-
-    base_point = base_coords[base_attachment_idx]
-    candidate_point = candidate_coords[candidate_attachment_idx]
-
-    if base_point == candidate_point:
-        return _is_antiparallel(base_heading, candidate_heading, tolerance_deg)
-
-    bridge_heading_at_base = _heading_to_north_deg(base_point, candidate_point)
-    bridge_heading_at_candidate = _heading_to_north_deg(
-        candidate_point,
-        base_point,
-    )
-
-    return (
-        _is_antiparallel(base_heading, candidate_heading, tolerance_deg)
-        and _is_antiparallel(base_heading, bridge_heading_at_base,
-                             tolerance_deg)
-        and _is_antiparallel(candidate_heading, bridge_heading_at_candidate,
-                             tolerance_deg)
-    )
-
-
-def _remove_duplicates_against_base(
-    cycle_stems: Sequence[Stem], remaining: Set[int], base_idx: int) \
-        -> tuple[Set[int], int]:
-    if base_idx not in remaining:
-        return remaining, 0
-    base = cycle_stems[base_idx]
-    buffer_geom = base.path.buffer(0.3)
-    to_remove = set()
-    for idx in remaining:
-        if idx == base_idx:
-            continue
-        try:
-            if buffer_geom.contains(cycle_stems[idx].path):
-                to_remove.add(idx)
-        except Exception:
-            continue
-    if to_remove:
-        remaining = set(remaining)
-        remaining.difference_update(to_remove)
-    return remaining, len(to_remove)
-
-
 ################################################################################
 """Vector operations"""
 
 
-# Spatial-index accelerated version of connect_stems
 def connect_stems(stems: List[Stem], config) -> List[Stem]:
     max_distance = config.max_distance
-    max_tree_height = config.max_tree_height
     tolerance_angle = config.tolerance_angle
 
     t = Timer()
@@ -250,92 +295,122 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
         start_tree = STRtree(start_points)
         stop_tree = STRtree(stop_points)
         remaining = set(range(len(cycle_stems)))
-        connected_stems = []
 
-        while remaining:
-            base_idx = next(iter(remaining))
+        proposals = []
+
+        for base_idx in list(remaining):
             base_stem = cycle_stems[base_idx]
+            start_buffer = base_stem.start.buffer(max_distance, resolution=32)
+            end_buffer = base_stem.stop.buffer(max_distance, resolution=32)
 
-            while True:
-                line_start, line_stop = _stem_end_lines(base_stem)
-                start_buffer = base_stem.start.buffer(
-                    max_distance, resolution=32)
-                end_buffer = base_stem.stop.buffer(
-                    max_distance, resolution=32)
+            explicit_cases = []
 
-                explicit_candidates = []
+            # Base start buffer: only explicit endpoints inside this buffer.
+            for idx in _query_tree_indices(start_tree, start_buffer, start_points):
+                if idx == base_idx or idx not in remaining:
+                    continue
+                candidate = cycle_stems[idx]
+                if _same_stem_identity(base_stem, candidate):
+                    continue
+                if _endpoint_in_buffer(candidate, 'start', start_buffer):
+                    explicit_cases.append((idx, 'start', 'start'))
 
-                # Only test explicit candidate endpoints that are actually inside
-                # the relevant base-endpoint buffer. Stems that merely cross a
-                # buffer without an endpoint in it are ignored.
-                for idx in _query_tree_indices(stop_tree, start_buffer, stop_points):
-                    if idx == base_idx or idx not in remaining:
-                        continue
-                    candidate = cycle_stems[idx]
-                    if _same_stem_identity(base_stem, candidate):
-                        continue
-                    if _endpoint_in_buffer(candidate, 'stop', start_buffer):
-                        explicit_candidates.append((idx, 'stop'))
+            for idx in _query_tree_indices(stop_tree, start_buffer, stop_points):
+                if idx == base_idx or idx not in remaining:
+                    continue
+                candidate = cycle_stems[idx]
+                if _same_stem_identity(base_stem, candidate):
+                    continue
+                if _endpoint_in_buffer(candidate, 'end', start_buffer):
+                    explicit_cases.append((idx, 'start', 'end'))
 
-                for idx in _query_tree_indices(start_tree, end_buffer, start_points):
-                    if idx == base_idx or idx not in remaining:
-                        continue
-                    candidate = cycle_stems[idx]
-                    if _same_stem_identity(base_stem, candidate):
-                        continue
-                    if _endpoint_in_buffer(candidate, 'start', end_buffer):
-                        explicit_candidates.append((idx, 'start'))
+            # Base end buffer: only explicit endpoints inside this buffer.
+            for idx in _query_tree_indices(start_tree, end_buffer, start_points):
+                if idx == base_idx or idx not in remaining:
+                    continue
+                candidate = cycle_stems[idx]
+                if _same_stem_identity(base_stem, candidate):
+                    continue
+                if _endpoint_in_buffer(candidate, 'start', end_buffer):
+                    explicit_cases.append((idx, 'end', 'start'))
 
-                # De-duplicate exact endpoint proposals while preserving order.
-                seen_explicit = set()
-                filtered_candidates = []
-                for item in explicit_candidates:
-                    if item in seen_explicit:
-                        continue
-                    seen_explicit.add(item)
-                    filtered_candidates.append(item)
+            for idx in _query_tree_indices(stop_tree, end_buffer, stop_points):
+                if idx == base_idx or idx not in remaining:
+                    continue
+                candidate = cycle_stems[idx]
+                if _same_stem_identity(base_stem, candidate):
+                    continue
+                if _endpoint_in_buffer(candidate, 'end', end_buffer):
+                    explicit_cases.append((idx, 'end', 'end'))
 
-                best_vote = math.inf
-                best_candidate = None
-                best_slave_idx = None
+            # De-duplicate exact endpoint proposals while preserving order.
+            seen = set()
+            filtered_cases = []
+            for item in explicit_cases:
+                if item in seen:
+                    continue
+                seen.add(item)
+                filtered_cases.append(item)
 
-                for idx, cand_endpoint in filtered_candidates:
-                    candidate = cycle_stems[idx]
-                    # Restrict testing to the explicit endpoint case only.
-                    candidate_oriented = (
-                        _orient_stem_for_candidate(candidate, 'end')
-                        if cand_endpoint == 'stop' else candidate
-                    )
-                    changed, vote, candidate_stem, _ = calc_connectivity_votes(
-                        base_stem,
-                        line_start,
-                        line_stop,
-                        start_buffer,
-                        end_buffer,
-                        max_distance,
-                        max_tree_height,
-                        tolerance_angle,
-                        candidate_oriented,
-                    )
-                    if changed and vote < best_vote:
-                        best_vote = vote
-                        best_candidate = candidate_stem
-                        best_slave_idx = idx
+            for idx, base_ep, cand_ep in filtered_cases:
+                candidate = cycle_stems[idx]
+                base_oriented = _orient_stem_for_base(base_stem, base_ep)
+                candidate_oriented = _orient_stem_for_candidate(candidate, cand_ep)
 
-                if best_candidate is not None and best_slave_idx is not None:
-                    base_stem = best_candidate
-                    cycle_stems[base_idx] = base_stem
-                    remaining.discard(best_slave_idx)
-                    global_change = True
-                    c_count += 1
-                    remaining, dup_removed = _remove_duplicates_against_base(
-                        cycle_stems, remaining, base_idx)
-                    duplicates_count += dup_removed
+                if _same_stem_identity(base_oriented, candidate_oriented):
                     continue
 
-                connected_stems.append(base_stem)
-                remaining.discard(base_idx)
-                break
+                changed, vote, merged, _ = calc_connectivity_votes(
+                    base_oriented,
+                    None,
+                    None,
+                    None,
+                    None,
+                    max_distance,
+                    getattr(config, 'max_tree_height', math.inf),
+                    tolerance_angle,
+                    candidate_oriented,
+                )
+                if changed:
+                    proposals.append({
+                        'base_idx': base_idx,
+                        'cand_idx': idx,
+                        'base_ep': base_ep,
+                        'cand_ep': cand_ep,
+                        'vote': vote,
+                        'merged': merged,
+                    })
+
+        proposals.sort(key=lambda x: x['vote'])
+
+        used_stems = set()
+        used_endpoints = set()
+        connected_stems = []
+
+        for proposal in proposals:
+            base_idx = proposal['base_idx']
+            cand_idx = proposal['cand_idx']
+            base_ep = proposal['base_ep']
+            cand_ep = proposal['cand_ep']
+
+            if base_idx in used_stems or cand_idx in used_stems:
+                continue
+            if (base_idx, base_ep) in used_endpoints:
+                continue
+            if (cand_idx, cand_ep) in used_endpoints:
+                continue
+
+            connected_stems.append(proposal['merged'])
+            used_stems.add(base_idx)
+            used_stems.add(cand_idx)
+            used_endpoints.add((base_idx, base_ep))
+            used_endpoints.add((cand_idx, cand_ep))
+            global_change = True
+            c_count += 1
+
+        for idx, stem in enumerate(cycle_stems):
+            if idx not in used_stems:
+                connected_stems.append(stem)
 
         stems = connected_stems
         cycle_nbr += 1
@@ -373,186 +448,21 @@ def calc_connectivity_votes(
         tolerance_angle,
         stem: Stem
 ) -> (bool, List[float], List[Stem], List[Stem]):
-    # Calculate votes for the aggregation of stem parts to stems
     if stem == stems0:
-        # if the stems are identical return no change and infinite vote
-        return False, math.inf, None, None
-    change = False
-    votes = []
-    candidates = []
-    slaves = []
-
-    if len(stem.path.coords) < 4:
-        e_line_start = LineString([stem.path.coords[0], stem.path.coords[-1]])
-        e_line_stop = LineString([stem.path.coords[0], stem.path.coords[-1]])
-    else:
-        if len(stem.path.coords) < 8:
-            k = len(stem.path.coords) - 2
-        else:
-            k = 6
-        e_line_start = LineString([stem.path.coords[1], stem.path.coords[k]])
-        e_line_stop = LineString(
-            [stem.path.coords[-(k + 1)], stem.path.coords[-2]])
-
-    ang_l_sp_el_st = abs(ang(line_stop.coords, e_line_start.coords))
-    ang_el_sp_l_st = abs(ang(e_line_stop.coords, line_start.coords))
-
-    has_length_2 = len(stem.path.coords) == 2
-
-    if end_buffer.contains(stem.start):
-        base_attach_idx = max(len(stems0.path.coords) - 2, 0)
-        candidate_attach_idx = 1 if len(stem.path.coords) > 1 else 0
-        missing_part_ = LineString(
-            [stems0.path.coords[base_attach_idx],
-             stem.path.coords[candidate_attach_idx]]
-        )
-        gap = stems0.stop.distance(stem.start)
-        dist_f = 1 - (
-            1 / (3 + max_distance - gap)
-            ** 0.5
-        )
-        tolerance_gate = tolerance_angle * dist_f
-        forward_heading_ok = _attachment_heading_gate(
-            stems0,
-            base_attach_idx,
-            'prefix',
-            stem,
-            candidate_attach_idx,
-            'suffix',
-            tolerance_gate,
-        )
-        ang_l_sp_mp = abs(ang(line_stop.coords, missing_part_.coords))
-        ang_mp_el_st = abs(ang(missing_part_.coords, e_line_start.coords))
-
-        if (
-                ang_l_sp_el_st < tolerance_gate
-                and ang_l_sp_mp < tolerance_gate
-                and ang_mp_el_st < tolerance_gate
-                and stems0.start.distance(stem.stop) < max_tree_height
-                and forward_heading_ok):
-
-            if len(stems0.path.coords) > 2 and len(stem.path.coords) > 2:
-                start = LineString(stems0.path.coords[:-1])
-                end = LineString(stem.path.coords[1:])
-                new_path = linemerge([start, missing_part_, end])
-            else:
-                if len(stems0.path.coords) > 2 and has_length_2:
-                    start = LineString(stems0.path.coords[:-1])
-                    new_path = linemerge([start, missing_part_])
-                else:
-                    if (len(stems0.path.coords) == 2 and len(
-                            stem.path.coords) > 2):
-                        end = LineString(stem.path.coords[1:])
-                        new_path = linemerge([missing_part_, end])
-                    else:
-                        if (len(stems0.path.coords) == 2 and has_length_2):
-                            new_path = missing_part_
-
-            merged_length = new_path.length
-            merged_span = stems0.start.distance(stem.stop)
-
-            if (
-                    gap <= max_distance
-                    and merged_length <= max_tree_height
-                    and merged_span <= max_tree_height):
-                change = True
-                candidate = _clone_stem(stems0)
-                candidate.path = new_path
-                candidate.stop = stem.stop
-                slave = stem
-                vote = calc_vote(
-                    ang_l_sp_el_st,
-                    ang_l_sp_mp,
-                    ang_mp_el_st,
-                    candidate,
-                    stem,
-                    stems0,
-                    tolerance_angle,
-                )
-                candidates.append(candidate)
-                votes.append(vote)
-                slaves.append(slave)
-
-    if start_buffer.contains(stem.stop):
-        candidate_attach_idx = max(len(stem.path.coords) - 2, 0)
-        base_attach_idx = 1 if len(stems0.path.coords) > 1 else 0
-        missing_part_ = LineString(
-            [stem.path.coords[candidate_attach_idx],
-             stems0.path.coords[base_attach_idx]]
-        )
-        gap = stem.stop.distance(stems0.start)
-        dist_f = 1 - (
-            1 / (3 + max_distance - gap)
-            ** 0.5
-        )
-        tolerance_gate = tolerance_angle * dist_f
-        reverse_heading_ok = _attachment_heading_gate(
-            stems0,
-            base_attach_idx,
-            'suffix',
-            stem,
-            candidate_attach_idx,
-            'prefix',
-            tolerance_gate,
-        )
-        ang_el_sp_mp = abs(ang(e_line_stop.coords, missing_part_.coords))
-        ang_mp_l_st = abs(ang(missing_part_.coords, line_start.coords))
-
-        if (
-                ang_el_sp_l_st < tolerance_gate
-                and ang_el_sp_mp < tolerance_gate
-                and ang_mp_l_st < tolerance_gate
-                and stem.start.distance(stems0.stop) < max_tree_height
-                and reverse_heading_ok):
-            if len(stem.path.coords) > 2 and len(stems0.path.coords) > 2:
-                start = LineString(stem.path.coords[:-1])
-                end = LineString(stems0.path.coords[1:])
-                new_path = linemerge([start, missing_part_, end])
-            else:
-                if len(stem.path.coords) > 2 and len(stems0.path.coords) == 2:
-                    start = LineString(stem.path.coords[:-1])
-                    new_path = linemerge([start, missing_part_])
-                else:
-                    if has_length_2 and len(stems0.path.coords) > 2:
-                        end = LineString(stems0.path.coords[1:])
-                        new_path = linemerge([missing_part_, end])
-                    else:
-                        if has_length_2 and len(stems0.path.coords) == 2:
-                            new_path = missing_part_
-
-            merged_length = new_path.length
-            merged_span = stem.start.distance(stems0.stop)
-
-            if (
-                    gap <= max_distance
-                    and merged_length <= max_tree_height
-                    and merged_span <= max_tree_height):
-                change = True
-                candidate = _clone_stem(stems0)
-                candidate.path = new_path
-                candidate.start = stem.start
-                slave = stem
-                vote = calc_vote(
-                    ang_el_sp_l_st,
-                    ang_el_sp_mp,
-                    ang_mp_l_st,
-                    candidate,
-                    stems0,
-                    stem,
-                    tolerance_angle,
-                )
-                candidates.append(candidate)
-                votes.append(vote)
-                slaves.append(slave)
-
-    if change:
-        index_min = min(range(len(votes)), key=votes.__getitem__)
-        return True, votes[index_min], candidates[index_min], slaves[index_min]
-    else:
         return False, math.inf, None, None
 
+    changed, vote, merged, _ = _passes_endpoint_gate(
+        stems0,
+        stem,
+        max_distance,
+        tolerance_angle,
+    )
+    if changed:
+        return True, vote, merged, stem
+    return False, math.inf, None, None
 
-# calculate vote
+
+# calculate vote (unchanged)
 def calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st, candidate, stem,
               stems0, tolerance_angle):
     return (
@@ -564,10 +474,7 @@ def calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st, candidate, stem,
 
 
 # - Helper functions vector operations -
-# Converts the List of [Part] containing Tuples[int] into List of [Stem]
-# consisting of shapely geometries
 def build_stem_parts(segments: List[Part]):
-
     t = Timer()
     t.start()
     print("#######################################################")
@@ -579,11 +486,6 @@ def build_stem_parts(segments: List[Part]):
             segments[i].start = segments[i].stop
             segments[i].stop = h
             segments[i].path.reverse()
-     #   else:
-     #       h = segments[i].start
-     #       segments[i].start = segments[i].stop
-     #       segments[i].stop = h
-     #       segments[i].path.reverse()
     segments = set(segments)
     for seg in segments:
         stem = Stem(Point(seg.start), Point(seg.stop), LineString(seg.path), [],
@@ -613,7 +515,6 @@ def rebuild_endnodes_from_stems(stems: List[Stem]) -> List[Point]:
     return nodes
 
 
-# Removes duplicates from stem list
 def remove_duplicates(stems: List[Stem], stems0=None) -> List[Stem]:
     stems = list(stems)
     stems.sort(key=lambda x: x.length, reverse=True)
@@ -651,7 +552,6 @@ def remove_duplicates(stems: List[Stem], stems0=None) -> List[Stem]:
     return kept, count
 
 
-# remove padding and restore geoinformation of the stems
 def restore_geoinformation(stems: List[Stem], config, profile):
     t = Timer()
     t.start()
