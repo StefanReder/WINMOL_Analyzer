@@ -50,6 +50,40 @@ def _clone_stem(stem: Stem) -> Stem:
     )
 
 
+def _same_stem_identity(a: Stem, b: Stem) -> bool:
+    try:
+        if a is b:
+            return True
+        if list(a.path.coords) == list(b.path.coords):
+            return True
+        if a.start.equals(b.start) and a.stop.equals(b.stop) and a.path.equals(b.path):
+            return True
+        if a.start.equals(b.stop) and a.stop.equals(b.start) and a.path.equals(LineString(list(reversed(b.path.coords)))):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _endpoint_in_buffer(stem: Stem, endpoint_name: str, buffer_geom) -> bool:
+    point = stem.start if endpoint_name == 'start' else stem.stop
+    try:
+        return buffer_geom.covers(point)
+    except Exception:
+        return buffer_geom.contains(point)
+
+
+def _orient_stem_for_candidate(stem: Stem, endpoint_name: str) -> Stem:
+    coords = list(stem.path.coords)
+    if endpoint_name == 'end' or endpoint_name == 'stop':
+        coords = list(reversed(coords))
+    oriented = _clone_stem(stem)
+    oriented.path = LineString(coords)
+    oriented.start = Point(coords[0])
+    oriented.stop = Point(coords[-1])
+    return oriented
+
+
 def _stem_end_lines(stem: Stem):
     if len(stem.path.coords) < 4:
         line_start = LineString([stem.path.coords[0], stem.path.coords[-1]])
