@@ -125,15 +125,15 @@ def _stem_end_lines(stem: Stem):
         line = LineString([coords[0], coords[0]])
         return line, line
 
-    # Use endpoint-local support vectors that match the intended continuation test:
+    # Endpoint-local support vectors always point AWAY from the junction point:
     #   start side: [s[0], s[2]]
-    #   stop side:  [s[n-3], s[n-1]]
+    #   stop side:  [s[n-1], s[n-3]]
     # with graceful fallback for short stems.
     start_idx = min(2, len(coords) - 1)
     stop_idx = max(0, len(coords) - 3)
 
     line_start = LineString([coords[0], coords[start_idx]])
-    line_stop = LineString([coords[stop_idx], coords[-1]])
+    line_stop = LineString([coords[-1], coords[stop_idx]])
     return line_start, line_stop
 
 
@@ -148,6 +148,10 @@ def _angle_similarity_score(angle_value, angle_limit):
         return 0.0
     score = 1.0 - (float(angle_value) / float(angle_limit))
     return max(0.0, min(1.0, score))
+
+
+def _antiparallel_mismatch(angle_value):
+    return abs(180.0 - float(angle_value))
 
 
 def _stem_endpoint_diameter(stem: Stem, endpoint: str):
@@ -167,8 +171,8 @@ def _stem_endpoint_diameter(stem: Stem, endpoint: str):
 
 
 def _direction_soft_bonus(stem_a: Stem, stem_b: Stem,
-                          ang_1, ang_2, angle_limit,
-                          config=None):
+                          away_bridge_mismatch_a, away_bridge_mismatch_b,
+                          angle_limit, config=None):
     try:
         weight = float(getattr(config, 'direction_soft_weight', 0.2))
     except Exception:
@@ -179,8 +183,8 @@ def _direction_soft_bonus(stem_a: Stem, stem_b: Stem,
     if conf <= 0.0:
         return 0.0
     align = 0.5 * (
-        _angle_similarity_score(ang_1, angle_limit)
-        + _angle_similarity_score(ang_2, angle_limit)
+        _angle_similarity_score(away_bridge_mismatch_a, angle_limit)
+        + _angle_similarity_score(away_bridge_mismatch_b, angle_limit)
     )
     return weight * conf * align
 
@@ -407,14 +411,22 @@ def calc_connectivity_votes(
 
     e_line_start, e_line_stop = _stem_end_lines(stem)
 
-    ang_l_sp_el_st = abs(ang(line_stop.coords, e_line_start.coords))
-    ang_el_sp_l_st = abs(ang(e_line_stop.coords, line_start.coords))
+    # With endpoint vectors defined AWAY from both junctions, valid continuations
+    # require antiparallel agreement against the local bridge at both ends.
 
     gap_forward = stems0.stop.distance(stem.start)
     if end_buffer.contains(stem.start):
-        bridge = LineString([stems0.stop.coords[0], stem.start.coords[0]])
-        ang_l_sp_mp = abs(ang(line_stop.coords, bridge.coords))
-        ang_mp_el_st = abs(ang(bridge.coords, e_line_start.coords))
+        bridge_from_base = LineString([stems0.stop.coords[0], stem.start.coords[0]])
+        bridge_from_cand = LineString([stem.start.coords[0], stems0.stop.coords[0]])
+
+        ang_away_bridge_base = abs(ang(line_stop.coords, bridge_from_base.coords))
+        ang_away_bridge_cand = abs(ang(e_line_start.coords, bridge_from_cand.coords))
+        ang_tangent_consistency = abs(ang(line_stop.coords, e_line_start.coords))
+
+        mis_base = _antiparallel_mismatch(ang_away_bridge_base)
+        mis_cand = _antiparallel_mismatch(ang_away_bridge_cand)
+        mis_pair = ang_tangent_consistency
+
         angle_limit_fwd = _distance_scaled_angle_limit(
             gap_forward, max_distance, tolerance_angle)
         new_path = _build_join_path(stems0, stem)
@@ -423,19 +435,19 @@ def calc_connectivity_votes(
             merged_span = Point(new_path.coords[0]).distance(Point(new_path.coords[-1]))
             if (
                 gap_forward <= max_distance
-                and ang_l_sp_el_st <= angle_limit_fwd
-                and ang_l_sp_mp <= angle_limit_fwd
-                and ang_mp_el_st <= angle_limit_fwd
+                and mis_base <= angle_limit_fwd
+                and mis_cand <= angle_limit_fwd
+                and mis_pair <= angle_limit_fwd
                 and merged_length <= max_tree_height
                 and merged_span <= max_tree_height
             ):
                 change = True
                 candidate = _merged_candidate_stub(stems0, stem, new_path)
                 vote = calc_vote(
-                    ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st,
+                    mis_pair, mis_base, mis_cand,
                     candidate, stem, stems0, angle_limit_fwd,
                     direction_bonus=_direction_soft_bonus(
-                        stems0, stem, ang_l_sp_mp, ang_mp_el_st,
+                        stems0, stem, mis_base, mis_cand,
                         angle_limit_fwd, config=config),
                     diameter_bonus=_diameter_soft_bonus(
                         _stem_endpoint_diameter(stem, 'start'),
@@ -448,9 +460,17 @@ def calc_connectivity_votes(
 
     gap_reverse = stem.stop.distance(stems0.start)
     if start_buffer.contains(stem.stop):
-        bridge = LineString([stem.stop.coords[0], stems0.start.coords[0]])
-        ang_el_sp_mp = abs(ang(e_line_stop.coords, bridge.coords))
-        ang_mp_l_st = abs(ang(bridge.coords, line_start.coords))
+        bridge_from_cand = LineString([stem.stop.coords[0], stems0.start.coords[0]])
+        bridge_from_base = LineString([stems0.start.coords[0], stem.stop.coords[0]])
+
+        ang_away_bridge_cand = abs(ang(e_line_stop.coords, bridge_from_cand.coords))
+        ang_away_bridge_base = abs(ang(line_start.coords, bridge_from_base.coords))
+        ang_tangent_consistency = abs(ang(e_line_stop.coords, line_start.coords))
+
+        mis_cand = _antiparallel_mismatch(ang_away_bridge_cand)
+        mis_base = _antiparallel_mismatch(ang_away_bridge_base)
+        mis_pair = ang_tangent_consistency
+
         angle_limit_rev = _distance_scaled_angle_limit(
             gap_reverse, max_distance, tolerance_angle)
         new_path = _build_join_path(stem, stems0)
@@ -459,19 +479,19 @@ def calc_connectivity_votes(
             merged_span = Point(new_path.coords[0]).distance(Point(new_path.coords[-1]))
             if (
                 gap_reverse <= max_distance
-                and ang_el_sp_l_st <= angle_limit_rev
-                and ang_el_sp_mp <= angle_limit_rev
-                and ang_mp_l_st <= angle_limit_rev
+                and mis_cand <= angle_limit_rev
+                and mis_base <= angle_limit_rev
+                and mis_pair <= angle_limit_rev
                 and merged_length <= max_tree_height
                 and merged_span <= max_tree_height
             ):
                 change = True
                 candidate = _merged_candidate_stub(stem, stems0, new_path)
                 vote = calc_vote(
-                    ang_el_sp_l_st, ang_el_sp_mp, ang_mp_l_st,
+                    mis_pair, mis_cand, mis_base,
                     candidate, stems0, stem, angle_limit_rev,
                     direction_bonus=_direction_soft_bonus(
-                        stem, stems0, ang_el_sp_mp, ang_mp_l_st,
+                        stem, stems0, mis_cand, mis_base,
                         angle_limit_rev, config=config),
                     diameter_bonus=_diameter_soft_bonus(
                         _stem_endpoint_diameter(stems0, 'start'),
