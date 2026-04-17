@@ -1,28 +1,33 @@
 #!/usr/bin/env python
 
 ################################################################################
-"""Clean vector operations for stem connection.
+"""Clean vector operations with aggressive endpoint prefilter.
 
 This version implements:
 - explicit endpoint-in-buffer candidate generation only
-- all 4 endpoint cases:
-    start->start, start->end, end->start, end->end
-- one hard local antiparallel filter using:
-    v_stem               [base endpoint -> base interior]
-    v_stem_bridge        [base endpoint -> candidate endpoint]
-    v_candidate_bridge   [candidate endpoint -> base endpoint]
-    v_candidate          [candidate endpoint -> candidate interior]
+- both base endpoints are checked (start and end)
+- both candidate endpoint types are checked (start and end)
+- aggressive prefilter before the hard gate:
+    * explicit endpoint must be inside the relevant buffer
+    * candidate must not belong to the same stem
+    * stem.length + gap + candidate.length < max_tree_height
+- hard gate exactly on four local vectors:
+    * v_stem            [base endpoint -> base interior]
+    * v_stem_bridge     [base endpoint -> candidate endpoint]
+    * v_candidate_bridge[candidate endpoint -> base endpoint]
+    * v_candidate       [candidate endpoint -> candidate interior]
   with all three angles tested near 180 degrees using:
     tolerance_angle * dist_f
     dist_f = 1 - (1 / (3 + max_distance - gap)) ** 0.5
 - unchanged vote function
-- best non-conflicting matches accepted per cycle
+- greedy best-candidate-per-base per cycle
+- no heading gate
 - no self-connections
 """
 
 import math
 import multiprocessing as mp
-from typing import List, Sequence, Set
+from typing import List, Sequence, Set, Tuple
 
 import numpy as np
 from shapely.geometry import LineString, Point
@@ -88,8 +93,28 @@ def _same_stem_identity(a: Stem, b: Stem) -> bool:
     return False
 
 
+def _query_tree_indices(tree: STRtree, geom, fallback_geoms=None):
+    try:
+        matches = tree.query(geom)
+    except Exception:
+        return []
+    if len(matches) == 0:
+        return []
+    first = matches[0]
+    if isinstance(first, (int, np.integer)):
+        return [int(i) for i in matches]
+    if fallback_geoms is None:
+        return []
+    geom_to_idx = {id(g): i for i, g in enumerate(fallback_geoms)}
+    return [geom_to_idx[id(g)] for g in matches if id(g) in geom_to_idx]
+
+
+def _endpoint_point(stem: Stem, endpoint_name: str) -> Point:
+    return stem.start if endpoint_name in ('start',) else stem.stop
+
+
 def _endpoint_in_buffer(stem: Stem, endpoint_name: str, buffer_geom) -> bool:
-    point = stem.start if endpoint_name == 'start' else stem.stop
+    point = _endpoint_point(stem, endpoint_name)
     try:
         return buffer_geom.covers(point)
     except Exception:
@@ -132,13 +157,12 @@ def _first_distinct_from_end(coords):
     return coords[0]
 
 
-def _stem_endpoint_vector(stem: Stem, endpoint_name: str) -> LineString:
+def _endpoint_vector_from_oriented(stem: Stem, endpoint_name: str) -> LineString:
     coords = list(stem.path.coords)
     if len(coords) < 2:
         p0 = stem.start.coords[0]
         p1 = stem.stop.coords[0]
         return _safe_linestring([p0, p1])
-
     if endpoint_name == 'start':
         p0 = coords[0]
         p1 = _first_distinct_from_start(coords)
@@ -149,7 +173,7 @@ def _stem_endpoint_vector(stem: Stem, endpoint_name: str) -> LineString:
 
 
 def _orient_stem_for_base(stem: Stem, endpoint_name: str) -> Stem:
-    """Orient base stem so the tested endpoint becomes stop."""
+    """Orient base so the tested endpoint becomes stop."""
     coords = list(stem.path.coords)
     if endpoint_name == 'start':
         coords = list(reversed(coords))
@@ -161,7 +185,7 @@ def _orient_stem_for_base(stem: Stem, endpoint_name: str) -> Stem:
 
 
 def _orient_stem_for_candidate(stem: Stem, endpoint_name: str) -> Stem:
-    """Orient candidate stem so the tested endpoint becomes start."""
+    """Orient candidate so the tested endpoint becomes start."""
     coords = list(stem.path.coords)
     if endpoint_name in ('end', 'stop'):
         coords = list(reversed(coords))
@@ -175,7 +199,6 @@ def _orient_stem_for_candidate(stem: Stem, endpoint_name: str) -> Stem:
 def _merged_candidate_from_oriented(base_stem: Stem, candidate_stem: Stem) -> Stem:
     base_coords = list(base_stem.path.coords)
     cand_coords = list(candidate_stem.path.coords)
-
     if not base_coords:
         coords = cand_coords
     elif not cand_coords:
@@ -184,7 +207,6 @@ def _merged_candidate_from_oriented(base_stem: Stem, candidate_stem: Stem) -> St
         coords = base_coords + cand_coords[1:]
     else:
         coords = base_coords + cand_coords
-
     new_path = _safe_linestring(coords)
     merged = _clone_stem(base_stem)
     merged.path = new_path
@@ -199,7 +221,7 @@ def _passes_endpoint_gate(
     max_distance: float,
     tolerance_angle: float,
 ):
-    """Hard local antiparallel gate for one oriented endpoint pair.
+    """Local antiparallel hard gate for one oriented endpoint pair.
 
     Assumes:
     - tested base endpoint == base_oriented.stop
@@ -215,8 +237,8 @@ def _passes_endpoint_gate(
     dist_f = _distance_factor(gap, max_distance)
     tolerance_gate = tolerance_angle * dist_f
 
-    v_stem = _stem_endpoint_vector(base_oriented, 'end')
-    v_candidate = _stem_endpoint_vector(candidate_oriented, 'start')
+    v_stem = _endpoint_vector_from_oriented(base_oriented, 'end')
+    v_candidate = _endpoint_vector_from_oriented(candidate_oriented, 'start')
 
     base_endpoint = base_oriented.stop.coords[0]
     cand_endpoint = candidate_oriented.start.coords[0]
@@ -247,20 +269,22 @@ def _passes_endpoint_gate(
     return True, vote, merged, gap
 
 
-def _query_tree_indices(tree: STRtree, geom, fallback_geoms=None):
-    try:
-        matches = tree.query(geom)
-    except Exception:
-        return []
-    if len(matches) == 0:
-        return []
-    first = matches[0]
-    if isinstance(first, (int, np.integer)):
-        return [int(i) for i in matches]
-    if fallback_geoms is None:
-        return []
-    geom_to_idx = {id(g): i for i, g in enumerate(fallback_geoms)}
-    return [geom_to_idx[id(g)] for g in matches if id(g) in geom_to_idx]
+def _candidate_prefilter_ok(base_stem: Stem, candidate_stem: Stem, base_endpoint_name: str,
+                            cand_endpoint_name: str, max_distance: float,
+                            max_tree_height: float, buffer_geom) -> Tuple[bool, float]:
+    if _same_stem_identity(base_stem, candidate_stem):
+        return False, math.inf
+    if not _endpoint_in_buffer(candidate_stem, cand_endpoint_name, buffer_geom):
+        return False, math.inf
+    base_point = _endpoint_point(base_stem, base_endpoint_name)
+    cand_point = _endpoint_point(candidate_stem, cand_endpoint_name)
+    gap = base_point.distance(cand_point)
+    if gap > max_distance:
+        return False, math.inf
+    if (getattr(base_stem, 'length', base_stem.path.length) + gap +
+            getattr(candidate_stem, 'length', candidate_stem.path.length)) >= max_tree_height:
+        return False, math.inf
+    return True, gap
 
 
 ################################################################################
@@ -269,6 +293,7 @@ def _query_tree_indices(tree: STRtree, geom, fallback_geoms=None):
 
 def connect_stems(stems: List[Stem], config) -> List[Stem]:
     max_distance = config.max_distance
+    max_tree_height = config.max_tree_height
     tolerance_angle = config.tolerance_angle
 
     t = Timer()
@@ -295,122 +320,88 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
         start_tree = STRtree(start_points)
         stop_tree = STRtree(stop_points)
         remaining = set(range(len(cycle_stems)))
-
-        proposals = []
-
-        for base_idx in list(remaining):
-            base_stem = cycle_stems[base_idx]
-            start_buffer = base_stem.start.buffer(max_distance, resolution=32)
-            end_buffer = base_stem.stop.buffer(max_distance, resolution=32)
-
-            explicit_cases = []
-
-            # Base start buffer: only explicit endpoints inside this buffer.
-            for idx in _query_tree_indices(start_tree, start_buffer, start_points):
-                if idx == base_idx or idx not in remaining:
-                    continue
-                candidate = cycle_stems[idx]
-                if _same_stem_identity(base_stem, candidate):
-                    continue
-                if _endpoint_in_buffer(candidate, 'start', start_buffer):
-                    explicit_cases.append((idx, 'start', 'start'))
-
-            for idx in _query_tree_indices(stop_tree, start_buffer, stop_points):
-                if idx == base_idx or idx not in remaining:
-                    continue
-                candidate = cycle_stems[idx]
-                if _same_stem_identity(base_stem, candidate):
-                    continue
-                if _endpoint_in_buffer(candidate, 'end', start_buffer):
-                    explicit_cases.append((idx, 'start', 'end'))
-
-            # Base end buffer: only explicit endpoints inside this buffer.
-            for idx in _query_tree_indices(start_tree, end_buffer, start_points):
-                if idx == base_idx or idx not in remaining:
-                    continue
-                candidate = cycle_stems[idx]
-                if _same_stem_identity(base_stem, candidate):
-                    continue
-                if _endpoint_in_buffer(candidate, 'start', end_buffer):
-                    explicit_cases.append((idx, 'end', 'start'))
-
-            for idx in _query_tree_indices(stop_tree, end_buffer, stop_points):
-                if idx == base_idx or idx not in remaining:
-                    continue
-                candidate = cycle_stems[idx]
-                if _same_stem_identity(base_stem, candidate):
-                    continue
-                if _endpoint_in_buffer(candidate, 'end', end_buffer):
-                    explicit_cases.append((idx, 'end', 'end'))
-
-            # De-duplicate exact endpoint proposals while preserving order.
-            seen = set()
-            filtered_cases = []
-            for item in explicit_cases:
-                if item in seen:
-                    continue
-                seen.add(item)
-                filtered_cases.append(item)
-
-            for idx, base_ep, cand_ep in filtered_cases:
-                candidate = cycle_stems[idx]
-                base_oriented = _orient_stem_for_base(base_stem, base_ep)
-                candidate_oriented = _orient_stem_for_candidate(candidate, cand_ep)
-
-                if _same_stem_identity(base_oriented, candidate_oriented):
-                    continue
-
-                changed, vote, merged, _ = calc_connectivity_votes(
-                    base_oriented,
-                    None,
-                    None,
-                    None,
-                    None,
-                    max_distance,
-                    getattr(config, 'max_tree_height', math.inf),
-                    tolerance_angle,
-                    candidate_oriented,
-                )
-                if changed:
-                    proposals.append({
-                        'base_idx': base_idx,
-                        'cand_idx': idx,
-                        'base_ep': base_ep,
-                        'cand_ep': cand_ep,
-                        'vote': vote,
-                        'merged': merged,
-                    })
-
-        proposals.sort(key=lambda x: x['vote'])
-
-        used_stems = set()
-        used_endpoints = set()
+        used_endpoints = set()  # (stem_idx, 'start'|'end')
         connected_stems = []
 
-        for proposal in proposals:
-            base_idx = proposal['base_idx']
-            cand_idx = proposal['cand_idx']
-            base_ep = proposal['base_ep']
-            cand_ep = proposal['cand_ep']
+        while remaining:
+            base_idx = next(iter(remaining))
+            base_stem = cycle_stems[base_idx]
 
-            if base_idx in used_stems or cand_idx in used_stems:
-                continue
-            if (base_idx, base_ep) in used_endpoints:
-                continue
-            if (cand_idx, cand_ep) in used_endpoints:
-                continue
+            best_vote = math.inf
+            best_candidate = None
+            best_slave_idx = None
+            best_base_ep = None
+            best_cand_ep = None
 
-            connected_stems.append(proposal['merged'])
-            used_stems.add(base_idx)
-            used_stems.add(cand_idx)
-            used_endpoints.add((base_idx, base_ep))
-            used_endpoints.add((cand_idx, cand_ep))
-            global_change = True
-            c_count += 1
+            # Check both base endpoints independently.
+            for base_ep, buffer_geom in (
+                ('start', base_stem.start.buffer(max_distance, resolution=32)),
+                ('end', base_stem.stop.buffer(max_distance, resolution=32)),
+            ):
+                if (base_idx, base_ep) in used_endpoints:
+                    continue
 
-        for idx, stem in enumerate(cycle_stems):
-            if idx not in used_stems:
-                connected_stems.append(stem)
+                # In each buffer, test both candidate endpoint types explicitly.
+                endpoint_queries = [
+                    ('start', _query_tree_indices(start_tree, buffer_geom, start_points)),
+                    ('end', _query_tree_indices(stop_tree, buffer_geom, stop_points)),
+                ]
+
+                seen_pairs = set()
+                for cand_ep, idxs in endpoint_queries:
+                    for idx in idxs:
+                        pair_key = (idx, cand_ep)
+                        if pair_key in seen_pairs:
+                            continue
+                        seen_pairs.add(pair_key)
+
+                        if idx == base_idx or idx not in remaining:
+                            continue
+                        if (idx, cand_ep) in used_endpoints:
+                            continue
+
+                        candidate = cycle_stems[idx]
+                        ok_prefilter, _ = _candidate_prefilter_ok(
+                            base_stem, candidate, base_ep, cand_ep,
+                            max_distance, max_tree_height, buffer_geom,
+                        )
+                        if not ok_prefilter:
+                            continue
+
+                        base_oriented = _orient_stem_for_base(base_stem, base_ep)
+                        candidate_oriented = _orient_stem_for_candidate(candidate, cand_ep)
+                        if _same_stem_identity(base_oriented, candidate_oriented):
+                            continue
+
+                        changed, vote, merged, _ = calc_connectivity_votes(
+                            base_oriented,
+                            None,
+                            None,
+                            None,
+                            None,
+                            max_distance,
+                            max_tree_height,
+                            tolerance_angle,
+                            candidate_oriented,
+                        )
+                        if changed and vote < best_vote:
+                            best_vote = vote
+                            best_candidate = merged
+                            best_slave_idx = idx
+                            best_base_ep = base_ep
+                            best_cand_ep = cand_ep
+
+            if best_candidate is not None and best_slave_idx is not None:
+                connected_stems.append(best_candidate)
+                remaining.discard(base_idx)
+                remaining.discard(best_slave_idx)
+                used_endpoints.add((base_idx, best_base_ep))
+                used_endpoints.add((best_slave_idx, best_cand_ep))
+                global_change = True
+                c_count += 1
+            else:
+                connected_stems.append(base_stem)
+                remaining.discard(base_idx)
 
         stems = connected_stems
         cycle_nbr += 1
