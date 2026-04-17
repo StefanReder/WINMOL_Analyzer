@@ -159,7 +159,7 @@ def _first_distinct_from_end(coords):
 
 def _endpoint_vector_from_oriented(stem: Stem, endpoint_name: str) -> LineString:
     coords = list(stem.path.coords)
-    if len(coords) < 2:
+    if len(coords) < 3:
         p0 = stem.start.coords[0]
         p1 = stem.stop.coords[0]
         return _safe_linestring([p0, p1])
@@ -177,10 +177,18 @@ def _orient_stem_for_base(stem: Stem, endpoint_name: str) -> Stem:
     coords = list(stem.path.coords)
     if endpoint_name == 'start':
         coords = list(reversed(coords))
+
+    # Drop the tested endpoint (= stop) and keep only the remaining stem
+    if len(coords) >= 3:
+        coords_trimmed = coords[:-1]
+    else:
+        # fallback: keep at least 2 points
+        coords_trimmed = coords[:]
+
     oriented = _clone_stem(stem)
-    oriented.path = _safe_linestring(coords)
-    oriented.start = Point(coords[0])
-    oriented.stop = Point(coords[-1])
+    oriented.path = _safe_linestring(coords_trimmed)
+    oriented.start = Point(coords_trimmed[0])
+    oriented.stop = Point(coords_trimmed[-1])
     return oriented
 
 
@@ -189,10 +197,18 @@ def _orient_stem_for_candidate(stem: Stem, endpoint_name: str) -> Stem:
     coords = list(stem.path.coords)
     if endpoint_name in ('end', 'stop'):
         coords = list(reversed(coords))
+
+    # Drop the tested endpoint (= stop) and keep only the remaining stem
+    if len(coords) >= 4:
+        coords_trimmed = coords[1:]
+    else:
+        # fallback: keep at least 2 points
+        coords_trimmed = coords[:]
+
     oriented = _clone_stem(stem)
-    oriented.path = _safe_linestring(coords)
-    oriented.start = Point(coords[0])
-    oriented.stop = Point(coords[-1])
+    oriented.path = _safe_linestring(coords_trimmed)
+    oriented.start = Point(coords_trimmed[0])
+    oriented.stop = Point(coords_trimmed[-1])
     return oriented
 
 
@@ -227,12 +243,12 @@ def _passes_endpoint_gate(
     - tested base endpoint == base_oriented.stop
     - tested candidate endpoint == candidate_oriented.start
     """
-    if _same_stem_identity(base_oriented, candidate_oriented):
-        return False, math.inf, None, None
+    #if _same_stem_identity(base_oriented, candidate_oriented):
+    #    return False, math.inf, None, None
 
     gap = base_oriented.stop.distance(candidate_oriented.start)
-    if gap > max_distance:
-        return False, math.inf, None, None
+    #if gap > max_distance:
+    #    return False, math.inf, None, None
 
     dist_f = _distance_factor(gap, max_distance)
     tolerance_gate = tolerance_angle * dist_f
@@ -370,8 +386,8 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
 
                         base_oriented = _orient_stem_for_base(base_stem, base_ep)
                         candidate_oriented = _orient_stem_for_candidate(candidate, cand_ep)
-                        if _same_stem_identity(base_oriented, candidate_oriented):
-                            continue
+                        #if _same_stem_identity(base_oriented, candidate_oriented):
+                        #    continue
 
                         changed, vote, merged, _ = calc_connectivity_votes(
                             base_oriented,
