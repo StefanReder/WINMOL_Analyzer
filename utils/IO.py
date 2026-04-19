@@ -1449,6 +1449,12 @@ def _reconstruct_edge_stems_for_tiled_merge(
     config=None,
     stem_map_path=None,
 ):
+    """Reconnect edge candidates using the same connect_stems pipeline as tile-local merging.
+
+    Important: we keep the direct output of Vec.connect_stems() and do NOT rebuild merged
+    edge stems from broad contributor matching. That contributor-based reconstruction could
+    bypass local gates and reintroduce repeated paths or jump segments.
+    """
     stems_gdf = _concat_merged_layer(merged_stems)
     if stems_gdf is None or stems_gdf.empty:
         return stems_gdf, None, None
@@ -1473,7 +1479,7 @@ def _reconstruct_edge_stems_for_tiled_merge(
         edge_indices.update(idx)
 
     print(
-        f"MERGE EDGE RECON | candidates {len(edge_indices)} | total {len(stems_gdf)} | edge_buffer_m {edge_buffer_m}",
+        f"MERGE EDGE CONNECT | candidates {len(edge_indices)} | total {len(stems_gdf)} | edge_buffer_m {edge_buffer_m}",
         flush=True,
     )
 
@@ -1498,26 +1504,15 @@ def _reconstruct_edge_stems_for_tiled_merge(
     else:
         recon_cfg = config
 
-    merged_edge_stems = Vec.connect_stems(list(original_edge_stems), recon_cfg)
-    Vec.rebuild_endnodes_from_stems(merged_edge_stems)
+    connected_edge_stems = Vec.connect_stems(list(original_edge_stems), recon_cfg)
 
-    used = set()
-    rebuilt_edge_stems = []
-    for merged_stem in merged_edge_stems:
-        contributors = _match_edge_contributors(merged_stem, original_edge_stems, used)
-        for idx, _ in contributors:
-            used.add(idx)
-        rebuilt_edge_stems.append(
-            _rebuild_connected_stem_profile(merged_stem, contributors)
-        )
+    # Quantify the direct connect_stems outputs so their profile metadata is refreshed
+    # consistently with geometry after edge merging.
+    quantified_edge_stems = [Quant.quantify_stem(stem) for stem in connected_edge_stems]
 
-    for idx, stem in enumerate(original_edge_stems):
-        if idx not in used:
-            rebuilt_edge_stems.append(Quant.quantify_stem(stem))
-
-    final_stems = inner_stems + rebuilt_edge_stems
+    final_stems = inner_stems + quantified_edge_stems
     print(
-        f"MERGE EDGE RECON | inner {len(inner_stems)} | reconstructed_edge {len(rebuilt_edge_stems)} | final {len(final_stems)}",
+        f"MERGE EDGE CONNECT | inner {len(inner_stems)} | connected_edge {len(quantified_edge_stems)} | final {len(final_stems)}",
         flush=True,
     )
     return _stems_to_layer_gdfs(final_stems, target_crs)

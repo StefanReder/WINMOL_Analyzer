@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 ################################################################################
-"""Clean vector operations with aggressive endpoint prefilter.
+"""Vector operations with aggressive endpoint prefilter and trimmed joins.
 
 This version implements:
 - explicit endpoint-in-buffer candidate generation only
@@ -11,23 +11,24 @@ This version implements:
     * explicit endpoint must be inside the relevant buffer
     * candidate must not belong to the same stem
     * stem.length + gap + candidate.length < max_tree_height
-- hard gate exactly on four local vectors:
-    * v_stem            [base endpoint -> base interior]
-    * v_stem_bridge     [base endpoint -> candidate endpoint]
-    * v_candidate_bridge[candidate endpoint -> base endpoint]
-    * v_candidate       [candidate endpoint -> candidate interior]
+- hard gate exactly on four local vectors, evaluated on TRIMMED join supports:
+    * v_stem             [trimmed base join -> base interior]
+    * v_stem_bridge      [trimmed base join -> trimmed candidate join]
+    * v_candidate_bridge [trimmed candidate join -> trimmed base join]
+    * v_candidate        [trimmed candidate join -> candidate interior]
   with all three angles tested near 180 degrees using:
     tolerance_angle * dist_f
     dist_f = 1 - (1 / (3 + max_distance - gap)) ** 0.5
-- unchanged vote function
 - greedy best-candidate-per-base per cycle
-- no heading gate
-- no self-connections
+- stronger bridge penalty in voting
+- post-merge topology veto against rings, non-simple paths, repeated segments,
+  bridge/body crossings, and strong body overlap
+- stronger duplicate cleanup between cycles
 """
 
 import math
 import multiprocessing as mp
-from typing import List, Sequence, Set, Tuple
+from typing import List, Tuple
 
 import numpy as np
 from shapely.geometry import LineString, Point
@@ -159,10 +160,13 @@ def _first_distinct_from_end(coords):
 
 def _endpoint_vector_from_oriented(stem: Stem, endpoint_name: str) -> LineString:
     coords = list(stem.path.coords)
-    if len(coords) < 3:
+    if len(coords) < 2:
         p0 = stem.start.coords[0]
-        p1 = stem.stop.coords[0]
-        return _safe_linestring([p0, p1])
+        return _safe_linestring([p0, p0])
+    if len(coords) < 3:
+        if endpoint_name == 'start':
+            return _safe_linestring([coords[0], coords[1]])
+        return _safe_linestring([coords[-1], coords[-2]])
     if endpoint_name == 'start':
         p0 = coords[0]
         p1 = _first_distinct_from_start(coords)
@@ -173,18 +177,11 @@ def _endpoint_vector_from_oriented(stem: Stem, endpoint_name: str) -> LineString
 
 
 def _orient_stem_for_base(stem: Stem, endpoint_name: str) -> Stem:
-    """Orient base so the tested endpoint becomes stop."""
+    """Orient base so the tested endpoint becomes stop, then trim that endpoint."""
     coords = list(stem.path.coords)
     if endpoint_name == 'start':
         coords = list(reversed(coords))
-
-    # Drop the tested endpoint (= stop) and keep only the remaining stem
-    if len(coords) >= 3:
-        coords_trimmed = coords[:-1]
-    else:
-        # fallback: keep at least 2 points
-        coords_trimmed = coords[:]
-
+    coords_trimmed = coords[:-1] if len(coords) >= 3 else coords[:]
     oriented = _clone_stem(stem)
     oriented.path = _safe_linestring(coords_trimmed)
     oriented.start = Point(coords_trimmed[0])
@@ -193,23 +190,77 @@ def _orient_stem_for_base(stem: Stem, endpoint_name: str) -> Stem:
 
 
 def _orient_stem_for_candidate(stem: Stem, endpoint_name: str) -> Stem:
-    """Orient candidate so the tested endpoint becomes start."""
+    """Orient candidate so the tested endpoint becomes start, then trim that endpoint."""
     coords = list(stem.path.coords)
     if endpoint_name in ('end', 'stop'):
         coords = list(reversed(coords))
-
-    # Drop the tested endpoint (= stop) and keep only the remaining stem
-    if len(coords) >= 4:
-        coords_trimmed = coords[1:]
-    else:
-        # fallback: keep at least 2 points
-        coords_trimmed = coords[:]
-
+    coords_trimmed = coords[1:] if len(coords) >= 3 else coords[:]
     oriented = _clone_stem(stem)
     oriented.path = _safe_linestring(coords_trimmed)
     oriented.start = Point(coords_trimmed[0])
     oriented.stop = Point(coords_trimmed[-1])
     return oriented
+
+
+def _bridge_geometry(base_stem: Stem, candidate_stem: Stem) -> LineString:
+    return _safe_linestring([base_stem.stop.coords[0], candidate_stem.start.coords[0]])
+
+
+def _segment_key(a, b, ndigits=3):
+    a = (round(float(a[0]), ndigits), round(float(a[1]), ndigits))
+    b = (round(float(b[0]), ndigits), round(float(b[1]), ndigits))
+    return (a, b) if a <= b else (b, a)
+
+
+def _has_repeated_segments(path: LineString, ndigits=3) -> bool:
+    coords = list(path.coords)
+    if len(coords) < 2:
+        return False
+    seen = set()
+    for p0, p1 in zip(coords[:-1], coords[1:]):
+        key = _segment_key(p0, p1, ndigits=ndigits)
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
+
+
+def _trimmed_body_without_join(stem: Stem, join_endpoint: str, join_radius: float):
+    join_pt = _endpoint_point(stem, join_endpoint)
+    try:
+        return stem.path.difference(join_pt.buffer(join_radius))
+    except Exception:
+        return stem.path
+
+
+def _forbidden_body_overlap(base_oriented: Stem, candidate_oriented: Stem,
+                            tol=0.25, join_radius=0.5) -> bool:
+    base_body = _trimmed_body_without_join(base_oriented, 'end', join_radius)
+    cand_body = _trimmed_body_without_join(candidate_oriented, 'start', join_radius)
+    try:
+        overlap_len = base_body.intersection(cand_body.buffer(tol)).length
+    except Exception:
+        overlap_len = 0.0
+    min_ref = max(epsilon, min(base_body.length, cand_body.length))
+    return overlap_len > max(0.5, 0.25 * min_ref)
+
+
+def _bridge_crosses_existing_body(base_oriented: Stem, candidate_oriented: Stem,
+                                  tol=0.20, join_radius=0.5) -> bool:
+    bridge = _bridge_geometry(base_oriented, candidate_oriented)
+    base_body = _trimmed_body_without_join(base_oriented, 'end', join_radius)
+    cand_body = _trimmed_body_without_join(candidate_oriented, 'start', join_radius)
+    try:
+        if bridge.crosses(base_body.buffer(tol)):
+            return True
+    except Exception:
+        pass
+    try:
+        if bridge.crosses(cand_body.buffer(tol)):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _merged_candidate_from_oriented(base_stem: Stem, candidate_stem: Stem) -> Stem:
@@ -228,7 +279,38 @@ def _merged_candidate_from_oriented(base_stem: Stem, candidate_stem: Stem) -> St
     merged.path = new_path
     merged.start = Point(new_path.coords[0])
     merged.stop = Point(new_path.coords[-1])
+    merged.vector = []
+    merged.segment_diameter_list = []
+    merged.segment_length_list = [float(new_path.length)]
+    merged.segment_volume_list = []
     return merged
+
+
+def _merged_path_is_valid(base_oriented: Stem, candidate_oriented: Stem, merged: Stem,
+                          max_distance: float) -> bool:
+    try:
+        if merged.path.is_ring:
+            return False
+    except Exception:
+        pass
+    try:
+        if not merged.path.is_simple:
+            return False
+    except Exception:
+        pass
+    if _has_repeated_segments(merged.path):
+        return False
+    if _bridge_crosses_existing_body(base_oriented, candidate_oriented):
+        return False
+    if _forbidden_body_overlap(base_oriented, candidate_oriented):
+        return False
+    # Veto obvious jump skips inside merged path.
+    coords = list(merged.path.coords)
+    if len(coords) >= 2:
+        max_jump = max(Point(a).distance(Point(b)) for a, b in zip(coords[:-1], coords[1:]))
+        if max_jump > max_distance + 1e-9:
+            return False
+    return True
 
 
 def _passes_endpoint_gate(
@@ -237,18 +319,21 @@ def _passes_endpoint_gate(
     max_distance: float,
     tolerance_angle: float,
 ):
-    """Local antiparallel hard gate for one oriented endpoint pair.
+    """Local antiparallel hard gate for one oriented trimmed endpoint pair.
 
     Assumes:
-    - tested base endpoint == base_oriented.stop
-    - tested candidate endpoint == candidate_oriented.start
+    - tested base endpoint == original base stop/start trimmed away,
+      retained join support == base_oriented.stop
+    - tested candidate endpoint == original candidate start/end trimmed away,
+      retained join support == candidate_oriented.start
+    - merge is evaluated from retained base [-2] to retained candidate [1]
     """
-    #if _same_stem_identity(base_oriented, candidate_oriented):
-    #    return False, math.inf, None, None
+    if _same_stem_identity(base_oriented, candidate_oriented):
+        return False, math.inf, None, None
 
     gap = base_oriented.stop.distance(candidate_oriented.start)
-    #if gap > max_distance:
-    #    return False, math.inf, None, None
+    if gap > max_distance:
+        return False, math.inf, None, None
 
     dist_f = _distance_factor(gap, max_distance)
     tolerance_gate = tolerance_angle * dist_f
@@ -273,6 +358,9 @@ def _passes_endpoint_gate(
         return False, math.inf, None, None
 
     merged = _merged_candidate_from_oriented(base_oriented, candidate_oriented)
+    if not _merged_path_is_valid(base_oriented, candidate_oriented, merged, max_distance):
+        return False, math.inf, None, None
+
     vote = calc_vote(
         ang_stem_candidate,
         ang_stem_bridge,
@@ -281,6 +369,7 @@ def _passes_endpoint_gate(
         candidate_oriented,
         base_oriented,
         tolerance_angle,
+        max_distance=max_distance,
     )
     return True, vote, merged, gap
 
@@ -301,6 +390,42 @@ def _candidate_prefilter_ok(base_stem: Stem, candidate_stem: Stem, base_endpoint
             getattr(candidate_stem, 'length', candidate_stem.path.length)) >= max_tree_height:
         return False, math.inf
     return True, gap
+
+
+def _path_overlap_length(path_a: LineString, path_b: LineString, tol=0.25) -> float:
+    try:
+        return path_a.intersection(path_b.buffer(tol)).length
+    except Exception:
+        return 0.0
+
+
+def remove_partial_duplicates(stems: List[Stem], tol=0.25,
+                              overlap_ratio=0.7, endpoint_tol=0.5):
+    stems = list(stems)
+    stems.sort(key=lambda s: s.path.length, reverse=True)
+    kept = []
+    removed = 0
+
+    for stem in stems:
+        is_dup = False
+        for ref in kept:
+            overlap_len = _path_overlap_length(stem.path, ref.path, tol=tol)
+            ratio = overlap_len / max(stem.path.length, epsilon)
+            if ratio < overlap_ratio:
+                continue
+            ref_buf = ref.path.buffer(endpoint_tol)
+            try:
+                near_both = ref_buf.covers(stem.start) and ref_buf.covers(stem.stop)
+            except Exception:
+                near_both = ref_buf.contains(stem.start) and ref_buf.contains(stem.stop)
+            if near_both:
+                is_dup = True
+                removed += 1
+                break
+        if not is_dup:
+            kept.append(stem)
+
+    return kept, removed
 
 
 ################################################################################
@@ -340,7 +465,7 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
         connected_stems = []
 
         while remaining:
-            base_idx = next(iter(remaining))
+            base_idx = min(remaining)
             base_stem = cycle_stems[base_idx]
 
             best_vote = math.inf
@@ -349,7 +474,6 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
             best_base_ep = None
             best_cand_ep = None
 
-            # Check both base endpoints independently.
             for base_ep, buffer_geom in (
                 ('start', base_stem.start.buffer(max_distance, resolution=32)),
                 ('end', base_stem.stop.buffer(max_distance, resolution=32)),
@@ -357,7 +481,6 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                 if (base_idx, base_ep) in used_endpoints:
                     continue
 
-                # In each buffer, test both candidate endpoint types explicitly.
                 endpoint_queries = [
                     ('start', _query_tree_indices(start_tree, buffer_geom, start_points)),
                     ('end', _query_tree_indices(stop_tree, buffer_geom, stop_points)),
@@ -386,8 +509,8 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
 
                         base_oriented = _orient_stem_for_base(base_stem, base_ep)
                         candidate_oriented = _orient_stem_for_candidate(candidate, cand_ep)
-                        #if _same_stem_identity(base_oriented, candidate_oriented):
-                        #    continue
+                        if _same_stem_identity(base_oriented, candidate_oriented):
+                            continue
 
                         changed, vote, merged, _ = calc_connectivity_votes(
                             base_oriented,
@@ -419,6 +542,10 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
                 connected_stems.append(base_stem)
                 remaining.discard(base_idx)
 
+        # Clean duplicate leftovers before the next cycle.
+        connected_stems, dup_count_full = remove_duplicates(connected_stems)
+        connected_stems, dup_count_part = remove_partial_duplicates(connected_stems)
+        duplicates_count += dup_count_full + dup_count_part
         stems = connected_stems
         cycle_nbr += 1
 
@@ -429,7 +556,8 @@ def connect_stems(stems: List[Stem], config) -> List[Stem]:
         else:
             out_count += 1
     connected_stems, dup_count_2 = remove_duplicates(connected_stems)
-    duplicates_count += dup_count_2
+    connected_stems, dup_count_3 = remove_partial_duplicates(connected_stems)
+    duplicates_count += dup_count_2 + dup_count_3
 
     print("")
     print(count_stem_parts, "stem segments analyzed")
@@ -469,15 +597,20 @@ def calc_connectivity_votes(
     return False, math.inf, None, None
 
 
-# calculate vote (unchanged)
+# calculate vote (bridge penalty strengthened)
 def calc_vote(ang_l_sp_el_st, ang_l_sp_mp, ang_mp_el_st, candidate, stem,
-              stems0, tolerance_angle):
-    return (
-        ((1 + ang_l_sp_el_st + ang_l_sp_mp + ang_mp_el_st) / tolerance_angle) *
-        candidate.start.distance(candidate.stop) ** 2
-        + stems0.stop.distance(stem.start) ** 2 *
-        (1 + ang_l_sp_el_st + ang_l_sp_mp + ang_mp_el_st) / tolerance_angle
-    )
+              stems0, tolerance_angle, max_distance=None):
+    angle_sum = ang_l_sp_el_st + ang_l_sp_mp + ang_mp_el_st
+    angle_factor = 1.0 + angle_sum / max(tolerance_angle, epsilon)
+    gap = stems0.stop.distance(stem.start)
+    if max_distance is None or max_distance <= 0:
+        gap_ratio = gap
+        bridge_penalty = 1.0 + 4.0 * gap_ratio ** 2
+    else:
+        gap_ratio = min(1.5, gap / max_distance)
+        bridge_penalty = 1.0 + 8.0 * gap_ratio ** 2 + 32.0 * gap_ratio ** 4
+    merged_length = candidate.path.length
+    return angle_factor * (0.25 * merged_length ** 2 + bridge_penalty * gap ** 2)
 
 
 # - Helper functions vector operations -

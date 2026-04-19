@@ -37,15 +37,15 @@ PIPELINE = {
 }
 
 MODES = [
-    {
-        "name": "cpu",
-        "env": {
-            "CUDA_VISIBLE_DEVICES": "",
-        },
-        "config": {
-            "prediction_backend": "cpu",
-        },
-    },
+ #   {
+ #       "name": "cpu",
+ #       "env": {
+ #           "CUDA_VISIBLE_DEVICES": "",
+ #       },
+ #       "config": {
+ #           "prediction_backend": "cpu",
+ #       },
+ #   },
     {
         "name": "single_gpu",
         "env": {
