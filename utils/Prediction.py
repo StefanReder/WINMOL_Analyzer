@@ -346,17 +346,11 @@ def _time_batch_candidate(
 
     for _ in range(repeats):
         t0 = time.perf_counter()
-        # _, used = _predict_batch_adaptive(
-        #     sample_tiles[:measure_batch],
-        #     sample_masks[:measure_batch] if sample_masks is not None else None,
-        #     model,
-        #     config,
-        #     measure_batch,
-        # )
         with _suppress_native_stderr(quiet):
             _, used = _predict_batch_adaptive(
                 sample_tiles[:measure_batch],
-                sample_masks[:measure_batch] if sample_masks is not None else None,
+                sample_masks[
+                    :measure_batch] if sample_masks is not None else None,
                 model,
                 config,
                 measure_batch,

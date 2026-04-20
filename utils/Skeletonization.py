@@ -20,6 +20,7 @@ from utils.Geometry import ang
 # System epsilon
 epsilon = np.finfo(float).eps
 
+
 def _as_binary_mask(pred):
     arr = np.asarray(pred)
     if arr.dtype == np.bool_:

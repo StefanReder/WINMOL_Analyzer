@@ -5,7 +5,6 @@
 
 import json
 import os
-import glob
 import tempfile
 import shutil
 import errno
@@ -882,7 +881,8 @@ def _read_gpkg_layer(gpkg_path, layer_names):
             else:
                 gdf = gpd.GeoDataFrame.from_features(feats, crs=crs)
             print(
-                f"MERGE READ OK | file {gpkg_path} | layer {ln} | rows {len(gdf)}",
+                f"MERGE READ OK | file {gpkg_path} |"
+                f" layer {ln} | rows {len(gdf)}",
                 flush=True,
             )
             return gdf
@@ -969,7 +969,8 @@ def _detect_tiles(work_dir, output_gpkg):
 
             if len(gpkg) > 1:
                 raise RuntimeError(
-                    f"Multiple GPKG candidates found for tile '{prefix}': {gpkg}"
+                    f"Multiple GPKG candidates found "
+                    f"for tile '{prefix}': {gpkg}"
                 )
 
             tiles.append((prefix, gpkg[0], os.path.join(work_dir, rf)))
@@ -1001,7 +1002,8 @@ def _remove_existing_output(path):
         os.remove(path)
     except PermissionError:
         print(
-            f"MERGE OUTPUT LOCKED | keeping existing file and writing fallback if needed: {path}",
+            f"MERGE OUTPUT LOCKED | keeping existing file and writing"
+            f" fallback if needed: {path}",
             flush=True,
         )
 
@@ -1009,7 +1011,8 @@ def _remove_existing_output(path):
 def _globalize_stems(stems, tile_id, filter_geom):
     id_col = _pick_id_col(stems)
     if not id_col:
-        print(f"MERGE FILTER | tile {tile_id} | missing stem id column", flush=True)
+        print(f"MERGE FILTER | tile {tile_id} |"
+              f" missing stem id column", flush=True)
         return gpd.GeoDataFrame(), set()
 
     stems = stems.copy()
@@ -1022,14 +1025,16 @@ def _globalize_stems(stems, tile_id, filter_geom):
         kept_mask = stems.intersects(filter_geom)
         stems = stems[kept_mask].copy()
         print(
-            f"MERGE FILTER | tile {tile_id} | before {before} | after {len(stems)} "
+            f"MERGE FILTER | tile {tile_id} | before {before} |"
+            f" after {len(stems)} "
             f"| filter_empty {getattr(filter_geom, 'is_empty', False)} "
             f"| filter_bounds {getattr(filter_geom, 'bounds', None)}",
             flush=True,
         )
     else:
         print(
-            f"MERGE FILTER | tile {tile_id} | before {before} | after {before} | filter none",
+            f"MERGE FILTER | tile {tile_id} | before {before} |"
+            f" after {before} | filter none",
             flush=True,
         )
 
@@ -1062,8 +1067,10 @@ def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
 
     stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
     print(
-        f"MERGE TILE READ | tile {tile_id} | file {gpkg_path} | stems {0 if stems is None else len(stems)} "
-        f"| nodes {0 if nodes is None else len(nodes)} | vectors {0 if vectors is None else len(vectors)} "
+        f"MERGE TILE READ | tile {tile_id} | file {gpkg_path} |"
+        f" stems {0 if stems is None else len(stems)} "
+        f"| nodes {0 if nodes is None else len(nodes)} |"
+        f" vectors {0 if vectors is None else len(vectors)} "
         f"| raster {raster_path}",
         flush=True,
     )
@@ -1096,8 +1103,10 @@ def _window_geom_from_profile(profile, window):
 def process_tile_gpkg(tile_job, gpkg_path, raster_profile, target_crs=None):
     stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
     print(
-        f"MERGE TILE READ | tile {tile_job.tile_id} | file {gpkg_path} | stems {0 if stems is None else len(stems)} "
-        f"| nodes {0 if nodes is None else len(nodes)} | vectors {0 if vectors is None else len(vectors)}",
+        f"MERGE TILE READ | tile {tile_job.tile_id} | file {gpkg_path} |"
+        f" stems {0 if stems is None else len(stems)} "
+        f"| nodes {0 if nodes is None else len(nodes)} |"
+        f" vectors {0 if vectors is None else len(vectors)}",
         flush=True,
     )
     if stems is None or stems.empty:
@@ -1111,7 +1120,8 @@ def process_tile_gpkg(tile_job, gpkg_path, raster_profile, target_crs=None):
     nodes = _ensure_crs(nodes, target_crs)
     vectors = _ensure_crs(vectors, target_crs)
 
-    filter_geom = _window_geom_from_profile(raster_profile, tile_job.inner_window)
+    filter_geom = \
+        _window_geom_from_profile(raster_profile, tile_job.inner_window)
     stems, kept_local = _globalize_stems(stems, tile_job.tile_id, filter_geom)
     if stems.empty:
         return None, target_crs
@@ -1140,16 +1150,20 @@ def merge_selected_tile_results(
     tile_count = 0
 
     tile_records = sorted(tile_records, key=lambda item: str(item[1]))
-    gpkg_files = sorted({str(Path(gpkg_path)) for _, gpkg_path in tile_records})
+    gpkg_files = sorted(
+        {str(Path(gpkg_path)) for _, gpkg_path in tile_records})
     if gpkg_files:
-        merge_root = Path(os.path.commonpath([str(Path(p).parent) for p in gpkg_files]))
+        merge_root = Path(
+            os.path.commonpath([str(Path(p).parent) for p in gpkg_files]))
     else:
         merge_root = Path(output_gpkg).parent
     recursive_candidates = []
     if merge_root.exists():
-        recursive_candidates = sorted(str(p) for p in merge_root.rglob('*.gpkg'))
+        recursive_candidates = \
+            sorted(str(p) for p in merge_root.rglob('*.gpkg'))
     print(
-        f'MERGE DISCOVERY | root {merge_root} | gpkg_files {len(recursive_candidates)}',
+        f"MERGE DISCOVERY | root {merge_root} |"
+        f" gpkg_files {len(recursive_candidates)}",
         flush=True,
     )
     for candidate in recursive_candidates[:5]:
@@ -1176,7 +1190,8 @@ def merge_selected_tile_results(
                 pass
 
     if merged_stems or merged_nodes or merged_vectors:
-        written_gpkg = _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
+        written_gpkg = _write_merged(
+            output_gpkg, merged_stems, merged_nodes, merged_vectors)
         print("")
         print("MERGE SUMMARY")
         print(f"Tiles processed:       {tile_count}")
@@ -1192,7 +1207,8 @@ def merge_selected_tile_results(
         print("Total nodes written:   0")
         print("Total vectors written: 0")
         print(f"No output GPKG created: {output_gpkg} (0 features written)")
-    return written_gpkg if merged_stems or merged_nodes or merged_vectors else output_gpkg
+    return written_gpkg if merged_stems or merged_nodes or merged_vectors\
+        else output_gpkg
 
 
 def _concat_merged_layer(gdfs):
@@ -1211,7 +1227,8 @@ def _concat_merged_layer(gdfs):
 
 
 
-def _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors):
+def _write_merged(output_gpkg, merged_stems, merged_nodes,
+                 merged_vectors):
     stems_gdf = _concat_merged_layer(merged_stems)
     nodes_gdf = _concat_merged_layer(merged_nodes)
     vectors_gdf = _concat_merged_layer(merged_vectors)
@@ -1260,16 +1277,21 @@ def _stem_from_row(row):
     sy = getattr(row, 'start_y', None)
     ex = getattr(row, 'stop_x', None)
     ey = getattr(row, 'stop_y', None)
-    start_xy = coords[0] if sx is None or sy is None else (float(sx), float(sy))
-    stop_xy = coords[-1] if ex is None or ey is None else (float(ex), float(ey))
+    start_xy = \
+        coords[0] if sx is None or sy is None else (float(sx), float(sy))
+    stop_xy = \
+        coords[-1] if ex is None or ey is None else (float(ex), float(ey))
     return Stem(
         start=Point(start_xy),
         stop=Point(stop_xy),
         path=LineString(coords),
         vector=[],
-        segment_diameter_list=[float(v) for v in _json_list_or_empty(getattr(row, 'd_json', []))],
-        segment_length_list=[float(v) for v in _json_list_or_empty(getattr(row, 'l_json', []))],
-        segment_volume_list=[float(v) for v in _json_list_or_empty(getattr(row, 'v_json', []))],
+        segment_diameter_list=[float(v) \
+            for v in _json_list_or_empty(getattr(row, 'd_json', []))],
+        segment_length_list=[float(v) \
+            for v in _json_list_or_empty(getattr(row, 'l_json', []))],
+        segment_volume_list=[float(v) \
+            for v in _json_list_or_empty(getattr(row, 'v_json', []))],
         crs=getattr(row, 'crs', None),
     )
 
@@ -1298,8 +1320,12 @@ def _restore_stem_measurement_vectors(stem, config=None):
     if len(existing) >= len(coords):
         return stem
 
-    default_half = float(getattr(config, 'diameter_vector_half_length_m', 1.0))         if config is not None else 1.0
-    diameter_method = str(getattr(config, 'diameter_method', 'contour') or 'contour')         if config is not None else 'contour'
+    default_half = float(getattr(
+        config, 'diameter_vector_half_length_m', 1.0)) \
+            if config is not None else 1.0
+    diameter_method = str(getattr(
+        config, 'diameter_method', 'contour') or 'contour') \
+            if config is not None else 'contour'
     diameters = list(getattr(stem, 'segment_diameter_list', []) or [])
 
     rebuilt = []
@@ -1359,11 +1385,13 @@ def _reconstruct_edge_stems_for_tiled_merge(
     edge_buffer_m,
     config=None,
 ):
-    """Reconnect edge candidates using the same connect_stems pipeline as tile-local merging.
+    """Reconnect edge candidates using the same connect_stems pipeline
+    as tile-local merging.
 
-    Important: we keep the direct output of Vec.connect_stems() and do NOT rebuild merged
-    edge stems from broad contributor matching. That contributor-based reconstruction could
-    bypass local gates and reintroduce repeated paths or jump segments.
+    Important: we keep the direct output of Vec.connect_stems() and do
+    NOT rebuild merged edge stems from broad contributor matching. That
+    contributor-based reconstruction could bypass local gates and reintroduce
+    repeated paths or jump segments.
     """
     stems_gdf = _concat_merged_layer(merged_stems)
     if stems_gdf is None or stems_gdf.empty:
@@ -1378,7 +1406,8 @@ def _reconstruct_edge_stems_for_tiled_merge(
         tile_rows = stems_gdf[stems_gdf.get('tile_id', '') == tile_id]
         if tile_rows.empty:
             continue
-        edge_band, raster_crs = _tile_edge_band_geom(raster_path, edge_buffer_m)
+        edge_band, raster_crs = \
+            _tile_edge_band_geom(raster_path, edge_buffer_m)
         if edge_band is None:
             continue
         tile_rows = _ensure_crs(tile_rows, target_crs or raster_crs)
@@ -1389,7 +1418,8 @@ def _reconstruct_edge_stems_for_tiled_merge(
         edge_indices.update(idx)
 
     print(
-        f"MERGE EDGE CONNECT | candidates {len(edge_indices)} | total {len(stems_gdf)} | edge_buffer_m {edge_buffer_m}",
+        f"MERGE EDGE CONNECT | candidates {len(edge_indices)} |"
+        f" total {len(stems_gdf)} | edge_buffer_m {edge_buffer_m}",
         flush=True,
     )
 
@@ -1414,15 +1444,20 @@ def _reconstruct_edge_stems_for_tiled_merge(
     else:
         recon_cfg = config
 
-    connected_edge_stems = Vec.connect_stems(list(original_edge_stems), recon_cfg)
+    connected_edge_stems = \
+        Vec.connect_stems(list(original_edge_stems), recon_cfg)
 
-    # Quantify the direct connect_stems outputs so their profile metadata is refreshed
+    # Quantify the direct connect_stems outputs
+    # so their profile metadata is refreshed
     # consistently with geometry after edge merging.
-    quantified_edge_stems = [Quant.quantify_stem(stem) for stem in connected_edge_stems]
+    quantified_edge_stems = \
+        [Quant.quantify_stem(stem) for stem in connected_edge_stems]
 
     final_stems = inner_stems + quantified_edge_stems
     print(
-        f"MERGE EDGE CONNECT | inner {len(inner_stems)} | connected_edge {len(quantified_edge_stems)} | final {len(final_stems)}",
+        f"MERGE EDGE CONNECT | inner {len(inner_stems)} | "
+        f"connected_edge {len(quantified_edge_stems)} | "
+        f"final {len(final_stems)}",
         flush=True,
     )
     return _stems_to_layer_gdfs(final_stems, target_crs, config=recon_cfg)
@@ -1441,9 +1476,11 @@ def merge_and_filter_tiled_results(
     _remove_existing_output(output_gpkg)
 
     tiles = _detect_tiles(work_dir, output_gpkg)
-    recursive_candidates = sorted(str(p) for p in Path(work_dir).rglob('*.gpkg'))
+    recursive_candidates = \
+        sorted(str(p) for p in Path(work_dir).rglob('*.gpkg'))
     print(
-        f'MERGE DISCOVERY | root {work_dir} | gpkg_files {len(recursive_candidates)}',
+        f"MERGE DISCOVERY | root {work_dir} |"
+        f" gpkg_files {len(recursive_candidates)}",
         flush=True,
     )
     for candidate in recursive_candidates[:5]:
@@ -1485,16 +1522,20 @@ def merge_and_filter_tiled_results(
         total_vectors += n_v
 
     if merged_stems or merged_nodes or merged_vectors:
-        stems_gdf, nodes_gdf, vectors_gdf = _reconstruct_edge_stems_for_tiled_merge(
-            merged_stems,
-            tiles,
-            target_crs,
-            edge_buffer_m,
-            config=config,
-        )
-        final_stems = [stems_gdf] if stems_gdf is not None and not stems_gdf.empty else []
-        final_nodes = [nodes_gdf] if nodes_gdf is not None and not nodes_gdf.empty else []
-        final_vectors = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
+        stems_gdf, nodes_gdf, vectors_gdf = \
+            _reconstruct_edge_stems_for_tiled_merge(
+                merged_stems,
+                tiles,
+                target_crs,
+                edge_buffer_m,
+                config=config,
+            )
+        final_stems = [stems_gdf] \
+            if stems_gdf is not None and not stems_gdf.empty else []
+        final_nodes = [nodes_gdf] \
+            if nodes_gdf is not None and not nodes_gdf.empty else []
+        final_vectors = [vectors_gdf] \
+            if vectors_gdf is not None and not vectors_gdf.empty else []
         written_gpkg = _write_merged(
             output_gpkg,
             final_stems,
@@ -1506,7 +1547,8 @@ def merge_and_filter_tiled_results(
             written_layers = list(fiona.listlayers(written_gpkg))
         except Exception as exc:
             print(
-                f"MERGE VERIFY FAIL | file {written_gpkg} | {type(exc).__name__}: {exc}",
+                f"MERGE VERIFY FAIL | file {written_gpkg} "
+                f"| {type(exc).__name__}: {exc}",
                 flush=True,
             )
 
@@ -1530,4 +1572,5 @@ def merge_and_filter_tiled_results(
         print("Total nodes written:   0")
         print("Total vectors written: 0")
         print(f"No output GPKG created: {output_gpkg} (0 features written)")
-    return written_gpkg if merged_stems or merged_nodes or merged_vectors else output_gpkg
+    return written_gpkg if merged_stems or merged_nodes or merged_vectors \
+        else output_gpkg

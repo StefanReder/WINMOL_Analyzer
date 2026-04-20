@@ -57,7 +57,8 @@ def _prepare_inference_batch(raw_tiles, raw_masks, config):
     )
 
     if raw_masks is None:
-        raw_masks = [np.any(_raw_tile_to_batchable(t) != 0, axis=2) for t in raw_tiles]
+        raw_masks = [np.any(
+            _raw_tile_to_batchable(t) != 0, axis=2) for t in raw_tiles]
 
     mask_batch = np.stack(
         [m.astype(np.float32)[:, :, None] for m in raw_masks],
@@ -75,8 +76,10 @@ def _prepare_inference_batch(raw_tiles, raw_masks, config):
 
 def _resampling_layout(shape, profile, config):
     height, width = int(shape[0]), int(shape[1])
-    px_per_tile_x = int(np.ceil(config.tile_size / abs(profile['transform'][0])))
-    px_per_tile_y = int(np.ceil(config.tile_size / abs(profile['transform'][4])))
+    px_per_tile_x = int(np.ceil(config.tile_size
+                                / abs(profile['transform'][0])))
+    px_per_tile_y = int(np.ceil(config.tile_size
+                                / abs(profile['transform'][4])))
     overlap_img_x = config.overlap_pred * px_per_tile_x / config.img_width
     overlap_img_y = config.overlap_pred * px_per_tile_y / config.img_width
     x_tiles = int(np.ceil(width / max(px_per_tile_x - overlap_img_x, 1)))
@@ -112,9 +115,12 @@ def _iter_tile_jobs(layout, config):
     src_height = max(1, layout['px_per_tile_y'] - 1)
     tile_index = 0
     for i in range(layout['y_tiles']):
-        src_row = int(np.floor(i * (layout['px_per_tile_y'] - layout['overlap_img_y'])))
+        src_row = int(np.floor(i * (layout['px_per_tile_y'] 
+                                    - layout['overlap_img_y'])))
         for j in range(layout['x_tiles']):
-            src_col = int(np.floor(j * (layout['px_per_tile_x'] - layout['overlap_img_x'])))
+            src_col = \
+                int(np.floor(j * (layout['px_per_tile_x'] 
+                                  - layout['overlap_img_x'])))
             dst_row = config.overlap_pred // 2 + i * core
             dst_col = config.overlap_pred // 2 + j * core
             yield {
@@ -201,12 +207,14 @@ def _read_batch_jobs(src, indexes, batch_jobs):
         t0 = time.perf_counter()
         tile = tile.transpose(1, 2, 0)
         pixel_mask = np.any(tile != 0, axis=2)
-        valid_mask = pixel_mask if np.all(gdal_mask) else (gdal_mask & pixel_mask)
+        valid_mask = \
+            pixel_mask if np.all(gdal_mask) else (gdal_mask & pixel_mask)
         stats['prep_s'] += time.perf_counter() - t0
 
         raw_tiles.append(tile)
         raw_masks.append(valid_mask)
-    stats['read_s'] = stats['read_data_s'] + stats['read_mask_s'] + stats['prep_s']
+    stats['read_s'] = \
+        stats['read_data_s'] + stats['read_mask_s'] + stats['prep_s']
     return raw_tiles, raw_masks, stats
 
 
@@ -237,7 +245,8 @@ def prediction_worker(
     with rasterio.open(input_raster) as src:
         indexes = list(range(1, min(cfg.n_channels, src.count) + 1))
         for batch_jobs in _group_jobs(jobs, batch_size):
-            raw_tiles, raw_masks, read_stats = _read_batch_jobs(src, indexes, batch_jobs)
+            raw_tiles, raw_masks, read_stats = \
+                _read_batch_jobs(src, indexes, batch_jobs)
             infer0 = time.perf_counter()
             pred_cores = _predict_batch(raw_tiles, raw_masks, model, cfg)
             infer_s = time.perf_counter() - infer0
@@ -296,18 +305,22 @@ def prediction_service_worker(
             }
 
             for batch_jobs in _group_jobs(jobs, batch_size):
-                raw_tiles, raw_masks, read_stats = _read_batch_jobs(src, indexes, batch_jobs)
+                raw_tiles, raw_masks,read_stats = \
+                    _read_batch_jobs(src, indexes, batch_jobs)
                 infer0 = time.perf_counter()
                 pred_cores = _predict_batch(raw_tiles, raw_masks, model, cfg)
                 stats['infer_s'] += time.perf_counter() - infer0
                 stats['read_s'] += float(read_stats.get('read_s', 0.0))
-                stats['read_data_s'] += float(read_stats.get('read_data_s', 0.0))
-                stats['read_mask_s'] += float(read_stats.get('read_mask_s', 0.0))
+                stats['read_data_s'] \
+                    += float(read_stats.get('read_data_s', 0.0))
+                stats['read_mask_s'] \
+                    += float(read_stats.get('read_mask_s', 0.0))
                 stats['prep_s'] += float(read_stats.get('prep_s', 0.0))
                 for job, pred_core in zip(batch_jobs, pred_cores):
                     outputs.append({
                         'request_index': int(job['__request_index__']),
-                        'job': {k: v for k, v in job.items() if k != '__request_index__'},
+                        'job': {k: v for k, v in job.items()
+                               if k != '__request_index__'},
                         'array': pred_core,
                     })
 
@@ -326,7 +339,8 @@ def start_multi_gpu_prediction_service(
     config,
 ):
     if not gpu_ids:
-        raise ValueError('start_multi_gpu_prediction_service requires at least one GPU id')
+        raise ValueError(
+            'start_multi_gpu_prediction_service requires at least one GPU id')
 
     ctx = mp.get_context('spawn')
     task_q = ctx.Queue(maxsize=max(8, len(gpu_ids) * 4))
@@ -391,7 +405,8 @@ def predict_jobs_multi_gpu(service, jobs):
 
     gpu_ids = list(service.get('gpu_ids') or [])
     if not gpu_ids:
-        raise ValueError('predict_jobs_multi_gpu requires at least one GPU id in service')
+        raise ValueError(
+            'predict_jobs_multi_gpu requires at least one GPU id in service')
 
     request_id = int(service.get('next_request_id', 1))
     service['next_request_id'] = request_id + 1
