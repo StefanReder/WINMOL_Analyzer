@@ -27,8 +27,9 @@ class RasterInfo:
                 dtype=str(value.get('dtype', 'unknown')),
                 pixel_size_x=float(value.get('pixel_size_x', 0.0) or 0.0),
                 pixel_size_y=float(value.get('pixel_size_y', 0.0) or 0.0),
-                estimated_input_gb=float(value.get(
-                    'estimated_input_gb', 0.0) or 0.0),
+                estimated_input_gb=float(
+                    value.get('estimated_input_gb', 0.0) or 0.0
+                ),
             )
         return cls(
             width=int(getattr(value, 'width', 0)),
@@ -37,8 +38,9 @@ class RasterInfo:
             dtype=str(getattr(value, 'dtype', 'unknown')),
             pixel_size_x=float(getattr(value, 'pixel_size_x', 0.0) or 0.0),
             pixel_size_y=float(getattr(value, 'pixel_size_y', 0.0) or 0.0),
-            estimated_input_gb=float(getattr(
-                value, 'estimated_input_gb', 0.0) or 0.0),
+            estimated_input_gb=float(
+                getattr(value, 'estimated_input_gb', 0.0) or 0.0
+            ),
         )
 
 
@@ -73,7 +75,9 @@ def _cfg(config: Any, key: str, default: Any) -> Any:
 
 
 def _meters_to_pixels(
-    tile_overlap_m: float, pixel_size_x: float, pixel_size_y: float
+    tile_overlap_m: float,
+    pixel_size_x: float,
+    pixel_size_y: float,
 ) -> int:
     px = max(abs(pixel_size_x) or 0.0, abs(pixel_size_y) or 0.0)
     if px <= 0.0:
@@ -88,8 +92,9 @@ def _estimate_prediction_tiles(config: Any, raster: RasterInfo) -> int:
     px_y = abs(raster.pixel_size_y) or 0.0
     if px_x <= 0.0 or px_y <= 0.0:
         return 0
-    px_per_tile_x = int(math.ceil(float(_cfg(config, 'tile_size', 15.0)) / px_x))
-    px_per_tile_y = int(math.ceil(float(_cfg(config, 'tile_size', 15.0)) / px_y))
+    tile_size = float(_cfg(config, 'tile_size', 15.0))
+    px_per_tile_x = int(math.ceil(tile_size / px_x))
+    px_per_tile_y = int(math.ceil(tile_size / px_y))
     overlap_pred = int(_cfg(config, 'overlap_pred', 8))
     img_width = int(_cfg(config, 'img_width', 512))
     overlap_img_x = overlap_pred * px_per_tile_x / max(img_width, 1)
@@ -115,6 +120,33 @@ def _gpu_memory_gb(hardware: Any) -> float:
     return max(values) if values else 0.0
 
 
+def _vector_worker_split(
+    config: Any,
+    hw_cpu: int,
+    cpu_workers: int,
+    tiles: int,
+    process_type: str,
+    huge_nodes_job: bool,
+) -> tuple[int, int]:
+    if process_type == 'Stems':
+        return 1, max(1, cpu_workers)
+
+    if tiles < 8 or hw_cpu < 8:
+        inner = cpu_workers if not huge_nodes_job else max(1, hw_cpu // 5)
+        return 1, max(1, inner)
+
+    max_tile_workers = max(
+        1,
+        int(_cfg(config, 'max_vector_tile_workers', 4)),
+    )
+    tile_workers = min(max_tile_workers, max(1, cpu_workers // 4), tiles)
+    if tile_workers <= 1:
+        inner = cpu_workers if not huge_nodes_job else max(1, hw_cpu // 5)
+        return 1, max(1, inner)
+
+    return max(1, tile_workers), 1
+
+
 def _resolve_prediction_mode(config: Any, scen: str) -> str:
     pref = str(_cfg(config, 'prediction_backend', 'auto')).lower()
     if pref == 'cpu':
@@ -132,13 +164,20 @@ def _resolve_prediction_mode(config: Any, scen: str) -> str:
     return 'multi_gpu_stream'
 
 
-def build_execution_plan(config: Any, hardware: Any, raster_info: Any,
-                         process_type: str) -> ExecutionPlan:
+def build_execution_plan(
+    config: Any,
+    hardware: Any,
+    raster_info: Any,
+    process_type: str,
+) -> ExecutionPlan:
     raster = RasterInfo.from_any(raster_info)
     tile_inner_px = int(_cfg(config, 'tile_inner_px', 4096))
     tile_overlap_m = float(_cfg(config, 'tile_overlap_m', 12.0))
     halo_px = _meters_to_pixels(
-        tile_overlap_m, raster.pixel_size_x, raster.pixel_size_y)
+        tile_overlap_m,
+        raster.pixel_size_x,
+        raster.pixel_size_y,
+    )
     keep_temp = bool(_cfg(config, 'keep_temp_tiles', False))
     max_gpu_workers = int(_cfg(config, 'max_gpu_workers', 8))
     hw_cpu = max(1, int(getattr(hardware, 'cpu_count', 1) or 1))
@@ -150,23 +189,46 @@ def build_execution_plan(config: Any, hardware: Any, raster_info: Any,
     scen = _scenario(hardware)
     gpu_mem_gb = _gpu_memory_gb(hardware)
     large_prediction_job = raster.estimated_input_gb >= 4.0 or tiles >= 800
-    huge_nodes_job = process_type in {'Trees', 'Nodes'} and (tiles >= 1200 or large_prediction_job)
+    huge_nodes_job = (
+        process_type in {'Trees', 'Nodes'}
+        and (tiles >= 1200 or large_prediction_job)
+    )
 
     if scen == CPU_ONLY:
-        cpu_workers = max(1, min(
-            max_cpu_workers,
-            int(round(max_cpu_workers * 0.75)) or 1,
-        ))
+        cpu_workers = max(
+            1,
+            min(max_cpu_workers, int(round(max_cpu_workers * 0.75)) or 1),
+        )
         gpu_workers = 0
-        prediction_batch_size = max(1, int(_cfg(config, 'prediction_batch_cpu', 1)))
-        producer_queue_batches = max(2, int(_cfg(config, 'producer_queue_batches', 4)))
-        producer_workers = max(1, int(_cfg(config, 'prediction_producer_workers_cpu', 1)))
-        progress_interval_s = float(_cfg(config, 'progress_interval_s_cpu', 45.0))
+        prediction_batch_size = max(
+            1,
+            int(_cfg(config, 'prediction_batch_cpu', 1)),
+        )
+        producer_queue_batches = max(
+            2,
+            int(_cfg(config, 'producer_queue_batches', 4)),
+        )
+        producer_workers = max(
+            1,
+            int(_cfg(config, 'prediction_producer_workers_cpu', 1)),
+        )
+        progress_interval_s = float(
+            _cfg(config, 'progress_interval_s_cpu', 45.0)
+        )
     elif scen == SINGLE_GPU:
-        cpu_workers = max(1, min(
-            max_cpu_workers,
-            int(_cfg(config, 'single_gpu_cpu_workers', min(12, max(8, hw_cpu // 2)))),
-        ))
+        cpu_workers = max(
+            1,
+            min(
+                max_cpu_workers,
+                int(
+                    _cfg(
+                        config,
+                        'single_gpu_cpu_workers',
+                        min(12, max(8, hw_cpu // 2)),
+                    )
+                ),
+            ),
+        )
         gpu_workers = 1
         if gpu_mem_gb >= 20:
             default_batch = 8 if huge_nodes_job or large_prediction_job else 4
@@ -174,18 +236,31 @@ def build_execution_plan(config: Any, hardware: Any, raster_info: Any,
             default_batch = 4
         else:
             default_batch = 2
-        prediction_batch_size = max(1, min(
-            int(_cfg(config, 'prediction_batch_max_gpu', 12)),
-            int(_cfg(config, 'prediction_batch_gpu', default_batch)),
-        ))
-        producer_queue_batches = max(4, int(_cfg(config, 'producer_queue_batches', 8)))
+        prediction_batch_size = max(
+            1,
+            min(
+                int(_cfg(config, 'prediction_batch_max_gpu', 12)),
+                int(_cfg(config, 'prediction_batch_gpu', default_batch)),
+            ),
+        )
+        producer_queue_batches = max(
+            4,
+            int(_cfg(config, 'producer_queue_batches', 8)),
+        )
         if huge_nodes_job:
             producer_queue_batches = max(producer_queue_batches, 8)
-        producer_workers = int(_cfg(config, 'prediction_producer_workers_gpu', 3))
+        producer_workers = int(
+            _cfg(config, 'prediction_producer_workers_gpu', 3)
+        )
         if cpu_workers < 10:
             producer_workers = min(producer_workers, 2)
-        producer_workers = max(1, min(producer_workers, max(1, cpu_workers // 3)))
-        progress_interval_s = float(_cfg(config, 'progress_interval_s_gpu', 60.0))
+        producer_workers = max(
+            1,
+            min(producer_workers, max(1, cpu_workers // 3)),
+        )
+        progress_interval_s = float(
+            _cfg(config, 'progress_interval_s_gpu', 60.0)
+        )
     else:
         gpu_available = int(getattr(hardware, 'gpu_count', 0) or 0)
         gpu_workers = max(1, min(max_gpu_workers, gpu_available))
@@ -195,10 +270,19 @@ def build_execution_plan(config: Any, hardware: Any, raster_info: Any,
             gpu_workers = min(gpu_workers, 4)
         else:
             gpu_workers = min(gpu_workers, 8)
-        cpu_workers = max(1, min(
-            max_cpu_workers,
-            int(_cfg(config, 'multi_gpu_cpu_workers', max(24, int(max_cpu_workers * 0.75)))),
-        ))
+        cpu_workers = max(
+            1,
+            min(
+                max_cpu_workers,
+                int(
+                    _cfg(
+                        config,
+                        'multi_gpu_cpu_workers',
+                        max(24, int(max_cpu_workers * 0.75)),
+                    )
+                ),
+            ),
+        )
         if gpu_mem_gb >= 70:
             default_batch = 8
         elif gpu_mem_gb >= 40:
@@ -211,16 +295,33 @@ def build_execution_plan(config: Any, hardware: Any, raster_info: Any,
         if multi_gpu_batch is None:
             multi_gpu_batch = default_batch
 
-        prediction_batch_size = max(1, min(
-            int(_cfg(config, 'prediction_batch_max_gpu', 12)),
-            int(multi_gpu_batch),
-        ))
-        producer_queue_batches = max(4, int(_cfg(config, 'producer_queue_batches', 8)))
-        producer_workers = max(1, int(_cfg(config, 'prediction_producer_workers_multi_gpu', 2)))
-        progress_interval_s = float(_cfg(config, 'progress_interval_s_multi_gpu', 20.0))
+        prediction_batch_size = max(
+            1,
+            min(
+                int(_cfg(config, 'prediction_batch_max_gpu', 12)),
+                int(multi_gpu_batch),
+            ),
+        )
+        producer_queue_batches = max(
+            4,
+            int(_cfg(config, 'producer_queue_batches', 8)),
+        )
+        producer_workers = max(
+            1,
+            int(_cfg(config, 'prediction_producer_workers_multi_gpu', 2)),
+        )
+        progress_interval_s = float(
+            _cfg(config, 'progress_interval_s_multi_gpu', 20.0)
+        )
 
-    vector_tile_workers = 1
-    vector_inner_workers = cpu_workers if not huge_nodes_job else max(1, hw_cpu // 5)
+    vector_tile_workers, vector_inner_workers = _vector_worker_split(
+        config,
+        hw_cpu,
+        cpu_workers,
+        tiles,
+        process_type,
+        huge_nodes_job,
+    )
     prediction_mode = _resolve_prediction_mode(config, scen)
     vector_mode = 'none' if process_type == 'Stems' else 'tiled'
 

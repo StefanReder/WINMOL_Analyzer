@@ -935,7 +935,10 @@ def _raster_filter_geom(raster_path, edge_buffer_m):
     try:
         with rasterio.open(raster_path) as src:
             geom = box(*src.bounds)
-            return geom.buffer(-abs(edge_buffer_m)), src.crs
+            inner = geom.buffer(-abs(edge_buffer_m))
+            if getattr(inner, 'is_empty', False):
+                inner = geom
+            return inner, src.crs
     except Exception:
         return None, None
 
@@ -1285,8 +1288,48 @@ def _stems_from_gdf(stems_gdf):
     return stems
 
 
-def _stems_to_layer_gdfs(stems, crs):
+def _restore_stem_measurement_vectors(stem, config=None):
+    coords = list(getattr(getattr(stem, 'path', None), 'coords', []) or [])
+    if len(coords) < 2:
+        stem.vector = []
+        return stem
+
+    existing = list(getattr(stem, 'vector', []) or [])
+    if len(existing) >= len(coords):
+        return stem
+
+    default_half = float(getattr(config, 'diameter_vector_half_length_m', 1.0))         if config is not None else 1.0
+    diameter_method = str(getattr(config, 'diameter_method', 'contour') or 'contour')         if config is not None else 'contour'
+    diameters = list(getattr(stem, 'segment_diameter_list', []) or [])
+
+    rebuilt = []
+    for idx, xy in enumerate(coords):
+        try:
+            normal = Quant._local_normal(coords, idx)
+        except Exception:
+            normal = (0.0, 1.0)
+
+        half_len = default_half
+        if diameter_method == 'edt' and idx < len(diameters):
+            try:
+                half_len = max(default_half, float(diameters[idx]) / 2.0)
+            except Exception:
+                half_len = default_half
+
+        try:
+            rebuilt.append(Quant._measurement_vector(xy, normal, half_len))
+        except Exception:
+            continue
+
+    stem.vector = rebuilt
+    return stem
+
+
+def _stems_to_layer_gdfs(stems, crs, config=None):
     profile = {'crs': crs}
+    if stems:
+        for stem in stems:
+            _restore_stem_measurement_vectors(stem, config=config)
     stems_gdf = stems_to_gdf(stems, profile) if stems else None
     nodes_gdf = nodes_to_gdf(stems, profile) if stems else None
     vectors_gdf = vectors_to_gdf(stems, profile) if stems else None
@@ -1309,145 +1352,12 @@ def _tile_edge_band_geom(raster_path, edge_buffer_m):
         return None, None
 
 
-def _reverse_stem_profile(stem):
-    coords = list(stem.path.coords)
-    rev_coords = list(reversed(coords))
-    rev_d = list(reversed(list(getattr(stem, 'segment_diameter_list', []))))
-    rev_l = list(reversed(list(getattr(stem, 'segment_length_list', []))))
-    rev_v = list(reversed(list(getattr(stem, 'segment_volume_list', []))))
-    return Stem(
-        start=Point(rev_coords[0]),
-        stop=Point(rev_coords[-1]),
-        path=LineString(rev_coords),
-        vector=list(getattr(stem, 'vector', [])),
-        segment_diameter_list=rev_d,
-        segment_length_list=rev_l,
-        segment_volume_list=rev_v,
-        crs=getattr(stem, 'crs', None),
-    )
-
-
-def _orient_stem_along_merged_path(stem, merged_path):
-    try:
-        s_proj = merged_path.project(Point(stem.start.coords[0]))
-        e_proj = merged_path.project(Point(stem.stop.coords[0]))
-    except Exception:
-        return stem
-    if s_proj <= e_proj:
-        return stem
-    return _reverse_stem_profile(stem)
-
-
-def _match_edge_contributors(merged_stem, original_edge_stems, used, tol=1e-6):
-    contributors = []
-    try:
-        band = merged_stem.path.buffer(max(float(tol), 1e-6))
-    except Exception:
-        band = None
-    for idx, stem in enumerate(original_edge_stems):
-        if idx in used:
-            continue
-        try:
-            same_geom = stem.path.equals(merged_stem.path)
-        except Exception:
-            same_geom = False
-        try:
-            intersects = band.intersects(stem.path) if band is not None else False
-        except Exception:
-            intersects = False
-        try:
-            endpoints_on_path = (
-                merged_stem.path.distance(stem.start) <= tol
-                or merged_stem.path.distance(stem.stop) <= tol
-            )
-        except Exception:
-            endpoints_on_path = False
-        if same_geom or intersects or endpoints_on_path:
-            contributors.append((idx, stem))
-    return contributors
-
-
-def _rebuild_connected_stem_profile(merged_stem, contributors):
-    if not contributors:
-        stem = Stem(
-            start=Point(merged_stem.start.coords[0]),
-            stop=Point(merged_stem.stop.coords[0]),
-            path=LineString(list(merged_stem.path.coords)),
-            vector=list(getattr(merged_stem, 'vector', [])),
-            segment_diameter_list=list(getattr(merged_stem, 'segment_diameter_list', [])),
-            segment_length_list=list(getattr(merged_stem, 'segment_length_list', [])),
-            segment_volume_list=list(getattr(merged_stem, 'segment_volume_list', [])),
-            crs=getattr(merged_stem, 'crs', None),
-        )
-        return Quant.quantify_stem(stem)
-
-    oriented = []
-    for _, stem in contributors:
-        s = _orient_stem_along_merged_path(stem, merged_stem.path)
-        try:
-            start_proj = merged_stem.path.project(Point(s.start.coords[0]))
-            stop_proj = merged_stem.path.project(Point(s.stop.coords[0]))
-            pos = min(start_proj, stop_proj)
-        except Exception:
-            pos = 0.0
-        oriented.append((pos, s))
-    oriented.sort(key=lambda item: item[0])
-
-    coords = []
-    diameters = []
-    for _, stem in oriented:
-        stem_coords = list(stem.path.coords)
-        stem_d = list(getattr(stem, 'segment_diameter_list', []))
-        if not stem_coords:
-            continue
-        if not stem_d:
-            stem_d = [0.0] * len(stem_coords)
-        if len(stem_d) < len(stem_coords):
-            fill = stem_d[-1] if stem_d else 0.0
-            stem_d = stem_d + [fill] * (len(stem_coords) - len(stem_d))
-        elif len(stem_d) > len(stem_coords):
-            stem_d = stem_d[:len(stem_coords)]
-
-        if not coords:
-            coords = stem_coords[:]
-            diameters = stem_d[:]
-            continue
-
-        if tuple(coords[-1]) == tuple(stem_coords[0]):
-            coords.extend(stem_coords[1:])
-            diameters.extend(stem_d[1:])
-        else:
-            coords.extend(stem_coords)
-            diameters.extend(stem_d)
-
-    if len(coords) < 2:
-        coords = list(merged_stem.path.coords)
-    if len(diameters) < len(coords):
-        fill = diameters[-1] if diameters else 0.0
-        diameters = diameters + [fill] * (len(coords) - len(diameters))
-    elif len(diameters) > len(coords):
-        diameters = diameters[:len(coords)]
-
-    rebuilt = Stem(
-        start=Point(coords[0]),
-        stop=Point(coords[-1]),
-        path=LineString(coords),
-        vector=list(getattr(merged_stem, 'vector', [])),
-        segment_diameter_list=diameters,
-        segment_length_list=[],
-        segment_volume_list=[],
-        crs=getattr(merged_stem, 'crs', None),
-    )
-    return Quant.quantify_stem(rebuilt)
-
-
 def _reconstruct_edge_stems_for_tiled_merge(
     merged_stems,
     tiles,
     target_crs,
     edge_buffer_m,
     config=None,
-    stem_map_path=None,
 ):
     """Reconnect edge candidates using the same connect_stems pipeline as tile-local merging.
 
@@ -1485,7 +1395,7 @@ def _reconstruct_edge_stems_for_tiled_merge(
 
     all_stems = _stems_from_gdf(stems_gdf)
     if not edge_indices:
-        return _stems_to_layer_gdfs(all_stems, target_crs)
+        return _stems_to_layer_gdfs(all_stems, target_crs, config=config)
 
     edge_gdf = stems_gdf.loc[sorted(edge_indices)].copy()
     inner_gdf = stems_gdf.drop(index=sorted(edge_indices)).copy()
@@ -1494,7 +1404,7 @@ def _reconstruct_edge_stems_for_tiled_merge(
     original_edge_stems = _stems_from_gdf(edge_gdf)
 
     if not original_edge_stems:
-        return _stems_to_layer_gdfs(inner_stems, target_crs)
+        return _stems_to_layer_gdfs(inner_stems, target_crs, config=config)
 
     import utils.Vectorization as Vec
 
@@ -1515,7 +1425,7 @@ def _reconstruct_edge_stems_for_tiled_merge(
         f"MERGE EDGE CONNECT | inner {len(inner_stems)} | connected_edge {len(quantified_edge_stems)} | final {len(final_stems)}",
         flush=True,
     )
-    return _stems_to_layer_gdfs(final_stems, target_crs)
+    return _stems_to_layer_gdfs(final_stems, target_crs, config=recon_cfg)
 
 
 def merge_and_filter_tiled_results(
@@ -1581,12 +1491,16 @@ def merge_and_filter_tiled_results(
             target_crs,
             edge_buffer_m,
             config=config,
-            stem_map_path=stem_map_path,
         )
         final_stems = [stems_gdf] if stems_gdf is not None and not stems_gdf.empty else []
         final_nodes = [nodes_gdf] if nodes_gdf is not None and not nodes_gdf.empty else []
-        # final_vectors = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
-        written_gpkg = _write_merged(output_gpkg, final_stems, final_nodes, merged_vectors)
+        final_vectors = [vectors_gdf] if vectors_gdf is not None and not vectors_gdf.empty else []
+        written_gpkg = _write_merged(
+            output_gpkg,
+            final_stems,
+            final_nodes,
+            final_vectors,
+        )
         written_layers = []
         try:
             written_layers = list(fiona.listlayers(written_gpkg))

@@ -61,7 +61,7 @@ class Stem:
                 geom=Point(self.path.coords[j]),
                 # TODO: check this
                 vector=self.vector,
-                stem_id=self.stem_id,
+                stem_id=getattr(self, 'stem_id', -1),
                 node_id=j
             ))
         return node_list
@@ -76,7 +76,7 @@ class Stem:
                 geom=self.path,
                 # TODO: check this
                 vector=self.vector,
-                stem_id=self.stem_id,
+                stem_id=getattr(self, 'stem_id', -1),
                 node_id=j
             ))
         return vector_list

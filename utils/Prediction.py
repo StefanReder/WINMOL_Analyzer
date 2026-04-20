@@ -6,6 +6,8 @@ import os
 import queue
 import threading
 import time
+import contextlib
+import sys
 
 import numpy as np
 import rasterio
@@ -16,6 +18,29 @@ from skimage.transform import resize
 
 from classes.Timer import Timer
 from utils import IO
+
+
+@contextlib.contextmanager
+def _suppress_native_stderr(enabled=True):
+    if not enabled:
+        yield
+        return
+
+    try:
+        fd = sys.stderr.fileno()
+    except Exception:
+        yield
+        return
+
+    saved_fd = os.dup(fd)
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            os.dup2(devnull.fileno(), fd)
+            yield
+    finally:
+        os.dup2(saved_fd, fd)
+        os.close(saved_fd)
+
 
 ################################################################################
 """Prediction of the semantic stem map with U-Net"""
@@ -297,13 +322,23 @@ def _time_batch_candidate(
 
     # Warm this exact candidate once so graph/kernel setup is not charged
     # to the measured run.
-    _, warm_used = _predict_batch_adaptive(
-        tiles,
-        masks,
-        model,
-        config,
-        cand,
-    )
+    # _, warm_used = _predict_batch_adaptive(
+    #     tiles,
+    #     masks,
+    #     model,
+    #     config,
+    #     cand,
+    # )
+    quiet = bool(getattr(config, "prediction_batch_autotune_quiet", True))
+
+    with _suppress_native_stderr(quiet):
+        _, warm_used = _predict_batch_adaptive(
+            tiles,
+            masks,
+            model,
+            config,
+            cand,
+        )
     oomed = warm_used < cand
 
     measure_batch = warm_used
@@ -311,13 +346,21 @@ def _time_batch_candidate(
 
     for _ in range(repeats):
         t0 = time.perf_counter()
-        _, used = _predict_batch_adaptive(
-            sample_tiles[:measure_batch],
-            sample_masks[:measure_batch] if sample_masks is not None else None,
-            model,
-            config,
-            measure_batch,
-        )
+        # _, used = _predict_batch_adaptive(
+        #     sample_tiles[:measure_batch],
+        #     sample_masks[:measure_batch] if sample_masks is not None else None,
+        #     model,
+        #     config,
+        #     measure_batch,
+        # )
+        with _suppress_native_stderr(quiet):
+            _, used = _predict_batch_adaptive(
+                sample_tiles[:measure_batch],
+                sample_masks[:measure_batch] if sample_masks is not None else None,
+                model,
+                config,
+                measure_batch,
+            )
         elapsed = time.perf_counter() - t0
         timings.append(elapsed / max(used, 1))
         measure_batch = used

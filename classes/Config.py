@@ -26,6 +26,7 @@ class Config(object):
     prediction_batch_autotune_repeats = 5
     prediction_batch_autotune_min_improve = 0.005
     prediction_batch_autotune_stop_on_oom = True
+    prediction_batch_autotune_quiet = True
     progress_interval_s_cpu = 45.0
     progress_interval_s_gpu = 60.0
     progress_interval_s_multi_gpu = 20.0
@@ -37,6 +38,7 @@ class Config(object):
     gpu_workers = None
     vector_mode = 'none'
     vector_tile_workers = 1
+    max_vector_tile_workers = 4
     prediction_batch_size = None
     prediction_producer_workers = None
     progress_interval_s = 30.0

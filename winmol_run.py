@@ -76,7 +76,10 @@ class ImageProcessing:
             sys.exit(2)
 
         if not isinstance(overrides, dict):
-            print("Invalid WINMOL_CONFIG_OVERRIDES_JSON: top-level JSON must be an object.")
+            print(
+                "Invalid WINMOL_CONFIG_OVERRIDES_JSON: "
+                "top-level JSON must be an object."
+            )
             sys.exit(2)
 
         print("Applying config overrides from WINMOL_CONFIG_OVERRIDES_JSON:")
@@ -206,13 +209,29 @@ class ImageProcessing:
                 halo_px,
             )
             tile_paths = []
+            skipped_tiles = 0
             for job in jobs:
                 pred_tile, tile_profile = IO.load_raster_window_with_profile(
                     pred_path or self.stem_path, job.halo_window)
+                pred_arr = pred_tile if hasattr(pred_tile, 'size') else None
+                if (
+                    pred_arr is None
+                    or pred_arr.size == 0
+                    or not (pred_arr >= 1).any()
+                ):
+                    skipped_tiles += 1
+                    continue
                 tile_path = os.path.join(
                     work_dir, f"{job.tile_id}_roi_stem_map.tif")
                 IO.write_tile_raster(pred_tile, tile_profile, tile_path)
                 tile_paths.append(tile_path)
+            print(
+                f"Prepared {len(tile_paths)}/{len(jobs)} vector tiles "
+                f"with foreground | skipped_empty {skipped_tiles}"
+            )
+            if not tile_paths:
+                print("No foreground tiles found for vector stage.")
+                return None
             from utils.VectorTilePipeline import process_prediction_tiles
 
             process_prediction_tiles(
@@ -220,7 +239,7 @@ class ImageProcessing:
                 self.config,
                 self.process_type,
                 work_dir,
-                plan.vector_inner_workers,
+                plan.cpu_workers,
             )
             merged = self.run_merge_phase(plan, work_dir)
             if plan.keep_temp:
@@ -285,7 +304,10 @@ class ImageProcessing:
 
     def display_starting_text(self, plan=None):
         if plan is not None and plan.prediction_mode == 'multi_gpu_stream':
-            print("Skipping parent TensorFlow initialization for worker-local multi-GPU mode.")
+            print(
+                "Skipping parent TensorFlow initialization "
+                "for worker-local multi-GPU mode."
+            )
         else:
             print("Check CUDA environment")
             self.check_DL_env()
@@ -335,7 +357,10 @@ if __name__ == '__main__':
     hardware = image_processor.detect_hardware()
     plan = image_processor.build_plan(hardware)
     if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
-        print("Skipping parent TensorFlow runtime configuration for worker-local multi-GPU mode.")
+        print(
+            "Skipping parent TensorFlow runtime configuration "
+            "for worker-local multi-GPU mode."
+        )
     else:
         _configure_tensorflow_runtime()
     image_processor.display_starting_text(plan)

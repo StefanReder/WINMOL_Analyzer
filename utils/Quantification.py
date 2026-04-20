@@ -30,6 +30,10 @@ def _as_binary_mask(pred):
 
 
 def _worker_count(config=None):
+    proc = mp.current_process()
+    if proc.name != "MainProcess":
+        return 1
+
     value = getattr(config, 'cpu_workers', None) \
         if config is not None else None
     if value is None:
@@ -122,10 +126,12 @@ def get_diameters(stems: List[Stem], pred, profile, config=None):
     else:
         mask = None
         pred_shapes_ = (
-            {'properties': {'raster_val': v}, 'geometry': s}
-            for i, (s, v) in enumerate(
-                rasterio.features.shapes(
-                    pred_bin, mask=mask, transform=transform))
+            {'properties': {'raster_val': value}, 'geometry': geom}
+            for geom, value in rasterio.features.shapes(
+                pred_bin,
+                mask=mask,
+                transform=transform,
+            )
         )
         pred_shapes = list(pred_shapes_)
         pred_shapes = gpd.GeoDataFrame.from_features(pred_shapes)
