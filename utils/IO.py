@@ -1226,9 +1226,9 @@ def _concat_merged_layer(gdfs):
     return gpd.GeoDataFrame(merged, geometry=geom_col, crs=crs)
 
 
-
-def _write_merged(output_gpkg, merged_stems, merged_nodes,
-                 merged_vectors):
+def _write_merged(
+    output_gpkg, merged_stems, merged_nodes, merged_vectors
+):
     stems_gdf = _concat_merged_layer(merged_stems)
     nodes_gdf = _concat_merged_layer(merged_nodes)
     vectors_gdf = _concat_merged_layer(merged_vectors)
@@ -1286,12 +1286,12 @@ def _stem_from_row(row):
         stop=Point(stop_xy),
         path=LineString(coords),
         vector=[],
-        segment_diameter_list=[float(v) \
-            for v in _json_list_or_empty(getattr(row, 'd_json', []))],
-        segment_length_list=[float(v) \
-            for v in _json_list_or_empty(getattr(row, 'l_json', []))],
-        segment_volume_list=[float(v) \
-            for v in _json_list_or_empty(getattr(row, 'v_json', []))],
+        segment_diameter_list = [
+            float(v) for v in _json_list_or_empty(getattr(row, 'd_json', []))],
+        segment_length_list = [
+            float(v) for v in _json_list_or_empty(getattr(row, 'l_json', []))],
+        segment_volume_list = [
+            float(v) for v in _json_list_or_empty(getattr(row, 'v_json', []))],
         crs=getattr(row, 'crs', None),
     )
 
@@ -1320,12 +1320,12 @@ def _restore_stem_measurement_vectors(stem, config=None):
     if len(existing) >= len(coords):
         return stem
 
-    default_half = float(getattr(
-        config, 'diameter_vector_half_length_m', 1.0)) \
-            if config is not None else 1.0
-    diameter_method = str(getattr(
-        config, 'diameter_method', 'contour') or 'contour') \
-            if config is not None else 'contour'
+    default_half = \
+        float(getattr(config, 'diameter_vector_half_length_m', 1.0)) \
+        if config is not None else 1.0
+    diameter_method = \
+        str(getattr(config, 'diameter_method', 'contour') or 'contour') \
+        if config is not None else 'contour'
     diameters = list(getattr(stem, 'segment_diameter_list', []) or [])
 
     rebuilt = []

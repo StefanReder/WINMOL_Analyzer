@@ -115,11 +115,11 @@ def _iter_tile_jobs(layout, config):
     src_height = max(1, layout['px_per_tile_y'] - 1)
     tile_index = 0
     for i in range(layout['y_tiles']):
-        src_row = int(np.floor(i * (layout['px_per_tile_y'] 
+        src_row = int(np.floor(i * (layout['px_per_tile_y']
                                     - layout['overlap_img_y'])))
         for j in range(layout['x_tiles']):
             src_col = \
-                int(np.floor(j * (layout['px_per_tile_x'] 
+                int(np.floor(j * (layout['px_per_tile_x']
                                   - layout['overlap_img_x'])))
             dst_row = config.overlap_pred // 2 + i * core
             dst_col = config.overlap_pred // 2 + j * core
@@ -305,7 +305,7 @@ def prediction_service_worker(
             }
 
             for batch_jobs in _group_jobs(jobs, batch_size):
-                raw_tiles, raw_masks,read_stats = \
+                raw_tiles, raw_masks, read_stats = \
                     _read_batch_jobs(src, indexes, batch_jobs)
                 infer0 = time.perf_counter()
                 pred_cores = _predict_batch(raw_tiles, raw_masks, model, cfg)
@@ -319,8 +319,10 @@ def prediction_service_worker(
                 for job, pred_core in zip(batch_jobs, pred_cores):
                     outputs.append({
                         'request_index': int(job['__request_index__']),
-                        'job': {k: v for k, v in job.items()
-                               if k != '__request_index__'},
+                        'job': {
+                           k: v for k, v in job.items()
+                           if k != '__request_index__'
+                        },
                         'array': pred_core,
                     })
 

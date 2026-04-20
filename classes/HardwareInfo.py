@@ -61,8 +61,8 @@ class HardwareInfo:
             )
             if result.returncode != 0:
                 return []
-            return [line.strip() for line in result.stdout.splitlines() \
-                if line.strip()]
+            return [line.strip()
+                    for line in result.stdout.splitlines() if line.strip()]
         except Exception:
             return []
 
