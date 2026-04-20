@@ -81,7 +81,6 @@ def run_winmol(input_image: str, model_path: str, output_folder: str) -> None:
         input_image,
         output_stem_map,
         output_prefix,
-        output_prefix,
         "Nodes",
     ]
 

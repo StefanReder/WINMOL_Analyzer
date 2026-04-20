@@ -34,6 +34,11 @@ class Stem:
     @property
     def length(self):
         if len(self.segment_length_list) == 0:
+            if self.path is not None:
+                try:
+                    return self.path.length
+                except Exception:
+                    pass
             if self.start is not None and self.stop is not None:
                 return self.start.distance(self.stop)
             return 0
@@ -56,7 +61,7 @@ class Stem:
                 geom=Point(self.path.coords[j]),
                 # TODO: check this
                 vector=self.vector,
-                stem_id=self.stem_id,
+                stem_id=getattr(self, 'stem_id', -1),
                 node_id=j
             ))
         return node_list
@@ -71,7 +76,7 @@ class Stem:
                 geom=self.path,
                 # TODO: check this
                 vector=self.vector,
-                stem_id=self.stem_id,
+                stem_id=getattr(self, 'stem_id', -1),
                 node_id=j
             ))
         return vector_list

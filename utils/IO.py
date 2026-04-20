@@ -5,13 +5,13 @@
 
 import json
 import os
-import glob
 import tempfile
 import shutil
 import errno
 import numpy as np
 import rasterio
 import geopandas as gpd
+import fiona
 import pandas as pd
 try:
     import pyogrio
@@ -19,9 +19,6 @@ try:
 except Exception:
     pyogrio = None
     _HAVE_PYOGRIO = False
-from tensorflow import keras
-from tensorflow.keras import layers
-from tensorflow.keras.utils import get_custom_objects
 from matplotlib import pyplot as plt
 from rasterio.enums import Resampling
 from shapely.geometry import LineString, Point, box
@@ -29,13 +26,168 @@ from collections.abc import Mapping
 from pyproj import CRS
 from pathlib import Path
 
+import utils.Quantification as Quant
+from classes.Stem import Stem
+
+
 ###############################################################################
+
+"""Streaming and tiling operations"""
+
+
+def get_raster_info(path) -> dict:
+    with rasterio.open(path) as src:
+        dtype = src.dtypes[0] if src.dtypes else 'unknown'
+        estimated_input_gb = (
+            src.width * src.height * src.count * np.dtype(dtype).itemsize
+        ) / (1024 ** 3)
+        return {
+            'width': int(src.width),
+            'height': int(src.height),
+            'bands': int(src.count),
+            'dtype': str(dtype),
+            'pixel_size_x': float(abs(src.transform.a)),
+            'pixel_size_y': float(abs(src.transform.e)),
+            'estimated_input_gb': float(estimated_input_gb),
+            'crs': src.crs,
+            'transform': src.transform,
+        }
+
+
+def atomic_tmp_path(final_path: str) -> str:
+    p = Path(final_path)
+    return str(p.with_suffix(p.suffix + '.tmp'))
+
+
+def finalize_raster(tmp_path: str, final_path: str) -> str:
+    os.replace(tmp_path, final_path)
+    return final_path
+
+
+def build_safe_prediction_profile(
+    src_profile, width: int, height: int,
+    transform, compress: str | None = 'DEFLATE',
+    dtype: str = 'float32'
+):
+    profile = {
+        'driver': 'GTiff',
+        'dtype': dtype,
+        'count': 1,
+        'width': int(width),
+        'height': int(height),
+        'transform': transform,
+        'crs': src_profile.get('crs', None),
+        'tiled': True,
+        'blockxsize': 512,
+        'blockysize': 512,
+        'BIGTIFF': 'YES',
+        'interleave': 'BAND',
+    }
+    if compress is not None:
+        c = str(compress).upper()
+        if c in {'DEFLATE', 'LZW', 'ZSTD'}:
+            profile['compress'] = c
+            profile['predictor'] = 2
+            if c == 'DEFLATE':
+                profile['zlevel'] = 1
+        elif c in {'NONE', 'OFF', 'FALSE', '0'}:
+            pass
+        else:
+            profile['compress'] = 'DEFLATE'
+            profile['predictor'] = 2
+            profile['zlevel'] = 1
+    return profile
+
+
+def create_output_raster_like(
+    src_path: str,
+    dst_path: str,
+    dtype: str = "float32",
+    count: int = 1,
+    width: int | None = None,
+    height: int | None = None,
+    transform=None,
+    compress: str | None = "DEFLATE",
+):
+    os.makedirs(os.path.dirname(dst_path) or '.', exist_ok=True)
+    with rasterio.open(src_path) as src:
+        profile = build_safe_prediction_profile(
+            src.profile,
+            width=int(width or src.width),
+            height=int(height or src.height),
+            transform=transform or src.transform,
+            compress=compress,
+        )
+        profile['dtype'] = dtype
+        profile['count'] = count
+    with rasterio.open(dst_path, 'w', **profile):
+        pass
+    return profile
+
+
+def read_window(path: str, window, bands:
+                list[int] | None = None, boundless: bool = True, fill_value=0
+                ):
+    with rasterio.open(path) as src:
+        indexes = bands if bands is not None else list(range(1, src.count + 1))
+        return src.read(
+            indexes, window=window, boundless=boundless, fill_value=fill_value)
+
+
+def write_window(dst_path: str, array, window, band: int = 1):
+    with rasterio.open(dst_path, 'r+') as dst:
+        if array.ndim == 2:
+            dst.write(array, band, window=window)
+        else:
+            dst.write(array, window=window)
+
+
+def write_tile_raster(pred_tile, tile_profile, output_path: str):
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    prof = build_safe_prediction_profile(
+        tile_profile,
+        width=pred_tile.shape[1],
+        height=pred_tile.shape[0],
+        transform=tile_profile['transform'],
+        compress=None,
+    )
+    with rasterio.open(output_path, 'w', **prof) as dst:
+        dst.write(pred_tile.astype(np.uint8), 1)
+    return output_path
+
+
+def iter_prediction_tiles(src_path: str, config, tile_jobs):
+    with rasterio.open(src_path) as src:
+        for job in tile_jobs:
+            window = job.halo_window if hasattr(job, 'halo_window') else job
+            arr = src.read([1], window=window, boundless=True, fill_value=0)[0]
+            profile = src.profile.copy()
+            profile['width'] = int(window.width)
+            profile['height'] = int(window.height)
+            profile['transform'] = rasterio.windows.transform(
+                window, src.transform)
+            yield job, arr, profile
+
+
+def load_raster_window_with_profile(path: str, window):
+    with rasterio.open(path) as src:
+        pred = src.read(1, window=window, boundless=True, fill_value=0)
+        profile = src.profile.copy()
+        profile['width'] = int(window.width)
+        profile['height'] = int(window.height)
+        profile['transform'] = rasterio.windows.transform(
+            window, src.transform)
+        return pred, profile
 
 
 """File operations"""
 
 
 def load_model_from_path(model_path):
+    from tensorflow import keras
+    from tensorflow.keras import layers
+    from tensorflow.keras.utils import get_custom_objects
+
     # Function to open the model with a fallback mechanism
     def custom_dropout(**kwargs):
         if 'seed' in kwargs and isinstance(kwargs['seed'], float):
@@ -70,7 +222,8 @@ def load_model_from_path(model_path):
 
 def load_orthomosaic(path, config):
     with rasterio.open(path) as src:
-        img = src.read(list(range(1, config.n_channels + 1))).transpose(1, 2, 0)
+        img = src.read(list(range(1, config.n_channels + 1)))\
+            .transpose(1, 2, 0)
         img = (img / 255).astype(np.float32)
         return img, src.profile
 
@@ -79,7 +232,6 @@ def load_orthomosaic_with_resampling(path, config):
     with rasterio.open(path) as src:
         scale_factor_x = src.res[0] / (config.tile_size / config.img_width)
         scale_factor_y = src.res[1] / (config.tile_size / config.img_width)
-        # resample data to target shape
         img = src.read(
             list(range(1, config.n_channels + 1)),
             out_shape=(
@@ -90,7 +242,6 @@ def load_orthomosaic_with_resampling(path, config):
             resampling=Resampling.bilinear
         )
         img = img[0:3, :, :].transpose(1, 2, 0)
-        # scale image transform
         transform = src.transform * src.transform.scale(
             (src.width / img.shape[-2]),
             (src.height / img.shape[-3])
@@ -109,29 +260,36 @@ def load_stem_map(path):
         print(path)
         print("")
         with rasterio.open(path) as src:
-            pred = src.read()
-            pred = pred[0, :, :]
+            pred = src.read(1)
             profile = src.profile
         return pred, profile
+    raise ValueError(f'Unsupported stem map path: {path}')
 
 
-def export_stem_map(pred, profile, pred_dir, pred_name):
-    profile.update(dtype=rasterio.float32, count=1)
+def export_stem_map(pred, profile, pred_dir, pred_name, compress="DEFLATE"):
+    final_path = os.path.join(pred_dir, f'{pred_name}.tiff')
+    tmp_path = atomic_tmp_path(final_path)
+    os.makedirs(pred_dir or '.', exist_ok=True)
     height, width = pred.shape
-    profile['width'] = width
-    profile['height'] = height
-    with rasterio.open(
-            os.path.join(
-                pred_dir, f'{pred_name}.tiff'
-            ), 'w', **profile
-    ) as dst:
-        dst.write(pred.astype(rasterio.float32), 1)
+    safe_profile = build_safe_prediction_profile(
+        src_profile=profile,
+        width=width,
+        height=height,
+        transform=profile['transform'],
+        compress=compress,
+        dtype=str(pred.dtype),
+    )
+    with rasterio.open(tmp_path, 'w', **safe_profile) as dst:
+        dst.write(pred.astype(pred.dtype, copy=False), 1)
+    finalize_raster(tmp_path, final_path)
 
 
 def get_bounds_from_profile(profile):
     left = profile['transform'][2]
-    right = profile['transform'][2] + profile['transform'][0] * profile['width']
-    bot = profile['transform'][5] + profile['transform'][4] * profile['height']
+    right = profile['transform'][2] \
+        + profile['transform'][0] * profile['width']
+    bot = profile['transform'][5] \
+        + profile['transform'][4] * profile['height']
     top = profile['transform'][5]
     return rasterio.coords.BoundingBox(left, bot, right, top)
 
@@ -151,20 +309,17 @@ def _crs_from_profile(profile):
     if crs_in is None:
         return None
 
-    # Normalize to pyproj.CRS as reliably as possible
     try:
         crs = CRS.from_user_input(crs_in)
     except Exception:
-        # common case: rasterio.crs.CRS -> convert via WKT
         try:
             if hasattr(crs_in, "to_wkt"):
                 crs = CRS.from_wkt(crs_in.to_wkt())
             else:
-                return str(crs_in)  # last resort (often "EPSG:25833")
+                return str(crs_in)
         except Exception:
             return str(crs_in)
 
-    # Optional: prefer EPSG if available (keeps things clean & portable)
     epsg = None
     try:
         epsg = crs.to_epsg()
@@ -174,7 +329,6 @@ def _crs_from_profile(profile):
 
 
 def _jsonify_list(x):
-    # GeoPackage attributes must be scalar; store lists as JSON text
     try:
         return json.dumps([float(v) for v in x], ensure_ascii=False)
     except Exception:
@@ -187,7 +341,6 @@ def stems_to_gdf(stems, profile):
     rows = []
     geoms = []
     for i, s in enumerate(stems):
-        # start/stop are Points -> coords like [(x,y)]
         try:
             sx, sy = list(s.start.coords)[0]
         except Exception:
@@ -197,7 +350,6 @@ def stems_to_gdf(stems, profile):
         except Exception:
             ex, ey = (None, None)
 
-        # geometry: LineString
         if hasattr(s.path, "geom_type"):
             geom = s.path
         else:
@@ -227,7 +379,6 @@ def nodes_to_gdf(stems, profile):
         coords = list(s.path.coords)
         for j, xy in enumerate(coords):
             geoms.append(Point(xy))
-            # diameter at node j if available
             d = None
             try:
                 d = float(s.segment_diameter_list[j])
@@ -243,66 +394,71 @@ def nodes_to_gdf(stems, profile):
 
 
 def vectors_to_gdf(stems, profile):
-    # Match vectors_to_geojson_ CRS behavior
-    crs_epsg = profile.get("crs", None)
-    if isinstance(crs_epsg, int):
-        crs_epsg = f"EPSG:{crs_epsg}"
+    crs = _crs_from_profile(profile)
 
     rows = []
     geoms = []
 
     for i in range(len(stems)):
-        # Same iteration intent as your geojson function:
-        # for j in range(len(stems[i].path.coords))
-        # but be safe if vector/diameter lists are shorter.
         n_path = len(getattr(stems[i].path, "coords", []))
         vecs = getattr(stems[i], "vector", []) or []
         diams = getattr(stems[i], "segment_diameter_list", []) or []
 
         for j in range(n_path):
-            # Ensure we don't crash if vector list is shorter than path coords
             if j >= len(vecs):
                 continue
 
             v = vecs[j]
-
-            # Expect v to be a shapely LineString-like with .coords[:]
             try:
-                coords = list(v.coords[:])
+                raw_coords = list(v.coords[:])
             except Exception:
                 continue
 
-            # Build geometry
+            coords = []
+            bad_coords = False
+            for xy in raw_coords:
+                try:
+                    x = float(xy[0])
+                    y = float(xy[1])
+                    if not np.isfinite(x) or not np.isfinite(y):
+                        bad_coords = True
+                        break
+                    coords.append((x, y))
+                except Exception:
+                    bad_coords = True
+                    break
+
+            if bad_coords or len(coords) < 2:
+                continue
+
             try:
                 geom = LineString(coords)
             except Exception:
                 continue
 
-            # Diameter (same indexing as your geojson function; missing -> None)
+            try:
+                if geom.is_empty or (not geom.is_valid) or geom.length <= 0:
+                    continue
+            except Exception:
+                continue
+
             d = diams[j] if j < len(diams) else None
+            try:
+                d = float(d) if d is not None else None
+            except Exception:
+                d = None
 
             rows.append({
-                "stem_id": i,
-                "node": j,
-                # IMPORTANT: GPKG attrs must be scalar -> store as JSON string
-                "Vector": json.dumps(coords, ensure_ascii=False),
+                "stem_id": int(i),
+                "node": int(j),
                 "d": d,
             })
             geoms.append(geom)
 
-    return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs_epsg)
+    return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs)
 
 
 def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
-    """
-    Finalize a temporary GeoPackage in a robust, cross-platform way.
-
-    - Try atomic move (os.replace) when possible.
-    - If cross-device/cross-mount (Win errno 18 or POSIX EXDEV), copy instead.
-    - If target is locked, copy to *_new.gpkg (and if needed, *_new_<pid>.gpkg).
-    - Always removes the temporary directory on success.
-    Returns the path that was actually written.
-    """
     tmp_path = str(tmp_path)
     final_path = str(final_path)
 
@@ -322,14 +478,12 @@ def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
         yield base.with_name(base.stem + "_new" + base.suffix)
         yield base.with_name(base.stem + f"_new_{os.getpid()}" + base.suffix)
 
-    # 1) Fast path: same filesystem -> atomic move
     try:
         os.replace(tmp_path, final_path)
         _cleanup()
         return final_path
 
     except PermissionError:
-        # Destination locked: write alternative
         for alt in _alt_new_paths(dst):
             try:
                 return _copy_to(alt)
@@ -338,11 +492,8 @@ def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
         raise
 
     except OSError as e:
-        # Cross-device/mount move error:
-        # Windows commonly reports errno 18; POSIX uses errno.EXDEV.
         exdev = getattr(errno, "EXDEV", 18)
         if e.errno in (18, exdev):
-            # Copy to intended destination; if locked, fall back to *_new*
             try:
                 return _copy_to(dst)
             except PermissionError:
@@ -358,74 +509,238 @@ def _safe_finalize_gpkg(tmp_path: str, final_path: str) -> str:
 def _drop_bad_geoms(gdf):
     if gdf is None or gdf.empty:
         return gdf
-    gdf = gdf[gdf.geometry.notna()]
+    gdf = gdf[gdf.geometry.notna()].copy()
     try:
-        gdf = gdf[~gdf.geometry.is_empty]
+        gdf = gdf[~gdf.geometry.is_empty].copy()
+    except Exception:
+        pass
+    try:
+        gdf = gdf[gdf.geometry.is_valid].copy()
+    except Exception:
+        pass
+    try:
+        geom_types = gdf.geometry.geom_type.astype(str)
+        is_pointlike = geom_types.isin(["Point", "MultiPoint"])
+
+        lengths = gdf.geometry.length
+        keep = is_pointlike | ((~lengths.isna()) & (lengths > 0))
+
+        gdf = gdf[keep].copy()
     except Exception:
         pass
     return gdf
 
 
 def _normalize_dtypes(gdf):
-    """
-    Fiona can choke on pandas extension dtypes (string, Int64, boolean).
-    Convert them to plain Python/object or numpy types.
-    """
     if gdf is None or gdf.empty:
         return gdf
+
+    def _all_instance(values, types_):
+        try:
+            return all(isinstance(v, types_) for v in values)
+        except Exception:
+            return False
 
     for col in list(gdf.columns):
         if col == gdf.geometry.name:
             continue
+
         s = gdf[col]
         dt = str(s.dtype).lower()
+        non_null = [v for v in s.tolist() if pd.notna(v)]
 
-        if "string" in dt:
+        if not non_null:
             gdf[col] = s.astype(object).where(~s.isna(), None)
-        elif dt in ("int64", "float64", "object"):
             continue
-        elif "int" in dt:
-            # nullable ints -> object (or float) is safest
-            gdf[col] = s.astype("Int64").astype(object).where(~s.isna(), None)
-        elif "bool" in dt:
+
+        if "int" in dt and "interval" not in dt:
+            gdf[col] = pd.to_numeric(s, errors="coerce").astype("Int64")
+            continue
+
+        if "float" in dt:
+            gdf[col] = pd.to_numeric(s, errors="coerce").astype("float64")
+            continue
+
+        if "bool" in dt:
             gdf[col] = s.astype(object).where(~s.isna(), None)
-        else:
-            # fallback: make it object
+            continue
+
+        if "string" in dt or _all_instance(non_null, str):
             gdf[col] = s.astype(object).where(~s.isna(), None)
+            continue
+
+        if _all_instance(non_null, (int, np.integer)):
+            gdf[col] = pd.to_numeric(s, errors="coerce").astype("Int64")
+            continue
+
+        if _all_instance(non_null, (int, float, np.integer, np.floating)):
+            gdf[col] = pd.to_numeric(s, errors="coerce").astype("float64")
+            continue
+
+        gdf[col] = s.map(lambda v: None if pd.isna(v)
+                         else str(v)).astype(object)
 
     return gdf
 
 
-def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
-    """
-    layers: list of (layer_name, gdf) pairs
-    Writes to a temp gpkg and returns the temp file path.
+def _schema_type_for_series(series):
+    non_null = [v for v in series.tolist() if pd.notna(v)]
+    if not non_null:
+        return "str"
 
-    Robustness goals:
-      - Works with rasterio Profile/dict-like profiles upstream
-      - Enforces CRS consistently across layers (prevents "unknown CRS" in QGIS)
-      - Uses pyogrio if available, falls back to geopandas/fiona
-      - Handles empty layers safely
-    """
-    tmp_dir = tempfile.mkdtemp(prefix="winmol_gpkg_")
+    def _all_instance(values, types_):
+        try:
+            return all(isinstance(v, types_) for v in values)
+        except Exception:
+            return False
+
+    dt = str(series.dtype).lower()
+    if "int" in dt and "interval" not in dt:
+        return "int"
+    if "float" in dt:
+        return "float"
+    if _all_instance(non_null, (bool, np.bool_)):
+        return "int"
+    if _all_instance(non_null, (int, np.integer)):
+        return "int"
+    if _all_instance(non_null, (int, float, np.integer, np.floating)):
+        return "float"
+    return "str"
+
+
+def _infer_geometry_type(gdf):
+    try:
+        geom_types = [g.geom_type for g in gdf.geometry
+                      if g is not None and not g.is_empty]
+    except Exception:
+        geom_types = []
+
+    if not geom_types:
+        return "Unknown"
+
+    unique = set(geom_types)
+    if len(unique) == 1:
+        return next(iter(unique))
+
+    if unique <= {"LineString", "MultiLineString"}:
+        return "MultiLineString"
+    if unique <= {"Point", "MultiPoint"}:
+        return "MultiPoint"
+    if unique <= {"Polygon", "MultiPolygon"}:
+        return "MultiPolygon"
+    return "Unknown"
+
+
+def _infer_fiona_schema(gdf):
+    props = {}
+    geom_col = gdf.geometry.name
+    for col in gdf.columns:
+        if col == geom_col:
+            continue
+        props[str(col)] = _schema_type_for_series(gdf[col])
+    return {
+        "geometry": _infer_geometry_type(gdf),
+        "properties": props,
+    }
+
+
+def _feature_records(gdf, schema):
+    geom_col = gdf.geometry.name
+    prop_types = schema.get("properties", {})
+
+    for _, row in gdf.iterrows():
+        geom = row[geom_col]
+        if geom is None:
+            continue
+        try:
+            if geom.is_empty:
+                continue
+        except Exception:
+            pass
+
+        props = {}
+        for col, typ in prop_types.items():
+            val = row[col]
+            if pd.isna(val):
+                props[col] = None
+            elif typ == "int":
+                try:
+                    props[col] = int(val)
+                except Exception:
+                    props[col] = None
+            elif typ == "float":
+                try:
+                    props[col] = float(val)
+                except Exception:
+                    props[col] = None
+            else:
+                props[col] = str(val)
+
+        yield {
+            "geometry": geom.__geo_interface__,
+            "properties": props,
+        }
+
+
+def _fiona_write_layer(path, layer_name, gdf, crs, append=False):
+    schema = _infer_fiona_schema(gdf)
+
+    layer_exists = False
+    if os.path.exists(path):
+        try:
+            layer_exists = layer_name in set(fiona.listlayers(path))
+        except Exception:
+            layer_exists = False
+
+    mode = "a" if append and layer_exists else "w"
+
+    crs_wkt = None
+    if crs is not None:
+        try:
+            crs_wkt = CRS.from_user_input(crs).to_wkt()
+        except Exception:
+            try:
+                crs_wkt = crs.to_wkt()
+            except Exception:
+                crs_wkt = None
+
+    print(
+        f"Fiona schema for layer '{layer_name}': {schema} | mode {mode} | "
+        f"layer_exists {layer_exists}",
+    )
+
+    kwargs = {
+        "driver": "GPKG",
+        "layer": layer_name,
+        "schema": schema,
+    }
+    if crs_wkt is not None:
+        kwargs["crs_wkt"] = crs_wkt
+
+    with fiona.open(path, mode=mode, **kwargs) as dst:
+        dst.writerecords(_feature_records(gdf, schema))
+
+
+def _write_layers_to_temp_gpkg(  # noqa: C901
+    layers, crs, final_path: str) \
+        -> str:
+    final_parent = Path(final_path).parent
+    final_parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="winmol_gpkg_", dir=str(final_parent))
     tmp_path = str(Path(tmp_dir) / (Path(final_path).stem + ".gpkg"))
 
     def _prep(name, gdf):
-        """Normalize + drop bad geoms + enforce CRS."""
         if gdf is None:
             return None
         gdf = _drop_bad_geoms(_normalize_dtypes(gdf))
         if gdf is None or gdf.empty:
             return None
 
-        # Enforce the CRS we derived from the raster profile.
-        # Even if gdf.crs is set, we prefer the profile CRS
         if crs is not None:
             try:
                 if (gdf.crs is None) or (gdf.crs != crs):
                     gdf = gdf.set_crs(crs, allow_override=True)
             except Exception:
-                # Last-resort: try setting anyway
                 try:
                     gdf = gdf.set_crs(crs, allow_override=True)
                 except Exception:
@@ -433,21 +748,19 @@ def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
 
         return gdf
 
-    # Collect prepared non-empty layers first
     prepared = []
     for name, gdf in layers:
         pgdf = _prep(name, gdf)
         if pgdf is not None:
             prepared.append((name, pgdf))
 
-    # If *everything* is empty, still create a valid (empty) gpkg
     if not prepared:
         layer_name = layers[0][0] if layers else "layer"
-        empty = gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=crs)
+        empty = gpd.GeoDataFrame(
+            {"geometry": []}, geometry="geometry", crs=crs)
         empty.to_file(tmp_path, layer=layer_name, driver="GPKG", index=False)
         return tmp_path
 
-    # Prefer pyogrio if installed/available
     if _HAVE_PYOGRIO:
         try:
             first = True
@@ -461,20 +774,30 @@ def _write_layers_to_temp_gpkg(layers, crs, final_path: str) -> str:
                 )
                 first = False
             return tmp_path
-        except Exception:
-            # If pyogrio fails, fall back to geopandas/fiona
-            pass
+        except Exception as e:
+            print("pyogrio GeoPackage write failed, "
+                  f"falling back to Fiona: {e}")
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
-    # Fallback: geopandas/fiona
     first = True
     for name, gdf in prepared:
-        if first:
-            gdf.to_file(tmp_path, layer=name, driver="GPKG", index=False)
-            first = False
-        else:
-            gdf.to_file(
-                tmp_path, layer=name, driver="GPKG", index=False, mode="a")
-
+        print(f"Writing GPKG layer '{name}' with {len(gdf)} features")
+        print(f"Layer '{name}' dtypes: {dict(gdf.dtypes.astype(str))}")
+        try:
+            if first:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                _fiona_write_layer(tmp_path, name, gdf, crs=crs, append=False)
+                first = False
+            else:
+                _fiona_write_layer(tmp_path, name, gdf, crs=crs, append=True)
+        except Exception as e:
+            raise RuntimeError(f"Failed while writing GeoPackage layer '{name}'"
+                               f" at'{tmp_path}'") from e
     return tmp_path
 
 
@@ -543,11 +866,42 @@ def _tile_id_from_prefix(prefix):
 
 
 def _read_gpkg_layer(gpkg_path, layer_names):
+    errors = []
     for ln in layer_names:
         try:
-            return gpd.read_file(gpkg_path, layer=ln)
-        except Exception:
-            continue
+            with fiona.open(gpkg_path, layer=ln) as src:
+                feats = list(src)
+                try:
+                    crs = src.crs_wkt or src.crs
+                except Exception:
+                    crs = None
+
+            if not feats:
+                gdf = gpd.GeoDataFrame(geometry=[], crs=crs)
+            else:
+                gdf = gpd.GeoDataFrame.from_features(feats, crs=crs)
+            print(
+                f"MERGE READ OK | file {gpkg_path} |"
+                f" layer {ln} | rows {len(gdf)}",
+                flush=True,
+            )
+            return gdf
+        except Exception as exc:
+            errors.append((ln, exc))
+
+    if errors:
+        tried = ", ".join(
+            f"{ln}: {type(exc).__name__}: {exc}" for ln, exc in errors
+        )
+        print(
+            f"MERGE READ FAIL | file {gpkg_path} | tried [{tried}]",
+            flush=True,
+        )
+    else:
+        print(
+            f"MERGE READ FAIL | file {gpkg_path} | tried []",
+            flush=True,
+        )
     return gpd.GeoDataFrame(geometry=[])
 
 
@@ -581,7 +935,10 @@ def _raster_filter_geom(raster_path, edge_buffer_m):
     try:
         with rasterio.open(raster_path) as src:
             geom = box(*src.bounds)
-            return geom.buffer(-abs(edge_buffer_m)), src.crs
+            inner = geom.buffer(-abs(edge_buffer_m))
+            if getattr(inner, 'is_empty', False):
+                inner = geom
+            return inner, src.crs
     except Exception:
         return None, None
 
@@ -594,6 +951,7 @@ def _detect_tiles(work_dir, output_gpkg):
     ]
 
     tiles = []
+    work_dir_path = Path(work_dir)
 
     if rasters:
         for rf in sorted(rasters):
@@ -603,15 +961,24 @@ def _detect_tiles(work_dir, output_gpkg):
                     prefix = rf.replace(ext, "")
                     break
 
-            gpkg = sorted(glob.glob(os.path.join(work_dir, f"{prefix}*.gpkg")))
+            gpkg = sorted(
+                str(p) for p in work_dir_path.rglob(f"{prefix}*.gpkg")
+            )
             if not gpkg:
                 continue
+
+            if len(gpkg) > 1:
+                raise RuntimeError(
+                    f"Multiple GPKG candidates found "
+                    f"for tile '{prefix}': {gpkg}"
+                )
 
             tiles.append((prefix, gpkg[0], os.path.join(work_dir, rf)))
 
         return tiles
 
-    for gpkg in sorted(glob.glob(os.path.join(work_dir, "*.gpkg"))):
+    for gpkg_path in sorted(work_dir_path.rglob("*.gpkg")):
+        gpkg = str(gpkg_path)
         if output_gpkg:
             if os.path.abspath(gpkg) == os.path.abspath(output_gpkg):
                 continue
@@ -628,9 +995,24 @@ def _default_output_gpkg(work_dir, output_gpkg):
     return os.path.join(work_dir, f"{folder}_merged_data.gpkg")
 
 
+def _remove_existing_output(path):
+    if not os.path.exists(path):
+        return
+    try:
+        os.remove(path)
+    except PermissionError:
+        print(
+            f"MERGE OUTPUT LOCKED | keeping existing file and writing"
+            f" fallback if needed: {path}",
+            flush=True,
+        )
+
+
 def _globalize_stems(stems, tile_id, filter_geom):
     id_col = _pick_id_col(stems)
     if not id_col:
+        print(f"MERGE FILTER | tile {tile_id} |"
+              f" missing stem id column", flush=True)
         return gpd.GeoDataFrame(), set()
 
     stems = stems.copy()
@@ -638,8 +1020,23 @@ def _globalize_stems(stems, tile_id, filter_geom):
     stems["stem_id"] = tile_id + "_" + stems["_stem_id_local"]
     stems["tile_id"] = tile_id
 
+    before = len(stems)
     if filter_geom is not None:
-        stems = stems[stems.intersects(filter_geom)].copy()
+        kept_mask = stems.intersects(filter_geom)
+        stems = stems[kept_mask].copy()
+        print(
+            f"MERGE FILTER | tile {tile_id} | before {before} |"
+            f" after {len(stems)} "
+            f"| filter_empty {getattr(filter_geom, 'is_empty', False)} "
+            f"| filter_bounds {getattr(filter_geom, 'bounds', None)}",
+            flush=True,
+        )
+    else:
+        print(
+            f"MERGE FILTER | tile {tile_id} | before {before} |"
+            f" after {before} | filter none",
+            flush=True,
+        )
 
     kept_local = set(stems["_stem_id_local"].tolist())
     return stems, kept_local
@@ -669,6 +1066,14 @@ def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
     filter_geom, raster_crs = _raster_filter_geom(raster_path, edge_buffer_m)
 
     stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
+    print(
+        f"MERGE TILE READ | tile {tile_id} | file {gpkg_path} |"
+        f" stems {0 if stems is None else len(stems)} "
+        f"| nodes {0 if nodes is None else len(nodes)} |"
+        f" vectors {0 if vectors is None else len(vectors)} "
+        f"| raster {raster_path}",
+        flush=True,
+    )
     if stems is None or stems.empty:
         return None, target_crs
 
@@ -690,36 +1095,396 @@ def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
     return (stems, nodes_sel, vectors_sel, counts), target_crs
 
 
-def _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors):
-    if merged_stems:
-        gpd.GeoDataFrame(
-            pd.concat(merged_stems, ignore_index=True),
-        ).to_file(output_gpkg, layer="stems", driver="GPKG")
+def _window_geom_from_profile(profile, window):
+    bounds = rasterio.windows.bounds(window, profile['transform'])
+    return box(*bounds)
 
-    if merged_nodes:
-        gpd.GeoDataFrame(
-            pd.concat(merged_nodes, ignore_index=True),
-        ).to_file(output_gpkg, layer="nodes", driver="GPKG")
 
-    if merged_vectors:
-        gpd.GeoDataFrame(
-            pd.concat(merged_vectors, ignore_index=True),
-        ).to_file(output_gpkg, layer="vectors", driver="GPKG")
+def process_tile_gpkg(tile_job, gpkg_path, raster_profile, target_crs=None):
+    stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
+    print(
+        f"MERGE TILE READ | tile {tile_job.tile_id} | file {gpkg_path} |"
+        f" stems {0 if stems is None else len(stems)} "
+        f"| nodes {0 if nodes is None else len(nodes)} |"
+        f" vectors {0 if vectors is None else len(vectors)}",
+        flush=True,
+    )
+    if stems is None or stems.empty:
+        return None, target_crs
+
+    raster_crs = raster_profile.get('crs') if raster_profile else None
+    if target_crs is None:
+        target_crs = stems.crs or raster_crs
+
+    stems = _ensure_crs(stems, target_crs)
+    nodes = _ensure_crs(nodes, target_crs)
+    vectors = _ensure_crs(vectors, target_crs)
+
+    filter_geom = \
+        _window_geom_from_profile(raster_profile, tile_job.inner_window)
+    stems, kept_local = _globalize_stems(stems, tile_job.tile_id, filter_geom)
+    if stems.empty:
+        return None, target_crs
+
+    nodes_sel = _select_child(nodes, tile_job.tile_id, kept_local)
+    vectors_sel = _select_child(vectors, tile_job.tile_id, kept_local)
+    counts = (len(stems), len(nodes_sel), len(vectors_sel))
+    return (stems, nodes_sel, vectors_sel, counts), target_crs
+
+
+def merge_selected_tile_results(
+    tile_records,
+    output_gpkg: str,
+    raster_profile,
+    keep_temp: bool = False,
+):
+    _remove_existing_output(output_gpkg)
+
+    merged_stems = []
+    merged_nodes = []
+    merged_vectors = []
+    target_crs = None
+    total_stems = 0
+    total_nodes = 0
+    total_vectors = 0
+    tile_count = 0
+
+    tile_records = sorted(tile_records, key=lambda item: str(item[1]))
+    gpkg_files = sorted(
+        {str(Path(gpkg_path)) for _, gpkg_path in tile_records})
+    if gpkg_files:
+        merge_root = Path(
+            os.path.commonpath([str(Path(p).parent) for p in gpkg_files]))
+    else:
+        merge_root = Path(output_gpkg).parent
+    recursive_candidates = []
+    if merge_root.exists():
+        recursive_candidates = \
+            sorted(str(p) for p in merge_root.rglob('*.gpkg'))
+    print(
+        f"MERGE DISCOVERY | root {merge_root} |"
+        f" gpkg_files {len(recursive_candidates)}",
+        flush=True,
+    )
+    for candidate in recursive_candidates[:5]:
+        print(f'MERGE INPUT | {candidate}', flush=True)
+
+    for tile_job, gpkg_path in tile_records:
+        out, target_crs = process_tile_gpkg(
+            tile_job, gpkg_path, raster_profile, target_crs=target_crs)
+        if out is not None:
+            stems, nodes, vectors, (n_s, n_n, n_v) = out
+            merged_stems.append(stems)
+            if not nodes.empty:
+                merged_nodes.append(nodes)
+            if not vectors.empty:
+                merged_vectors.append(vectors)
+            tile_count += 1
+            total_stems += n_s
+            total_nodes += n_n
+            total_vectors += n_v
+        if not keep_temp:
+            try:
+                os.remove(gpkg_path)
+            except Exception:
+                pass
+
+    if merged_stems or merged_nodes or merged_vectors:
+        written_gpkg = _write_merged(
+            output_gpkg, merged_stems, merged_nodes, merged_vectors)
+        print("")
+        print("MERGE SUMMARY")
+        print(f"Tiles processed:       {tile_count}")
+        print(f"Total stems written:   {total_stems}")
+        print(f"Total nodes written:   {total_nodes}")
+        print(f"Total vectors written: {total_vectors}")
+        print(f"Output saved to: {written_gpkg}")
+    else:
+        print("")
+        print("MERGE SUMMARY")
+        print("Tiles processed:       0")
+        print("Total stems written:   0")
+        print("Total nodes written:   0")
+        print("Total vectors written: 0")
+        print(f"No output GPKG created: {output_gpkg} (0 features written)")
+    return written_gpkg if merged_stems or merged_nodes or merged_vectors\
+        else output_gpkg
+
+
+def _concat_merged_layer(gdfs):
+    if not gdfs:
+        return None
+
+    non_empty = [gdf for gdf in gdfs if gdf is not None and not gdf.empty]
+    if not non_empty:
+        return None
+
+    first = non_empty[0]
+    geom_col = first.geometry.name
+    crs = first.crs
+    merged = pd.concat(non_empty, ignore_index=True)
+    return gpd.GeoDataFrame(merged, geometry=geom_col, crs=crs)
+
+
+def _write_merged(
+    output_gpkg, merged_stems, merged_nodes, merged_vectors
+):
+    stems_gdf = _concat_merged_layer(merged_stems)
+    nodes_gdf = _concat_merged_layer(merged_nodes)
+    vectors_gdf = _concat_merged_layer(merged_vectors)
+
+    crs = None
+    for gdf in (stems_gdf, nodes_gdf, vectors_gdf):
+        if gdf is not None and getattr(gdf, 'crs', None) is not None:
+            crs = gdf.crs
+            break
+
+    tmp_path = _write_layers_to_temp_gpkg(
+        layers=[
+            ("stems", stems_gdf),
+            ("nodes", nodes_gdf),
+            ("vectors", vectors_gdf),
+        ],
+        crs=crs,
+        final_path=output_gpkg,
+    )
+    return _safe_finalize_gpkg(tmp_path, output_gpkg)
+
+
+def _json_list_or_empty(value):
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return value
+    try:
+        out = json.loads(value)
+        return out if isinstance(out, list) else []
+    except Exception:
+        return []
+
+
+def _stem_from_row(row):
+    geom = getattr(row, 'geometry', None)
+    if geom is None or getattr(geom, 'is_empty', True):
+        return None
+    try:
+        coords = list(geom.coords)
+    except Exception:
+        return None
+    if len(coords) < 2:
+        return None
+    sx = getattr(row, 'start_x', None)
+    sy = getattr(row, 'start_y', None)
+    ex = getattr(row, 'stop_x', None)
+    ey = getattr(row, 'stop_y', None)
+    start_xy = \
+        coords[0] if sx is None or sy is None else (float(sx), float(sy))
+    stop_xy = \
+        coords[-1] if ex is None or ey is None else (float(ex), float(ey))
+    return Stem(
+        start=Point(start_xy),
+        stop=Point(stop_xy),
+        path=LineString(coords),
+        vector=[],
+        segment_diameter_list=[
+            float(v) for v in _json_list_or_empty(getattr(row, 'd_json', []))],
+        segment_length_list=[
+            float(v) for v in _json_list_or_empty(getattr(row, 'l_json', []))],
+        segment_volume_list=[
+            float(v) for v in _json_list_or_empty(getattr(row, 'v_json', []))],
+        crs=getattr(row, 'crs', None),
+    )
+
+
+def _stems_from_gdf(stems_gdf):
+    stems = []
+    if stems_gdf is None or stems_gdf.empty:
+        return stems
+    crs = getattr(stems_gdf, 'crs', None)
+    for row in stems_gdf.itertuples(index=False):
+        stem = _stem_from_row(row)
+        if stem is None:
+            continue
+        stem.crs = crs
+        stems.append(stem)
+    return stems
+
+
+def _restore_stem_measurement_vectors(stem, config=None):
+    coords = list(getattr(getattr(stem, 'path', None), 'coords', []) or [])
+    if len(coords) < 2:
+        stem.vector = []
+        return stem
+
+    existing = list(getattr(stem, 'vector', []) or [])
+    if len(existing) >= len(coords):
+        return stem
+
+    default_half = \
+        float(getattr(config, 'diameter_vector_half_length_m', 1.0)) \
+        if config is not None else 1.0
+    diameter_method = \
+        str(getattr(config, 'diameter_method', 'contour') or 'contour') \
+        if config is not None else 'contour'
+    diameters = list(getattr(stem, 'segment_diameter_list', []) or [])
+
+    rebuilt = []
+    for idx, xy in enumerate(coords):
+        try:
+            normal = Quant._local_normal(coords, idx)
+        except Exception:
+            normal = (0.0, 1.0)
+
+        half_len = default_half
+        if diameter_method == 'edt' and idx < len(diameters):
+            try:
+                half_len = max(default_half, float(diameters[idx]) / 2.0)
+            except Exception:
+                half_len = default_half
+
+        try:
+            rebuilt.append(Quant._measurement_vector(xy, normal, half_len))
+        except Exception:
+            continue
+
+    stem.vector = rebuilt
+    return stem
+
+
+def _stems_to_layer_gdfs(stems, crs, config=None):
+    profile = {'crs': crs}
+    if stems:
+        for stem in stems:
+            _restore_stem_measurement_vectors(stem, config=config)
+    stems_gdf = stems_to_gdf(stems, profile) if stems else None
+    nodes_gdf = nodes_to_gdf(stems, profile) if stems else None
+    vectors_gdf = vectors_to_gdf(stems, profile) if stems else None
+    return stems_gdf, nodes_gdf, vectors_gdf
+
+
+def _tile_edge_band_geom(raster_path, edge_buffer_m):
+    if not raster_path:
+        return None, None
+    try:
+        with rasterio.open(raster_path) as src:
+            geom = box(*src.bounds)
+            inner = geom.buffer(-abs(edge_buffer_m))
+            if inner.is_empty:
+                band = geom
+            else:
+                band = geom.difference(inner)
+            return band, src.crs
+    except Exception:
+        return None, None
+
+
+def _reconstruct_edge_stems_for_tiled_merge(
+    merged_stems,
+    tiles,
+    target_crs,
+    edge_buffer_m,
+    config=None,
+):
+    """Reconnect edge candidates using the same connect_stems pipeline
+    as tile-local merging.
+
+    Important: we keep the direct output of Vec.connect_stems() and do
+    NOT rebuild merged edge stems from broad contributor matching. That
+    contributor-based reconstruction could bypass local gates and reintroduce
+    repeated paths or jump segments.
+    """
+    stems_gdf = _concat_merged_layer(merged_stems)
+    if stems_gdf is None or stems_gdf.empty:
+        return stems_gdf, None, None
+
+    if target_crs is not None:
+        stems_gdf = _ensure_crs(stems_gdf, target_crs)
+
+    edge_indices = set()
+    for prefix, _gpkg_path, raster_path in tiles:
+        tile_id = _tile_id_from_prefix(prefix)
+        tile_rows = stems_gdf[stems_gdf.get('tile_id', '') == tile_id]
+        if tile_rows.empty:
+            continue
+        edge_band, raster_crs = \
+            _tile_edge_band_geom(raster_path, edge_buffer_m)
+        if edge_band is None:
+            continue
+        tile_rows = _ensure_crs(tile_rows, target_crs or raster_crs)
+        try:
+            idx = tile_rows[tile_rows.intersects(edge_band)].index.tolist()
+        except Exception:
+            idx = []
+        edge_indices.update(idx)
+
+    print(
+        f"MERGE EDGE CONNECT | candidates {len(edge_indices)} |"
+        f" total {len(stems_gdf)} | edge_buffer_m {edge_buffer_m}",
+        flush=True,
+    )
+
+    all_stems = _stems_from_gdf(stems_gdf)
+    if not edge_indices:
+        return _stems_to_layer_gdfs(all_stems, target_crs, config=config)
+
+    edge_gdf = stems_gdf.loc[sorted(edge_indices)].copy()
+    inner_gdf = stems_gdf.drop(index=sorted(edge_indices)).copy()
+
+    inner_stems = _stems_from_gdf(inner_gdf)
+    original_edge_stems = _stems_from_gdf(edge_gdf)
+
+    if not original_edge_stems:
+        return _stems_to_layer_gdfs(inner_stems, target_crs, config=config)
+
+    import utils.Vectorization as Vec
+
+    if config is None:
+        from classes.Config import Config
+        recon_cfg = Config()
+    else:
+        recon_cfg = config
+
+    connected_edge_stems = \
+        Vec.connect_stems(list(original_edge_stems), recon_cfg)
+
+    # Quantify the direct connect_stems outputs
+    # so their profile metadata is refreshed
+    # consistently with geometry after edge merging.
+    quantified_edge_stems = \
+        [Quant.quantify_stem(stem) for stem in connected_edge_stems]
+
+    final_stems = inner_stems + quantified_edge_stems
+    print(
+        f"MERGE EDGE CONNECT | inner {len(inner_stems)} | "
+        f"connected_edge {len(quantified_edge_stems)} | "
+        f"final {len(final_stems)}",
+        flush=True,
+    )
+    return _stems_to_layer_gdfs(final_stems, target_crs, config=recon_cfg)
 
 
 def merge_and_filter_tiled_results(
     work_dir: str,
     output_gpkg: str | None = None,
     edge_buffer_m: float = 1.0,
+    config=None,
+    stem_map_path: str | None = None,
 ):
-    """Merge tiled WINMOL results into one GeoPackage (GPKG only)."""
     work_dir = os.path.abspath(work_dir)
     output_gpkg = _default_output_gpkg(work_dir, output_gpkg)
 
-    if os.path.exists(output_gpkg):
-        os.remove(output_gpkg)
+    _remove_existing_output(output_gpkg)
 
     tiles = _detect_tiles(work_dir, output_gpkg)
+    recursive_candidates = \
+        sorted(str(p) for p in Path(work_dir).rglob('*.gpkg'))
+    print(
+        f"MERGE DISCOVERY | root {work_dir} |"
+        f" gpkg_files {len(recursive_candidates)}",
+        flush=True,
+    )
+    for candidate in recursive_candidates[:5]:
+        print(f'MERGE INPUT | {candidate}', flush=True)
     if not tiles:
         raise FileNotFoundError(f"No .gpkg files found in: {work_dir}")
 
@@ -756,13 +1521,56 @@ def merge_and_filter_tiled_results(
         total_nodes += n_n
         total_vectors += n_v
 
-    _write_merged(output_gpkg, merged_stems, merged_nodes, merged_vectors)
+    if merged_stems or merged_nodes or merged_vectors:
+        stems_gdf, nodes_gdf, vectors_gdf = \
+            _reconstruct_edge_stems_for_tiled_merge(
+                merged_stems,
+                tiles,
+                target_crs,
+                edge_buffer_m,
+                config=config,
+            )
+        final_stems = [stems_gdf] \
+            if stems_gdf is not None and not stems_gdf.empty else []
+        final_nodes = [nodes_gdf] \
+            if nodes_gdf is not None and not nodes_gdf.empty else []
+        final_vectors = [vectors_gdf] \
+            if vectors_gdf is not None and not vectors_gdf.empty else []
+        written_gpkg = _write_merged(
+            output_gpkg,
+            final_stems,
+            final_nodes,
+            final_vectors,
+        )
+        written_layers = []
+        try:
+            written_layers = list(fiona.listlayers(written_gpkg))
+        except Exception as exc:
+            print(
+                f"MERGE VERIFY FAIL | file {written_gpkg} "
+                f"| {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
-    print("")
-    print("MERGE SUMMARY")
-    print(f"Tiles processed:       {tile_count}")
-    print(f"Total stems written:   {total_stems}")
-    print(f"Total nodes written:   {total_nodes}")
-    print(f"Total vectors written: {total_vectors}")
-    print(f"Output saved to: {output_gpkg}")
-    return output_gpkg
+        final_stem_count = 0 if stems_gdf is None else len(stems_gdf)
+        final_node_count = 0 if nodes_gdf is None else len(nodes_gdf)
+        final_vector_count = 0 if vectors_gdf is None else len(vectors_gdf)
+
+        print("")
+        print("MERGE SUMMARY")
+        print(f"Tiles processed:       {tile_count}")
+        print(f"Total stems written:   {final_stem_count}")
+        print(f"Total nodes written:   {final_node_count}")
+        print(f"Total vectors written: {final_vector_count}")
+        print(f"Layers written:        {written_layers}")
+        print(f"Output saved to: {written_gpkg}")
+    else:
+        print("")
+        print("MERGE SUMMARY")
+        print("Tiles processed:       0")
+        print("Total stems written:   0")
+        print("Total nodes written:   0")
+        print("Total vectors written: 0")
+        print(f"No output GPKG created: {output_gpkg} (0 features written)")
+    return written_gpkg if merged_stems or merged_nodes or merged_vectors \
+        else output_gpkg
