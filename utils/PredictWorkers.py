@@ -320,8 +320,8 @@ def prediction_service_worker(
                     outputs.append({
                         'request_index': int(job['__request_index__']),
                         'job': {
-                           k: v for k, v in job.items()
-                           if k != '__request_index__'
+                            k: v for k, v in job.items()
+                            if k != '__request_index__'
                         },
                         'array': pred_core,
                     })

@@ -1286,11 +1286,11 @@ def _stem_from_row(row):
         stop=Point(stop_xy),
         path=LineString(coords),
         vector=[],
-        segment_diameter_list = [
+        segment_diameter_list=[
             float(v) for v in _json_list_or_empty(getattr(row, 'd_json', []))],
-        segment_length_list = [
+        segment_length_list=[
             float(v) for v in _json_list_or_empty(getattr(row, 'l_json', []))],
-        segment_volume_list = [
+        segment_volume_list=[
             float(v) for v in _json_list_or_empty(getattr(row, 'v_json', []))],
         crs=getattr(row, 'crs', None),
     )
