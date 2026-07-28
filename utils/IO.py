@@ -184,40 +184,43 @@ def load_raster_window_with_profile(path: str, window):
 
 
 def load_model_from_path(model_path):
-    from tensorflow import keras
-    from tensorflow.keras import layers
-    from tensorflow.keras.utils import get_custom_objects
+    # ONNX models are architecture-agnostic: they are served by an
+    # OnnxSegmenter adapter that duck-types the Keras model's
+    # predict_on_batch(NHWC) interface, so no TensorFlow/Keras code is
+    # needed here at all.
+    if str(model_path).lower().endswith(".onnx"):
+        return _load_onnx_model(model_path)
 
-    # Function to open the model with a fallback mechanism
-    def custom_dropout(**kwargs):
-        if 'seed' in kwargs and isinstance(kwargs['seed'], float):
-            kwargs['seed'] = int(kwargs['seed'])  # Convert seed to int
-        return layers.Dropout(**kwargs)
+    # The shipped runtime is TensorFlow-free: it loads only .onnx models
+    # via onnxruntime. Legacy Keras/TensorFlow models (.hdf5/.h5/.keras)
+    # are no longer loadable here -- convert them to ONNX first.
+    raise RuntimeError(
+        f"Unsupported model format for {model_path!r}: the WINMOL "
+        "runtime loads only .onnx models (onnxruntime, no TensorFlow). "
+        "Convert legacy Keras/TensorFlow models (.hdf5/.h5/.keras) to "
+        "ONNX first with scripts/convert_models_to_onnx.py, then pass "
+        "the resulting .onnx file.")
 
-    class CustomConv2DTranspose(layers.Conv2DTranspose):
-        # Remove 'groups' parameter if present
-        def __init__(self, *args, **kwargs):
-            kwargs.pop("groups", None)
-            super().__init__(*args, **kwargs)
 
-        def call(self, inputs, **kwargs):
-            return super().call(inputs, **kwargs)
+def _load_onnx_model(model_path):
+    """Load a .onnx segmenter via the vendored OnnxSegmenter.
 
+    OnnxSegmenter exposes predict_on_batch(NHWC), so it is a drop-in for
+    the old Keras model everywhere the analyzer runs inference. This
+    import is lazy (deferred to call time) so a missing/broken
+    onnxruntime install only breaks the .onnx path, not module import,
+    and so tests can stub utils.onnx_runtime without onnxruntime present.
+    """
     try:
-        print("Trying to load model using open_model()")
-        return keras.models.load_model(model_path, compile=False)
+        from utils.onnx_runtime import OnnxSegmenter
     except Exception as e:
-        print("open_model() failed:", e)
-
-    try:
-        print("Retrying with custom layers (Dropout, Conv2DTranspose)")
-        get_custom_objects()["Dropout"] = custom_dropout
-        get_custom_objects()["Conv2DTranspose"] = CustomConv2DTranspose
-        return keras.models.load_model(model_path, compile=False)
-    except Exception as e:
-        print("Loading with custom layers also failed:", e)
-
-    raise RuntimeError("Failed to load model with all methods.")
+        raise RuntimeError(
+            f"Cannot load ONNX model {model_path!r}: onnxruntime is not "
+            "available (" + str(e) + "). Install it with "
+            "'pip install onnxruntime' (or 'onnxruntime-gpu' for CUDA) "
+            "and try again.") from e
+    print(f"Loading ONNX model via OnnxSegmenter: {model_path}")
+    return OnnxSegmenter(model_path)
 
 
 def load_orthomosaic(path, config):

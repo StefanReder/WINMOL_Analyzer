@@ -3,10 +3,88 @@ inference through a tiny on-the-fly ONNX model proves it is layout-aware
 (NHWC and NCHW I/O both normalize to an NHWC contract), and the
 ``WINMOL_ONNX_FORCE_CPU`` env override pins provider selection to CPU.
 
-Extended in a later task with ``IO.load_model_from_path`` dispatch tests.
+Also covers ``IO.load_model_from_path`` dispatch: ``.onnx`` routes to the
+vendored ``OnnxSegmenter`` (stubbed here so no onnxruntime is required for
+the dispatch tests themselves), and legacy Keras models (``.hdf5``/``.h5``/
+``.keras``) are rejected with a RuntimeError naming the ONNX converter --
+without ever importing TensorFlow.
 """
+import sys
+import types
+
 import numpy as np
 import pytest
+
+from utils import IO
+
+
+@pytest.fixture
+def stub_onnx_segmenter(monkeypatch):
+    """Replace the vendored OnnxSegmenter with a recorder."""
+    calls = []
+
+    class FakeOnnxSegmenter:
+        def __init__(self, model_path, providers=None):
+            self.model_path = model_path
+            self.providers = providers
+            calls.append(model_path)
+
+        def predict_on_batch(self, x):  # pragma: no cover - interface marker
+            return x
+
+    mod = types.ModuleType("utils.onnx_runtime")
+    mod.OnnxSegmenter = FakeOnnxSegmenter
+    monkeypatch.setitem(sys.modules, "utils.onnx_runtime", mod)
+    return calls, FakeOnnxSegmenter
+
+
+def test_onnx_path_dispatches_to_onnx_segmenter(stub_onnx_segmenter):
+    calls, FakeOnnxSegmenter = stub_onnx_segmenter
+    model = IO.load_model_from_path("/models/deeplabv3plus.onnx")
+    assert isinstance(model, FakeOnnxSegmenter)
+    assert calls == ["/models/deeplabv3plus.onnx"]
+    assert hasattr(model, "predict_on_batch")
+
+
+def test_onnx_extension_is_case_insensitive(stub_onnx_segmenter):
+    calls, FakeOnnxSegmenter = stub_onnx_segmenter
+    model = IO.load_model_from_path("/models/MODEL.ONNX")
+    assert isinstance(model, FakeOnnxSegmenter)
+    assert calls == ["/models/MODEL.ONNX"]
+
+
+def test_onnx_without_onnxruntime_raises_helpful_error(monkeypatch):
+    monkeypatch.setitem(sys.modules, "utils.onnx_runtime", None)
+    with pytest.raises(RuntimeError) as exc:
+        IO.load_model_from_path("/models/deeplabv3plus.onnx")
+    assert "onnxruntime" in str(exc.value).lower()
+
+
+@pytest.mark.parametrize(
+    "model_path",
+    ["/models/legacy.hdf5", "/models/legacy.h5", "/models/legacy.keras",
+     "/models/LEGACY.HDF5"])
+def test_non_onnx_model_raises_converter_naming_error(model_path):
+    """The runtime is TensorFlow-free: a legacy Keras model must fail fast
+    with a clear message pointing at the HDF5->ONNX converter, and it must
+    NOT import TensorFlow to do so (no TF needed to run this test)."""
+    tf_loaded_before = "tensorflow" in sys.modules
+    with pytest.raises(RuntimeError) as exc:
+        IO.load_model_from_path(model_path)
+    msg = str(exc.value)
+    assert "scripts/convert_models_to_onnx.py" in msg
+    assert ".onnx" in msg
+    # The rejection is a pure string check -- the call imports no TensorFlow.
+    assert ("tensorflow" in sys.modules) == tf_loaded_before
+
+
+def test_tensorflow_never_imported_by_dispatch(stub_onnx_segmenter):
+    """Belt-and-suspenders: after exercising every load_model_from_path
+    branch above, TensorFlow must still be absent from sys.modules."""
+    IO.load_model_from_path("/models/deeplabv3plus.onnx")
+    with pytest.raises(RuntimeError):
+        IO.load_model_from_path("/models/legacy.hdf5")
+    assert "tensorflow" not in sys.modules
 
 
 def _tiny_onnx(path, layout):
