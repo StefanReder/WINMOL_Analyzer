@@ -28,6 +28,7 @@ Feeding uint8 also cuts PCIe traffic 4x versus sending float32.
 """
 import hashlib
 import os
+import tempfile
 
 import numpy as np
 import onnx
@@ -70,9 +71,19 @@ def build_preprocessed_model(model_path, target_hw, out_path=None,
             f"|{th}x{tw}|{nchw}|{TF_CUBIC_COEFF_A}|aa{int(bool(antialias))}"
             .encode()
         ).hexdigest()[:16]
-        out_path = os.path.join(
-            os.path.dirname(os.path.realpath(model_path)),
-            f".winmol_pre_{key}.onnx")
+        name = f".winmol_pre_{key}.onnx"
+        model_dir = os.path.dirname(os.path.realpath(model_path))
+        out_path = os.path.join(model_dir, name)
+        # A directory of immutable weights is a reasonable thing to mount
+        # read-only, and this wrap is a derived cache artifact, not part of
+        # the model. If we cannot write next to the weights, cache it in the
+        # temp dir instead -- keyed by the same hash, so it still hits on
+        # the next run. An existing wrap beside the weights is used either
+        # way; only building a new one needs the write.
+        if not os.path.exists(out_path) and not os.access(model_dir, os.W_OK):
+            fallback = os.path.join(tempfile.gettempdir(), "winmol-wrap-cache")
+            os.makedirs(fallback, exist_ok=True)
+            out_path = os.path.join(fallback, name)
     if os.path.exists(out_path):
         return out_path
 
@@ -139,7 +150,21 @@ def build_preprocessed_model(model_path, target_hw, out_path=None,
         if op.domain in ("", "ai.onnx") and op.version < min_opset:
             op.version = min_opset
     onnx.checker.check_model(model)
-    onnx.save(model, out_path)
+    # Publish atomically. `--jobs N` points every job at one model dir and
+    # they all derive the SAME wrap hash, so a bare save lets one job load
+    # another's half-written file -- measured on 8 GPUs as
+    # "INVALID_PROTOBUF: Protobuf parsing failed". os.replace is atomic
+    # within a filesystem, so the os.path.exists cache check above only
+    # ever sees a complete model, and a job that dies mid-write leaves
+    # nothing behind to be mistaken for one.
+    tmp = f"{out_path}.{os.getpid()}.tmp"
+    try:
+        onnx.save(model, tmp)
+        os.replace(tmp, out_path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     return out_path
 
 
