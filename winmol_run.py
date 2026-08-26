@@ -1,11 +1,20 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
-import json
 import os
+import sys
+
+# connect_stems joins stems in the set-iteration order of string-hashed Part
+# objects, which Python salts per process — so re-exec once with a pinned
+# PYTHONHASHSEED before anything hashes into a set ('-u' re-added to keep the
+# plugin's log stream unbuffered).
+if os.environ.get("PYTHONHASHSEED") != "0":
+    os.environ["PYTHONHASHSEED"] = "0"
+    os.execv(sys.executable, [sys.executable, "-u"] + sys.argv)
+
+import json
 import shutil
 import subprocess
-import sys
 import tempfile
 
 from classes.Config import Config
@@ -20,36 +29,24 @@ from utils.Tiling import build_tile_grid, meters_to_pixels
 
 VALID_PROCESS_TYPES = {'Stems', 'Trees', 'Nodes'}
 
-
-def _import_tensorflow():
-    import tensorflow as tf
-    return tf
-
-
-def _configure_tensorflow_runtime():
-    tf = _import_tensorflow()
-    print("imports finished")
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        try:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            print(f"Enabled memory growth for {len(gpus)} GPU(s).")
-        except RuntimeError as e:
-            print(f"Memory growth setup failed: {e}")
-    else:
-        print("No GPUs found. Running on CPU.")
-    return tf
+#: Providers that mean "a GPU/accelerator is available" — CUDA on NVIDIA,
+#: CoreML on Apple Silicon (Metal/ANE).
+_ACCELERATOR_PROVIDERS = ("CUDAExecutionProvider", "CoreMLExecutionProvider")
 
 
-def _force_tensorflow_cpu_only():
-    tf = _import_tensorflow()
-    try:
-        tf.config.set_visible_devices([], 'GPU')
-        print('Configured TensorFlow for CPU-only prediction.')
-    except RuntimeError as exc:
-        print(f'CPU-only TensorFlow setup failed: {exc}')
-    return tf
+def _cpu_stream_forces_onnx_cpu(prediction_backend, selected_providers):
+    """In cpu_stream mode, should the ONNX runtime be pinned to the CPU
+    provider?
+
+    cpu_stream is the single-device streaming path the planner picks when
+    there is no CUDA GPU. On Apple Silicon it is chosen for lack of CUDA,
+    but CoreML is still a real accelerator (18x faster than CPU here) and
+    must NOT be disabled. So force the CPU provider only when the user
+    explicitly asked for the ``cpu`` backend, or the machine offers no
+    accelerator at all (CUDA or CoreML)."""
+    if str(prediction_backend).lower() == "cpu":
+        return True
+    return not any(p in _ACCELERATOR_PROVIDERS for p in selected_providers)
 
 
 class ImageProcessing:
@@ -124,10 +121,20 @@ class ImageProcessing:
         print(f"  producer_workers = {plan.producer_workers}")
         print(f"  progress_interval_s = {plan.progress_interval_s}")
         print(f"  est_pred_tiles   = {plan.estimated_prediction_tiles}")
-        self._apply_plan_to_config(plan)
+        # Say so when the planner overrode a configured value. These caps
+        # used to be silent, which is how a configured
+        # prediction_producer_workers_gpu=6 ran as 3, and the vector pool
+        # ran on 2 of 12 cores, without anyone noticing they were capped.
+        for note in getattr(plan, 'capped', None) or []:
+            print(f"  WARNING: {note}")
+        self._apply_plan_to_config(plan, hardware)
         return plan
 
-    def _apply_plan_to_config(self, plan):
+    def _apply_plan_to_config(self, plan, hardware):
+        # Carry the detected hardware onto the config so the prediction
+        # phase can key its autotune cache on it without re-probing
+        # nvidia-smi.
+        self.config.hardware = hardware
         self.config.cpu_workers = (
             plan.vector_inner_workers
             if plan.vector_mode == 'tiled'
@@ -159,10 +166,21 @@ class ImageProcessing:
         from utils import Prediction as Pred
 
         if plan.prediction_mode == 'cpu_stream':
-            _force_tensorflow_cpu_only()
+            from utils.onnx_runtime import selected_providers
+            if _cpu_stream_forces_onnx_cpu(
+                    getattr(self.config, 'prediction_backend', 'auto'),
+                    selected_providers()):
+                os.environ["WINMOL_ONNX_FORCE_CPU"] = "1"
 
         print("\nLoading Model...")
-        model = IO.load_model_from_path(self.model_path)
+        model = IO.load_model_from_path(self.model_path, self.config)
+        from utils.onnx_runtime import last_active_report
+        report = last_active_report()
+        if report:
+            print(
+                f"Execution providers (active): "
+                f"{report['active_providers']} "
+                f"(device: {report['accelerator_label']})")
         print("\nPerforming Prediction with Resampling in stream mode...")
         profile = Pred.predict_stream_to_raster(
             self.uav_path,
@@ -260,6 +278,10 @@ class ImageProcessing:
             output_gpkg=out_path,
             edge_buffer_m=plan.tile_overlap_m,
             config=self.config,
+            # Pass the full stem-map extent so stems on the ortho's true
+            # outer boundary (corners) aren't trimmed by the interior-seam
+            # dedup.
+            stem_map_path=self.stem_path,
         )
 
     def run_stem_pipeline(self, plan):
@@ -271,8 +293,6 @@ class ImageProcessing:
             plan, pred_path=pred_path, pred=pred, profile=profile)
 
     def check_DL_env(self):
-        tf = _import_tensorflow()
-
         def get_nvidia_driver_version():
             try:
                 result = subprocess.run(
@@ -289,28 +309,18 @@ class ImageProcessing:
 
         get_nvidia_driver_version()
         try:
-            physical_devices = tf.config.list_physical_devices('GPU')
-            cuda_version = tf.sysconfig.get_build_info().get(
-                'cuda_version', 'Unknown')
-            cudnn_version = tf.sysconfig.get_build_info().get(
-                'cudnn_version', 'Unknown')
-            print(f"CUDA is available: {cuda_version}")
-            print(f"cuDNN version: {cudnn_version}")
-            print("Num GPUs for CUDA processing:", len(physical_devices))
-            print("Tensorflow version:", tf.__version__)
-            print("Keras version:", tf.keras.__version__)
+            import onnxruntime as ort
+            from utils.onnx_runtime import selected_providers
+            print("ONNX Runtime version:", ort.__version__)
+            print("Available execution providers:",
+                  ort.get_available_providers())
+            print("Selected execution providers:", selected_providers())
         except Exception as e:
-            print("Tensorflow error: ", e)
+            print("ONNX Runtime error: ", e)
 
     def display_starting_text(self, plan=None):
-        if plan is not None and plan.prediction_mode == 'multi_gpu_stream':
-            print(
-                "Skipping parent TensorFlow initialization "
-                "for worker-local multi-GPU mode."
-            )
-        else:
-            print("Check CUDA environment")
-            self.check_DL_env()
+        print("Check CUDA environment")
+        self.check_DL_env()
         print("Command-line arguments:")
         print("Model Path:", self.model_path)
         print("Image Path:", self.uav_path)
@@ -330,6 +340,8 @@ class ImageProcessing:
 
 
 if __name__ == '__main__':
+    print(f"Determinism: PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED')}",
+          flush=True)
     if len(sys.argv) != 6:
         print("""Usage:
             python3 -u winmol_run.py <model_path> <input_tiff> <stem_map_tiff>
@@ -356,13 +368,6 @@ if __name__ == '__main__':
         model_path, uav_path, stem_path, trees_path, process_type)
     hardware = image_processor.detect_hardware()
     plan = image_processor.build_plan(hardware)
-    if plan.prediction_mode == 'multi_gpu_stream' and plan.gpu_workers > 1:
-        print(
-            "Skipping parent TensorFlow runtime configuration "
-            "for worker-local multi-GPU mode."
-        )
-    else:
-        _configure_tensorflow_runtime()
     image_processor.display_starting_text(plan)
     if process_type == 'Stems':
         image_processor.run_stem_pipeline(plan)

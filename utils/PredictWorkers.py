@@ -11,6 +11,8 @@ from rasterio.windows import Window
 
 from classes.Config import Config
 from utils import IO
+from utils.Prediction import (_prepare_inference_batch, _resize_batch,
+                              resolve_read_strategy, strategy_wraps_graph)
 
 
 def _config_from_dict(config_dict: dict) -> Config:
@@ -21,57 +23,6 @@ def _config_from_dict(config_dict: dict) -> Config:
         except Exception:
             pass
     return cfg
-
-
-def _to_float32_image(arr):
-    if arr.dtype == np.float32:
-        return arr
-    if np.issubdtype(arr.dtype, np.integer):
-        return (arr / 255.0).astype(np.float32, copy=False)
-    return arr.astype(np.float32, copy=False)
-
-
-def _raw_tile_to_batchable(tile_img):
-    tile_img = _to_float32_image(tile_img)
-    if tile_img.ndim == 2:
-        tile_img = tile_img[:, :, None]
-    if tile_img.shape[2] < 3:
-        pad = np.zeros(
-            (tile_img.shape[0], tile_img.shape[1], 3 - tile_img.shape[2]),
-            dtype=np.float32,
-        )
-        tile_img = np.concatenate([tile_img, pad], axis=2)
-    return tile_img[:, :, :3]
-
-
-def _prepare_inference_batch(raw_tiles, raw_masks, config):
-    import tensorflow as tf
-
-    batch = np.stack([_raw_tile_to_batchable(t) for t in raw_tiles], axis=0)
-    tile_tensor = tf.convert_to_tensor(batch, dtype=tf.float32)
-    tile_tensor = tf.image.resize(
-        tile_tensor,
-        size=[config.img_height, config.img_width],
-        method='bicubic',
-        antialias=False,
-    )
-
-    if raw_masks is None:
-        raw_masks = [np.any(
-            _raw_tile_to_batchable(t) != 0, axis=2) for t in raw_tiles]
-
-    mask_batch = np.stack(
-        [m.astype(np.float32)[:, :, None] for m in raw_masks],
-        axis=0,
-    )
-    mask_tensor = tf.convert_to_tensor(mask_batch, dtype=tf.float32)
-    mask_tensor = tf.image.resize(
-        mask_tensor,
-        size=[config.img_height, config.img_width],
-        method='nearest',
-        antialias=False,
-    )
-    return tile_tensor, mask_tensor.numpy()
 
 
 def _resampling_layout(shape, profile, config):
@@ -147,6 +98,13 @@ def _format_eta(seconds: float) -> str:
 
 
 def _predict_batch(raw_tiles, raw_masks, model, config):
+    # Follow the session-wide strategy, exactly as the stream loop does.
+    # This used to force "native" because the workers loaded the model
+    # unwrapped, which put the normalize + 1250^2 -> 512^2 resample of
+    # every tile on the CPU: measured on 8xH100 as 1.974 s per tile of
+    # "inference" for a model that runs in 2.97 ms, i.e. 106 tiles/min
+    # against the stream's 8569. The workers now load the wrapped model,
+    # so the resize happens on device and this hands it native uint8.
     tile_tensor, mask_resized = _prepare_inference_batch(
         raw_tiles, raw_masks, config)
     pred = model.predict_on_batch(tile_tensor)
@@ -174,7 +132,27 @@ def _group_jobs(jobs, batch_size):
         yield batch
 
 
-def _read_batch_jobs(src, indexes, batch_jobs):
+def _graph_out_size(config):
+    """Model grid when the wrapped graph will do the resize, else None.
+
+    None keeps the pre-existing behaviour for the non-graph strategies:
+    masks stay native and `_prepare_inference_batch` resizes both tile
+    and mask on the CPU, as it always did.
+    """
+    if not strategy_wraps_graph(resolve_read_strategy(config)):
+        return None
+    return (int(config.img_height), int(config.img_width))
+
+
+def _read_batch_jobs(src, indexes, batch_jobs, out_size=None):
+    """Read a batch of tiles at native resolution.
+
+    ``out_size`` is the model grid. When it is set the validity mask is
+    resized onto it here and the IMAGE is left native, which is the
+    contract the wrapped graph expects (it resizes the image on device).
+    Nearest on one channel is cheap; bicubic on three at 1250^2 is not,
+    which is the whole reason this path was slow.
+    """
     raw_tiles = []
     raw_masks = []
     stats = {
@@ -211,6 +189,15 @@ def _read_batch_jobs(src, indexes, batch_jobs):
             pixel_mask if np.all(gdal_mask) else (gdal_mask & pixel_mask)
         stats['prep_s'] += time.perf_counter() - t0
 
+        if out_size is not None:
+            t0 = time.perf_counter()
+            mk = valid_mask.astype(np.float32)[:, :, None]
+            valid_mask = _resize_batch(
+                mk[None, ...],
+                (int(out_size[0]), int(out_size[1])),
+                order=0)[0, :, :, 0] > 0.5
+            stats['prep_s'] += time.perf_counter() - t0
+
         raw_tiles.append(tile)
         raw_masks.append(valid_mask)
     stats['read_s'] = \
@@ -227,18 +214,13 @@ def prediction_worker(
     config_dict: dict,
 ):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-    import tensorflow as tf
     from utils.IO import load_model_from_path
 
-    gpus = tf.config.list_physical_devices('GPU')
-    for gpu in gpus:
-        try:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        except Exception:
-            pass
-
     cfg = _config_from_dict(config_dict)
-    model = load_model_from_path(model_path)
+    # Wrapped, so the normalize + resize run on THIS worker's GPU instead
+    # of on the CPU inside the timed inference block.
+    model = load_model_from_path(model_path, cfg)
+    out_size = _graph_out_size(cfg)
     batch_size = max(1, int(getattr(cfg, 'prediction_batch_size', None)
                             or getattr(cfg, 'prediction_batch_gpu', 4)))
 
@@ -246,7 +228,7 @@ def prediction_worker(
         indexes = list(range(1, min(cfg.n_channels, src.count) + 1))
         for batch_jobs in _group_jobs(jobs, batch_size):
             raw_tiles, raw_masks, read_stats = \
-                _read_batch_jobs(src, indexes, batch_jobs)
+                _read_batch_jobs(src, indexes, batch_jobs, out_size)
             infer0 = time.perf_counter()
             pred_cores = _predict_batch(raw_tiles, raw_masks, model, cfg)
             infer_s = time.perf_counter() - infer0
@@ -270,18 +252,13 @@ def prediction_service_worker(
     config_dict: dict,
 ):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-    import tensorflow as tf
     from utils.IO import load_model_from_path
 
-    gpus = tf.config.list_physical_devices('GPU')
-    for gpu in gpus:
-        try:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        except Exception:
-            pass
-
     cfg = _config_from_dict(config_dict)
-    model = load_model_from_path(model_path)
+    # Same reasoning as prediction_worker: wrapped so the preprocessing
+    # runs on device.
+    model = load_model_from_path(model_path, cfg)
+    out_size = _graph_out_size(cfg)
     batch_size = max(1, int(getattr(cfg, 'prediction_batch_size', None)
                             or getattr(cfg, 'prediction_batch_gpu', 4)))
 
@@ -306,7 +283,7 @@ def prediction_service_worker(
 
             for batch_jobs in _group_jobs(jobs, batch_size):
                 raw_tiles, raw_masks, read_stats = \
-                    _read_batch_jobs(src, indexes, batch_jobs)
+                    _read_batch_jobs(src, indexes, batch_jobs, out_size)
                 infer0 = time.perf_counter()
                 pred_cores = _predict_batch(raw_tiles, raw_masks, model, cfg)
                 stats['infer_s'] += time.perf_counter() - infer0

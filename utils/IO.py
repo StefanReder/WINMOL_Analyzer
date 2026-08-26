@@ -19,7 +19,6 @@ try:
 except Exception:
     pyogrio = None
     _HAVE_PYOGRIO = False
-from matplotlib import pyplot as plt
 from rasterio.enums import Resampling
 from shapely.geometry import LineString, Point, box
 from collections.abc import Mapping
@@ -35,12 +34,49 @@ from classes.Stem import Stem
 """Streaming and tiling operations"""
 
 
+#: Below this, a run is too short for the read cost to matter and the
+#: overview warning would just be noise.
+_OVERVIEW_WARN_GB = 2.0
+
+
+def _warn_if_no_overviews(src, estimated_input_gb):
+    """Tell the user when an ortho will be read the slow way.
+
+    Prediction resamples each tile to the model grid during the GDAL
+    read. When the file HAS overviews, GDAL serves that from a decimated
+    level -- measured 7.5 ms per tile on Tegel R13. Without them it must
+    read every source pixel and shrink in RAM: 13.9 ms per tile, and
+    ~4x the bytes through GDAL's global block cache (default 5% of RAM,
+    shared by every producer thread). On a large ortho that is what makes
+    throughput decay and then collapse (issue #43).
+
+    Building overviews once is the fix, and `-ro` keeps the original
+    file untouched by writing a .ovr sidecar.
+    """
+    try:
+        overviews = src.overviews(1)
+    except Exception:
+        return
+    if overviews or estimated_input_gb < _OVERVIEW_WARN_GB:
+        return
+    print(
+        f"WARNING: {src.name} has NO overviews and is "
+        f"{estimated_input_gb:.1f} GB. Every prediction tile will be read "
+        f"at full resolution and downsampled in RAM -- roughly 2x the read "
+        f"time and 4x the bytes through GDAL's shared cache, which makes "
+        f"throughput decay on large orthos. Build them once with:\n"
+        f"    gdaladdo -ro -r average {src.name} 2 4 8 16 32 64 128\n"
+        f"(-ro writes a .ovr sidecar and leaves the original file "
+        f"unchanged.)", flush=True)
+
+
 def get_raster_info(path) -> dict:
     with rasterio.open(path) as src:
         dtype = src.dtypes[0] if src.dtypes else 'unknown'
         estimated_input_gb = (
             src.width * src.height * src.count * np.dtype(dtype).itemsize
         ) / (1024 ** 3)
+        _warn_if_no_overviews(src, estimated_input_gb)
         return {
             'width': int(src.width),
             'height': int(src.height),
@@ -183,41 +219,76 @@ def load_raster_window_with_profile(path: str, window):
 """File operations"""
 
 
-def load_model_from_path(model_path):
-    from tensorflow import keras
-    from tensorflow.keras import layers
-    from tensorflow.keras.utils import get_custom_objects
+def load_model_from_path(model_path, config=None, wrap_preprocess=None):
+    # ONNX models are architecture-agnostic: they are served by an
+    # OnnxSegmenter adapter that duck-types the Keras model's
+    # predict_on_batch(NHWC) interface, so no TensorFlow/Keras code is
+    # needed here at all.
+    #
+    # wrap_preprocess: None resolves from the read-strategy flag (`graph`
+    # wraps); False forces the raw model for callers that feed
+    # pre-normalized float tiles themselves (PredictWorkers).
+    if str(model_path).lower().endswith(".onnx"):
+        return _load_onnx_model(model_path, config, wrap_preprocess)
 
-    # Function to open the model with a fallback mechanism
-    def custom_dropout(**kwargs):
-        if 'seed' in kwargs and isinstance(kwargs['seed'], float):
-            kwargs['seed'] = int(kwargs['seed'])  # Convert seed to int
-        return layers.Dropout(**kwargs)
+    # The shipped runtime is TensorFlow-free: it loads only .onnx models
+    # via onnxruntime. Legacy Keras/TensorFlow models (.hdf5/.h5/.keras)
+    # are no longer loadable here -- convert them to ONNX first.
+    raise RuntimeError(
+        f"Unsupported model format for {model_path!r}: the WINMOL "
+        "runtime loads only .onnx models (onnxruntime, no TensorFlow). "
+        "Convert legacy Keras/TensorFlow models (.hdf5/.h5/.keras) to "
+        "ONNX first with scripts/convert_models_to_onnx.py, then pass "
+        "the resulting .onnx file.")
 
-    class CustomConv2DTranspose(layers.Conv2DTranspose):
-        # Remove 'groups' parameter if present
-        def __init__(self, *args, **kwargs):
-            kwargs.pop("groups", None)
-            super().__init__(*args, **kwargs)
 
-        def call(self, inputs, **kwargs):
-            return super().call(inputs, **kwargs)
+def _load_onnx_model(model_path, config=None, wrap_preprocess=None):
+    """Load a .onnx segmenter via the vendored OnnxSegmenter.
 
+    OnnxSegmenter exposes predict_on_batch(NHWC), so it is a drop-in for
+    the old Keras model everywhere the analyzer runs inference. This
+    import is lazy (deferred to call time) so a missing/broken
+    onnxruntime install only breaks the .onnx path, not module import,
+    and so tests can stub utils.onnx_runtime without onnxruntime present.
+    """
     try:
-        print("Trying to load model using open_model()")
-        return keras.models.load_model(model_path, compile=False)
+        from utils.onnx_runtime import OnnxSegmenter
     except Exception as e:
-        print("open_model() failed:", e)
-
-    try:
-        print("Retrying with custom layers (Dropout, Conv2DTranspose)")
-        get_custom_objects()["Dropout"] = custom_dropout
-        get_custom_objects()["Conv2DTranspose"] = CustomConv2DTranspose
-        return keras.models.load_model(model_path, compile=False)
-    except Exception as e:
-        print("Loading with custom layers also failed:", e)
-
-    raise RuntimeError("Failed to load model with all methods.")
+        raise RuntimeError(
+            f"Cannot load ONNX model {model_path!r}: onnxruntime is not "
+            "available (" + str(e) + "). Install it with "
+            "'pip install onnxruntime' (or 'onnxruntime-gpu' for CUDA) "
+            "and try again.") from e
+    antialias = False
+    if wrap_preprocess is None:
+        from utils.Prediction import (resolve_read_strategy,
+                                      strategy_wraps_graph)
+        strategy = resolve_read_strategy(config)
+        wrap_preprocess = strategy_wraps_graph(strategy)
+        antialias = strategy == "graph_aa"
+    if wrap_preprocess:
+        # Prepend normalize + bicubic resize to the graph so they run on
+        # the session's device instead of the CPU, and GDAL goes back to
+        # plain native reads. See utils/onnx_preprocess.
+        from utils.onnx_preprocess import build_preprocessed_model
+        target = (int(getattr(config, 'img_height', None) or 512),
+                  int(getattr(config, 'img_width', None) or 512))
+        wrapped = build_preprocessed_model(model_path, target,
+                                           antialias=antialias)
+        print(f"Loading ONNX model with IN-GRAPH preprocessing "
+              f"(normalize + bicubic resize on device): {wrapped}")
+        if antialias:
+            # onnxruntime's CUDA EP mis-executes the opset-18 antialias
+            # Resize (measured: 82 stems vs 478 on the CPU EP, same run).
+            # Pin the CPU provider until that is fixed upstream; graph_aa
+            # is a comparison mode, so correctness beats speed here.
+            print("graph_aa: pinning CPUExecutionProvider (CUDA EP "
+                  "computes antialias Resize incorrectly, ORT<=1.19)")
+            return OnnxSegmenter(wrapped,
+                                 providers=["CPUExecutionProvider"])
+        return OnnxSegmenter(wrapped)
+    print(f"Loading ONNX model via OnnxSegmenter: {model_path}")
+    return OnnxSegmenter(model_path)
 
 
 def load_orthomosaic(path, config):
@@ -239,7 +310,9 @@ def load_orthomosaic_with_resampling(path, config):
                 int(src.height * scale_factor_y),
                 int(src.width * scale_factor_x)
             ),
-            resampling=Resampling.bilinear
+            # cubic for the same reason as the streamed read in
+            # Prediction.py: bilinear thins the mask at scale.
+            resampling=Resampling.cubic
         )
         img = img[0:3, :, :].transpose(1, 2, 0)
         transform = src.transform * src.transform.scale(
@@ -836,6 +909,7 @@ def write_all_layers_to_gpkg(stems, profile, path_prefix):
 
 
 def save_image(data, output_name, size=(15, 15), dpi=300):
+    from matplotlib import pyplot as plt
     fig = plt.figure()
     fig.set_size_inches(size)
     ax = plt.Axes(fig, [0., 0., 1., 1.])
@@ -929,15 +1003,39 @@ def _ensure_crs(gdf, target_crs):
     return gdf
 
 
-def _raster_filter_geom(raster_path, edge_buffer_m):
+def _raster_filter_geom(raster_path, edge_buffer_m, ortho_bounds=None):
+    """Keep-region for a tile's stems during the merge.
+
+    Shrinking the tile footprint inward by edge_buffer_m dedups stems that
+    also appear in the overlapping neighbour tile. But a tile side that
+    coincides with the ortho's TRUE OUTER boundary has no neighbour, so
+    shrinking there silently drops real stems (worst at the corners, where
+    two sides meet). When ortho_bounds is known we buffer ONLY the
+    interior-seam sides and leave boundary sides at the true extent.
+    """
     if not raster_path:
         return None, None
     try:
         with rasterio.open(raster_path) as src:
-            geom = box(*src.bounds)
-            inner = geom.buffer(-abs(edge_buffer_m))
+            b = src.bounds
+            eb = abs(edge_buffer_m)
+            if ortho_bounds is not None:
+                tol = eb * 1e-3
+                ob = ortho_bounds
+
+                def _side(v, o, sign):
+                    # keep true extent on the ortho boundary; else shrink in
+                    return v if abs(v - o) <= tol else v + sign * eb
+                left = _side(b.left, ob.left, +1)
+                bottom = _side(b.bottom, ob.bottom, +1)
+                right = _side(b.right, ob.right, -1)
+                top = _side(b.top, ob.top, -1)
+                inner = box(left, bottom, right, top) if right > left \
+                    and top > bottom else box(*b)
+            else:
+                inner = box(*b).buffer(-eb)
             if getattr(inner, 'is_empty', False):
-                inner = geom
+                inner = box(*b)
             return inner, src.crs
     except Exception:
         return None, None
@@ -1060,10 +1158,12 @@ def _select_child(gdf, tile_id, kept_local):
     return out
 
 
-def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs):
+def _process_tile(prefix, gpkg_path, raster_path, edge_buffer_m, target_crs,
+                  ortho_bounds=None):
     tile_id = _tile_id_from_prefix(prefix)
 
-    filter_geom, raster_crs = _raster_filter_geom(raster_path, edge_buffer_m)
+    filter_geom, raster_crs = _raster_filter_geom(
+        raster_path, edge_buffer_m, ortho_bounds=ortho_bounds)
 
     stems, nodes, vectors = _read_tile_gpkg(gpkg_path)
     print(
@@ -1447,11 +1547,25 @@ def _reconstruct_edge_stems_for_tiled_merge(
     connected_edge_stems = \
         Vec.connect_stems(list(original_edge_stems), recon_cfg)
 
-    # Quantify the direct connect_stems outputs
-    # so their profile metadata is refreshed
-    # consistently with geometry after edge merging.
-    quantified_edge_stems = \
-        [Quant.quantify_stem(stem) for stem in connected_edge_stems]
+    # Quantify the direct connect_stems outputs so their lengths/volumes are
+    # consistent with the merged geometry. connect_stems now merges the
+    # parents' per-node diameter lists (Vectorization._merge_diameter_lists),
+    # but guard anyway: a stem whose diameter list does not match its path
+    # would crash quantify_stem with an IndexError at the very last step
+    # (issue #41) -- keep its geometry and clear the measures instead of dying.
+    quantified_edge_stems = []
+    n_unmeasured = 0
+    for stem in connected_edge_stems:
+        if len(stem.segment_diameter_list) == len(stem.path.coords):
+            quantified_edge_stems.append(Quant.quantify_stem(stem))
+        else:
+            stem.segment_length_list = []
+            stem.segment_volume_list = []
+            n_unmeasured += 1
+            quantified_edge_stems.append(stem)
+    if n_unmeasured:
+        print(f"WARNING: {n_unmeasured} merged edge stems kept without "
+              f"re-quantified measures (diameter/path mismatch)", flush=True)
 
     final_stems = inner_stems + quantified_edge_stems
     print(
@@ -1473,6 +1587,16 @@ def merge_and_filter_tiled_results(
     work_dir = os.path.abspath(work_dir)
     output_gpkg = _default_output_gpkg(work_dir, output_gpkg)
 
+    # Full-ortho extent: lets _raster_filter_geom keep stems on the ortho's
+    # true outer boundary (only interior tile seams get the dedup shrink).
+    ortho_bounds = None
+    if stem_map_path:
+        try:
+            with rasterio.open(stem_map_path) as _s:
+                ortho_bounds = _s.bounds
+        except Exception:
+            ortho_bounds = None
+
     _remove_existing_output(output_gpkg)
 
     tiles = _detect_tiles(work_dir, output_gpkg)
@@ -1486,7 +1610,14 @@ def merge_and_filter_tiled_results(
     for candidate in recursive_candidates[:5]:
         print(f'MERGE INPUT | {candidate}', flush=True)
     if not tiles:
-        raise FileNotFoundError(f"No .gpkg files found in: {work_dir}")
+        # No tiles wrote a GeoPackage. That is what an orthomosaic with no
+        # detections looks like, and it used to raise here -- marking the
+        # whole ortho FAILED for the crime of containing no trees. Fall
+        # through to the zero-feature summary below instead; the MERGE
+        # DISCOVERY line above still shows the root that came up empty, so
+        # a genuinely wrong work_dir stays diagnosable.
+        print(f"No .gpkg files found in: {work_dir} (0 detections)",
+              flush=True)
 
     merged_stems = []
     merged_nodes = []
@@ -1505,6 +1636,7 @@ def merge_and_filter_tiled_results(
             raster_path,
             edge_buffer_m,
             target_crs,
+            ortho_bounds=ortho_bounds,
         )
         if out is None:
             continue
