@@ -61,7 +61,7 @@
 #       "import onnxruntime as ort; print(ort.get_available_providers())"
 #
 # 'CUDAExecutionProvider' must appear in that list.
-onnxruntime-gpu[cuda,cudnn]==1.26.0
+onnxruntime-gpu[cuda,cudnn]>=1.26,<1.27
 nvidia-cudnn-cu12==9.10.2.21
 
 # Without psutil, HardwareInfo._detect_total_ram_gb() returns 0.0 and
