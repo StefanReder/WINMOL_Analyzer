@@ -2295,7 +2295,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         module's 8 s default) because it runs on the GUI thread. GPUs
         do not appear mid-session; reopening the dialog re-probes."""
         if self._gpu_probe is None:
-            self._gpu_probe = gpu_probe.probe(timeout=2.0)
+            self._gpu_probe = gpu_probe.probe(timeout=20.0)
         return self._gpu_probe
 
     def _model_device(self):
