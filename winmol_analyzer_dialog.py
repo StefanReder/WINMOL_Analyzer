@@ -1782,7 +1782,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.update_output_log("WINMOL environment ready.")
         self._set_setup_status("Environment ready.")
         if self._setup_then_run:
-       	    # The model was initially resolved before the environment
+	    # The model was initially resolved before the environment
        	    # existed. Resolve it again using the runtime actually installed.
             self.set_selected_model()
             self._refresh_setup_tab()
