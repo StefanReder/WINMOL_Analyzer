@@ -1719,13 +1719,11 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
     def _run_env_setup(self):
         """Build the compute venv off the GUI thread, then run the
         analysis once it reports a usable interpreter (run_process's
-    	first-run path; the caller set _setup_running and busy UI).
-
-    	Use the same pre-build accelerator choice as the Setup tab.
-    	"""
+   first-run path; the caller set _setup_running and busy UI).
+        Use the same pre-build accelerator choice as the Setup tab.
+        """
         gpu = self._confirm_gpu_for_create()
         self._start_env_setup_worker(gpu=gpu, then_run=True)
-
 
     def _new_worker_thread(self, worker):
         """The QThread scaffolding every worker launch shares: park
@@ -1768,8 +1766,8 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.env["python"] = python_exe
         self.env["message"] = ""
         self._venv_bytes = None      # the build changed the tree
-  	# A runtime install can change CPU <-> GPU while this dialog
-    	# remains open. Re-evaluate the cached device verdict.
+  	    # A runtime install can change CPU <-> GPU while this dialog
+        # remains open. Re-evaluate the cached device verdict.
         self._device = None
         if self._cancel_requested and self._setup_then_run:
             self._cancel_requested = False
