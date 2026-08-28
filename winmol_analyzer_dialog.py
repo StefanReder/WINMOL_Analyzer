@@ -1766,7 +1766,7 @@ class WINMOLAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.env["python"] = python_exe
         self.env["message"] = ""
         self._venv_bytes = None      # the build changed the tree
-  	    # A runtime install can change CPU <-> GPU while this dialog
+        # A runtime install can change CPU <-> GPU while this dialog
         # remains open. Re-evaluate the cached device verdict.
         self._device = None
         if self._cancel_requested and self._setup_then_run:
